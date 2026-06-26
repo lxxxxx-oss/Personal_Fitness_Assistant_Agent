@@ -131,13 +131,41 @@ docs/
 cd C:\Users\黎\Desktop\Personal_Fitness_Assistant_Agent-master
 ```
 
-### 7.1 安装依赖
+### 7.1 两台电脑协作流程
+
+两台电脑统一使用 `main` 分支。每次开始工作前，先在当前电脑同步远端最新代码：
+
+```bash
+git checkout main
+git status
+git pull origin main
+```
+
+如果 `git status` 显示有未提交修改，先确认这些修改是否需要保留，再选择提交或暂存，不要直接覆盖。每次阶段性工作结束后，再提交并推送：
+
+```bash
+git status
+git add .
+git commit -m "描述本次修改"
+git push origin main
+```
+
+另一台电脑测试前只需要进入自己的项目目录，然后执行：
+
+```bash
+git checkout main
+git pull origin main
+```
+
+这样可以避免 `main` / `master` 分支混用，也能减少两台电脑之间出现 unrelated histories 或本地文件覆盖冲突的概率。
+
+### 7.2 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 7.2 启动后端
+### 7.3 启动后端
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -162,7 +190,7 @@ logs/uvicorn.err.log
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-### 7.3 健康检查
+### 7.4 健康检查
 
 ```bash
 curl http://127.0.0.1:8000/health
