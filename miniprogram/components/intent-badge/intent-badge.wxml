@@ -1,0 +1,8 @@
+<view
+  class="badge {{active ? 'active' : ''}} {{size}}"
+  style="border-color: {{info.color}}; {{active ? 'background:' + info.bgColor + ';' : ''}}"
+  bind:tap="onTap"
+>
+  <text class="icon" wx:if="{{size === 'large'}}">{{info.icon}}</text>
+  <text class="label" style="color: {{active ? info.color : '#94a3b8'}}">{{info.label}}</text>
+</view>

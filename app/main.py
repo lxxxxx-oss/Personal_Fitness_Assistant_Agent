@@ -1,0 +1,476 @@
+"""FastAPI application entry point — Fitness Assistant API."""
+import logging
+from typing import Dict, List
+
+import json
+import os
+import tempfile
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from app.config import config
+from app.graph.router import build_router_graph
+from app.graph.state import RouterState
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="Fitness Assistant API", version="0.1.0")
+
+# CORS — allow browser access from any origin
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_router_graph = None
+_sessions: Dict[str, "SlidingWindowMemory"] = {}
+
+
+def _get_router_graph():
+    global _router_graph
+    if _router_graph is None:
+        _router_graph = build_router_graph()
+    return _router_graph
+
+
+def _get_or_create_memory(user_id: str):
+    from app.memory.sliding_window import SlidingWindowMemory
+
+    if user_id not in _sessions:
+        _sessions[user_id] = SlidingWindowMemory(max_turns=config.memory_max_turns)
+    return _sessions[user_id]
+
+
+# --- Request/Response Models ---
+
+class ChatRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    message: str = Field(..., min_length=1, max_length=4096)
+
+
+class ChatResponse(BaseModel):
+    user_id: str
+    intent: str
+    reply: str
+    sources: List[str] = []
+
+
+class HistoryResponse(BaseModel):
+    user_id: str
+    history: List[Dict[str, str]]
+
+
+class ClearResponse(BaseModel):
+    user_id: str
+    status: str
+
+
+class MotionAnalyzeResponse(BaseModel):
+    filename: str
+    frames: int
+    joints: int
+    reference: str | None = None
+    metrics: dict | None = None
+    message: str
+
+
+class MotionAnalyzeImageResponse(BaseModel):
+    filename: str
+    source_type: str
+    frames: int
+    joints: int
+    pose_model: str
+    joint_schema: str
+    confidence_summary: dict | None = None
+    warnings: List[str] = []
+    message: str
+
+
+# --- API Endpoints ---
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "version": "0.1.0"}
+
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """Process user message, route to subgraph, return reply."""
+    memory = _get_or_create_memory(request.user_id)
+
+    state: RouterState = {
+        "user_input": request.message,
+        "user_id": request.user_id,
+        "intent": "",
+        "memory": memory.get_all(),
+        "result": "",
+        "error": None,
+    }
+
+    try:
+        graph = _get_router_graph()
+        result_state = graph.invoke(state)
+
+        reply = result_state.get("result", "")
+        intent = result_state.get("intent", "chat")
+
+        memory.add_turn(request.message, reply)
+
+        return ChatResponse(
+            user_id=request.user_id,
+            intent=intent,
+            reply=reply,
+        )
+    except Exception as e:
+        logger.exception(f"Error processing chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/chat/{user_id}/history", response_model=HistoryResponse)
+async def get_history(user_id: str):
+    """Get user conversation history."""
+    memory = _get_or_create_memory(user_id)
+    return HistoryResponse(
+        user_id=user_id,
+        history=memory.get_all(),
+    )
+
+
+@app.delete("/chat/{user_id}/history", response_model=ClearResponse)
+async def clear_history(user_id: str):
+    """Clear user conversation history."""
+    memory = _get_or_create_memory(user_id)
+    memory.clear()
+    return ClearResponse(user_id=user_id, status="cleared")
+
+
+@app.post("/motion/analyze", response_model=MotionAnalyzeResponse)
+async def analyze_motion(
+    file: UploadFile = File(...),
+    reference_name: str | None = Form(default=None),
+):
+    """Analyze an uploaded .npz pose file.
+
+    This endpoint uses deterministic motion tools only. It does not call the
+    LLM, so uploaded motion analysis can run without loading the local model.
+    """
+    from app.tools.motion_tool import compute_similarity, list_motion_library, load_npz_pose
+
+    if not file.filename or not file.filename.lower().endswith(".npz"):
+        raise HTTPException(status_code=422, detail="Only .npz pose files are supported")
+
+    suffix = os.path.splitext(file.filename)[1] or ".npz"
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+
+        pose_result = load_npz_pose(tmp_path)
+        if not pose_result.ok:
+            raise HTTPException(
+                status_code=422,
+                detail=pose_result.error_message or "Invalid pose file",
+            )
+
+        pose = pose_result.data
+        response = MotionAnalyzeResponse(
+            filename=file.filename,
+            frames=int(pose.shape[0]),
+            joints=int(pose.shape[1]),
+            message=(
+                "姿态数据已加载。未提供 reference_name，当前仅返回基础信息；"
+                "如需标准动作对比，请在 data/motions/ 中准备同名 .npz 并传入 reference_name。"
+            ),
+        )
+
+        if reference_name:
+            library_result = list_motion_library(config.motion_library_dir)
+            library = library_result.data if library_result.ok else {}
+            ref_path = library.get(reference_name)
+            if ref_path is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Reference motion not found: {reference_name}",
+                )
+
+            ref_result = load_npz_pose(ref_path)
+            if not ref_result.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=ref_result.error_message or "Invalid reference pose file",
+                )
+
+            metrics_result = compute_similarity(pose, ref_result.data)
+            if not metrics_result.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=metrics_result.error_message or "Motion comparison failed",
+                )
+
+            response.reference = reference_name
+            response.metrics = metrics_result.data
+            response.message = "姿态数据已加载，并完成与标准动作的相似度对比。"
+
+        return response
+    finally:
+        await file.close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.post("/motion/analyze-image", response_model=MotionAnalyzeImageResponse)
+async def analyze_motion_image(file: UploadFile = File(...)):
+    """Analyze an uploaded image as a single-frame static posture.
+
+    This endpoint extracts pose landmarks and returns a posture summary. A
+    single image cannot assess full motion timing, trajectory, or repetition
+    stability.
+    """
+    from app.tools.pose_estimator import (
+        decode_image_bytes_to_rgb,
+        estimate_pose_from_image,
+    )
+    from app.tools.types import ErrorCode
+
+    if not file.filename:
+        raise HTTPException(status_code=422, detail="Image filename is required")
+
+    try:
+        content = await file.read()
+        image_result = decode_image_bytes_to_rgb(content, filename=file.filename)
+        if not image_result.ok:
+            status_code = 503 if image_result.error_code == ErrorCode.CONFIG_MISSING else 422
+            raise HTTPException(
+                status_code=status_code,
+                detail=image_result.error_message or "Invalid image file",
+            )
+
+        pose_result = estimate_pose_from_image(
+            image_result.data,
+            source_name=file.filename,
+        )
+        if not pose_result.ok:
+            status_code = 503 if pose_result.error_code == ErrorCode.CONFIG_MISSING else 422
+            raise HTTPException(
+                status_code=status_code,
+                detail=pose_result.error_message or "Pose estimation failed",
+            )
+
+        sequence = pose_result.data
+        confidence_summary = None
+        warnings = [
+            "单张图片只能分析静态姿态，不能判断动作节奏、轨迹或发力顺序。"
+        ]
+        if sequence.confidence is not None:
+            confidence = sequence.confidence.astype(float)
+            confidence_summary = {
+                "mean": round(float(confidence.mean()), 4),
+                "min": round(float(confidence.min()), 4),
+                "max": round(float(confidence.max()), 4),
+            }
+            if confidence_summary["mean"] < 0.5:
+                warnings.append("关键点整体置信度较低，建议更换清晰、无遮挡的图片。")
+
+        return MotionAnalyzeImageResponse(
+            filename=file.filename,
+            source_type=sequence.source_type,
+            frames=sequence.frames,
+            joints=sequence.joints,
+            pose_model=sequence.pose_model,
+            joint_schema=sequence.joint_schema,
+            confidence_summary=confidence_summary,
+            warnings=warnings,
+            message=(
+                "图片姿态已提取为 PoseSequence。当前返回静态姿态摘要；"
+                "完整动作标准性判断需要视频序列或标准动作库对比。"
+            ),
+        )
+    finally:
+        await file.close()
+
+
+@app.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """Streaming chat: SSE token-by-token output."""
+    memory = _get_or_create_memory(request.user_id)
+
+    state: RouterState = {
+        "user_input": request.message,
+        "user_id": request.user_id,
+        "intent": "",
+        "memory": memory.get_all(),
+        "result": "",
+        "error": None,
+    }
+
+    async def event_stream():
+        # Step 1: Run the graph to get context + prompt
+        graph = _get_router_graph()
+        result_state = graph.invoke(state)
+        prompt = result_state.get("_prompt", "")
+        intent = result_state.get("intent", "chat")
+
+        # Send metadata first
+        yield f"event: meta\ndata: {__import__('json').dumps({'intent': intent})}\n\n"
+
+        if not prompt:
+            # No prompt stored — graph couldn't prepare context
+            fallback = result_state.get("result", "Sorry, I couldn't process that.")
+            yield f"data: {fallback}\n\n"
+            yield "event: done\ndata: {}\n\n"
+            return
+
+        # Step 2: Stream LLM generation token by token
+        from app.llm.loader import LLMLoader
+
+        llm = LLMLoader(
+            model_path=config.model_path,
+            device=config.model_device,
+            max_tokens=config.model_max_tokens,
+            temperature=config.model_temperature,
+            top_p=config.model_top_p,
+        )
+
+        full_reply = ""
+        try:
+            for token in llm.generate_stream(prompt):
+                full_reply += token
+                yield f"data: {token}\n\n"
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            yield f"data: [Error: {e}]\n\n"
+
+        # Save to memory
+        memory.add_turn(request.message, full_reply)
+
+        # Signal completion
+        yield "event: done\ndata: {}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.websocket("/chat/ws")
+async def chat_websocket(websocket: WebSocket):
+    """WebSocket streaming chat — token-by-token via WS protocol.
+
+    Protocol:
+      Client → Server:  {"user_id": "...", "message": "..."}
+      Server → Client:  {"type": "meta", "intent": "chat"}
+      Server → Client:  {"type": "token", "text": "你"}
+      Server → Client:  {"type": "token", "text": "好"}
+      Server → Client:  {"type": "done"}
+      Server → Client:  {"type": "error", "message": "..."}
+    """
+    await websocket.accept()
+    logger.info("WebSocket connected")
+
+    try:
+        # Wait for client message
+        raw = await websocket.receive_text()
+        data = json.loads(raw)
+        user_id = data.get("user_id", "")
+        message = data.get("message", "")
+
+        if not user_id or not message:
+            await websocket.send_json({"type": "error", "message": "Missing user_id or message"})
+            await websocket.close()
+            return
+
+        memory = _get_or_create_memory(user_id)
+
+        state: RouterState = {
+            "user_input": message,
+            "user_id": user_id,
+            "intent": "",
+            "memory": memory.get_all(),
+            "result": "",
+            "error": None,
+        }
+
+        # Step 1: Run graph to build context + get prompt
+        graph = _get_router_graph()
+        result_state = graph.invoke(state)
+        prompt = result_state.get("_prompt", "")
+        intent = result_state.get("intent", "chat")
+
+        # Send metadata
+        await websocket.send_json({"type": "meta", "intent": intent})
+
+        if not prompt:
+            # No prompt — graph couldn't prepare context, send result directly
+            fallback = result_state.get("result", "Sorry, I couldn't process that.")
+            await websocket.send_json({"type": "token", "text": fallback})
+            await websocket.send_json({"type": "done"})
+            memory.add_turn(message, fallback)
+            await websocket.close()
+            return
+
+        # Step 2: Stream LLM tokens via WebSocket
+        # Run sync generation in a thread to avoid blocking the event loop
+        # (which would cause WebSocket keepalive ping timeouts).
+        import asyncio as aio
+        from app.llm.loader import LLMLoader
+
+        llm = LLMLoader(
+            model_path=config.model_path,
+            device=config.model_device,
+            max_tokens=config.model_max_tokens,
+            temperature=config.model_temperature,
+            top_p=config.model_top_p,
+        )
+
+        tokens = await aio.to_thread(lambda: list(llm.generate_stream(prompt)))
+        full_reply = ""
+        for token in tokens:
+            full_reply += token
+            await websocket.send_json({"type": "token", "text": token})
+
+        # Signal completion
+        await websocket.send_json({"type": "done"})
+
+        # Save to memory
+        memory.add_turn(message, full_reply)
+        logger.info(f"WebSocket stream complete: {len(full_reply)} chars, intent={intent}")
+
+    except WebSocketDisconnect:
+        logger.info("WebSocket disconnected by client")
+    except json.JSONDecodeError:
+        await websocket.send_json({"type": "error", "message": "Invalid JSON"})
+    except Exception as e:
+        logger.exception(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+# Static files — serve the web UI
+import os
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(static_dir):
+    app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="static")

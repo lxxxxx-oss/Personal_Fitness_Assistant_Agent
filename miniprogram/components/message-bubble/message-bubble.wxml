@@ -1,0 +1,23 @@
+<!-- 消息气泡组件模板 -->
+<view class="bubble-wrapper {{role}} {{isError ? 'error' : ''}}" id="msg-{{msgId}}">
+
+  <!-- 意图标签 (仅 assistant) -->
+  <view class="intent-row" wx:if="{{role === 'assistant' && intentInfo}}">
+    <text class="intent-tag" style="color: {{intentInfo.color}}; background: {{intentInfo.bgColor}};">
+      {{intentInfo.icon}} {{intentInfo.label}}
+    </text>
+  </view>
+
+  <!-- 消息内容 -->
+  <view class="bubble {{role}} {{isError ? 'error-bubble' : ''}}">
+    <text class="content" wx:if="{{!isStreaming}}" selectable>{{displayContent}}</text>
+    <text class="content streaming" wx:else>
+      {{displayContent}}<text class="cursor">▊</text>
+    </text>
+  </view>
+
+  <!-- 时间戳 -->
+  <view class="timestamp" wx:if="{{formattedTime && !isStreaming}}">
+    <text>{{formattedTime}}</text>
+  </view>
+</view>

@@ -1,0 +1,70 @@
+<view class="chat-container">
+  <!-- 意图标签栏 -->
+  <view class="intent-bar">
+    <scroll-view scroll-x enhanced show-scrollbar="{{false}}" class="intent-scroll">
+      <view class="intent-list">
+        <intent-badge
+          wx:for="{{intentList}}"
+          wx:key="key"
+          intent="{{item.key}}"
+          active="{{item.key === currentIntent}}"
+          size="small"
+        />
+      </view>
+    </scroll-view>
+  </view>
+
+  <!-- 消息列表 -->
+  <scroll-view
+    class="message-list"
+    scroll-y
+    enhanced
+    show-scrollbar="{{false}}"
+    scroll-into-view="{{scrollToId}}"
+    scroll-with-animation
+  >
+    <view class="message-container">
+      <message-bubble
+        wx:for="{{messages}}"
+        wx:key="id"
+        role="{{item.role}}"
+        intent="{{item.intent}}"
+        content="{{item.content}}"
+        isStreaming="{{item.isStreaming}}"
+        isError="{{item.isError}}"
+        timestamp="{{item.timestamp}}"
+        msgId="{{item.id}}"
+      />
+    </view>
+    <view class="bottom-spacer"></view>
+  </scroll-view>
+
+  <!-- 输入栏 -->
+  <view class="input-bar safe-area-bottom">
+    <input
+      class="msg-input"
+      type="text"
+      value="{{inputValue}}"
+      placeholder="输入你的问题..."
+      placeholder-class="input-placeholder"
+      bindinput="onInput"
+      bindconfirm="sendMessage"
+      confirm-type="send"
+      disabled="{{isSending}}"
+      maxlength="1000"
+      cursor-spacing="20"
+    />
+    <button
+      class="send-btn {{inputValue ? 'active' : ''}}"
+      bindtap="sendMessage"
+      disabled="{{!inputValue || isSending}}"
+    >
+      {{isSending ? '...' : '发送'}}
+    </button>
+  </view>
+
+  <!-- 重试提示 -->
+  <view class="retry-banner" wx:if="{{showRetry}}" bindtap="retrySend">
+    <text>⚠️ 网络连接异常，点击重试</text>
+  </view>
+</view>

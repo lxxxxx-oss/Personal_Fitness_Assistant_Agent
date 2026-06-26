@@ -1,0 +1,38 @@
+/* 意图标签组件样式 */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6rpx;
+  padding: 8rpx 20rpx;
+  border-radius: 24rpx;
+  border: 2rpx solid #334155;
+  background: #1e293b;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.badge.active {
+  border-width: 2rpx;
+}
+
+.badge.large {
+  padding: 12rpx 28rpx;
+}
+
+.badge.large .icon {
+  font-size: 28rpx;
+}
+
+.badge.large .label {
+  font-size: 26rpx;
+}
+
+.icon {
+  font-size: 22rpx;
+}
+
+.label {
+  font-size: 22rpx;
+  color: #94a3b8;
+}

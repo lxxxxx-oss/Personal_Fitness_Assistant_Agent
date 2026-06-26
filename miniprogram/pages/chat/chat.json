@@ -1,0 +1,8 @@
+{
+  "usingComponents": {
+    "message-bubble": "/components/message-bubble/message-bubble",
+    "intent-badge": "/components/intent-badge/intent-badge"
+  },
+  "navigationBarTitleText": "健身助手",
+  "disableScroll": true
+}

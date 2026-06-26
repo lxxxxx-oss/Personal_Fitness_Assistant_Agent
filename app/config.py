@@ -1,0 +1,90 @@
+"""全局配置管理."""
+import os
+from dataclasses import dataclass, field
+
+
+def _get_int_env(name: str, default: int) -> int:
+    """Read an integer environment variable with a safe fallback."""
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _get_float_env(name: str, default: float) -> float:
+    """Read a float environment variable with a safe fallback."""
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+@dataclass
+class Config:
+    # LLM
+    model_path: str = field(
+        default_factory=lambda: os.getenv(
+            "MODEL_PATH",
+            "D:/Users/Agent/model/models/Qwen/Qwen3-0___6B",
+        )
+    )
+    model_device: str = field(default_factory=lambda: os.getenv("MODEL_DEVICE", "cpu"))
+    model_max_tokens: int = field(
+        default_factory=lambda: _get_int_env("MODEL_MAX_TOKENS", 1024)
+    )
+    model_temperature: float = field(
+        default_factory=lambda: _get_float_env("MODEL_TEMPERATURE", 0.6)
+    )
+    model_top_p: float = field(default_factory=lambda: _get_float_env("MODEL_TOP_P", 0.95))
+    llm_mock: bool = field(
+        default_factory=lambda: os.getenv("LLM_MOCK", "").lower() in {"1", "true", "yes"}
+    )
+
+    # Memory
+    memory_max_turns: int = field(
+        default_factory=lambda: _get_int_env("MEMORY_MAX_TURNS", 6)
+    )
+
+    # Retriever
+    retriever_top_k: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_TOP_K", 5)
+    )
+    retriever_threshold: float = field(
+        default_factory=lambda: _get_float_env("RETRIEVER_THRESHOLD", 0.5)
+    )
+    embedding_model: str = field(
+        default_factory=lambda: os.getenv(
+            "EMBEDDING_MODEL",
+            "shibing624/text2vec-base-chinese",
+        )
+    )
+
+    # Tavily Search
+    tavily_api_key: str = field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))
+
+    # Motion
+    motion_library_dir: str = field(
+        default_factory=lambda: os.getenv("MOTION_LIBRARY_DIR", "data/motions")
+    )
+    react_max_iterations: int = field(
+        default_factory=lambda: _get_int_env("REACT_MAX_ITERATIONS", 5)
+    )
+
+    # MCP
+    mcp_server_command: str = field(
+        default_factory=lambda: os.getenv("MCP_SERVER_COMMAND", "howtocook-mcp")
+    )
+
+    # API
+    api_host: str = field(default_factory=lambda: os.getenv("API_HOST", "127.0.0.1"))
+    api_port: int = field(default_factory=lambda: _get_int_env("API_PORT", 8000))
+
+
+# 全局单例
+config = Config()

@@ -1,0 +1,12 @@
+健身智能助手 Agent
+技术栈
+Python +LangGraph +Milvus + Sentence-Transformers + MCP + NumPy + Docker
+项目描述
+基于LangGraph图编排框架构建的多任务LLM系统，集成联网搜索、3D动作分析、饮食推荐与RAG知识问答四类功能模块。系统采用StateGraph构建顶层路由图，通过关键词规则实现意图分流，并调度不同子工作流(Search/Motion/Chat/MCPTool)执行任务，形成“路由层+执行层”的两级图结构。同时集成自实现MCP客户端与Milvus向量数据库，实现外部工具调用与知识检索增强生成。
+技术亮点
+1、实现3D运动动作相似度分析模块:加载3D人体姿态关键点数据(.npz格式)，实现姿态归一化、关节角度计算FastDTW时间序列对齐及多维度相似度指标(DTW距离、余弦相似度、形状差异)的动作对比算法。基于ReAct思
+想实现运动分析Agent推理链路:采用think→parse→tool→check状态流，支持LLM自主工具调用、工具参数解析、状态路由与最大迭代控制。
+2、基于 MCp 协议实现外部工具集成模块:自实现轻量级MCP Client，采用 subprocess+stdio与 howtocook-mcp Server建立JSON-RPC通信，支持initialize握手、工具发现、工具调用及响应解析。
+3、基于 Milvus 搭建健身健美领域 RAG检索模块:实现中文 sentence -aware 文本分块、sentence -transformer 向量化编码、IVF_FLATANN索引与COSINE 相似度检索，并设计阈值过滤、去重与排序后处理链路。
+4、集成Tavily 联网搜索:实现Query Understanding →Tavily Search→Answer Synthesis三阶段链路;LLM 对用户问题进行query rewrite与关键词优化，调用Tavily API实时检索互联网信息，并基于搜索结果生成带来源信息的结构化回答。
+5、实现滑动窗口会话记忆模块:基于collections.deque实现可配置容量的滑动窗口记忆系统，支持记忆的添加、获取逐条淘汰与清空操作;在不同LLM应用模块中引入统一的滑动窗口记忆层，将最近6轮对话作为共享上下文注入，实现跨任务的短期记忆一致性与对话连续性。

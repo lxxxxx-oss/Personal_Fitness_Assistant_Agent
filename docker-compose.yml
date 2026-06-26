@@ -1,0 +1,13 @@
+services:
+  fitness-assistant:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - D:/Users/Agent/model/models/Qwen/Qwen3-0___6B:/models/Qwen3-0.6B:ro
+    environment:
+      - MODEL_PATH=/models/Qwen3-0.6B
+      - MODEL_DEVICE=cpu
+      - TAVILY_API_KEY=${TAVILY_API_KEY:-}
+    restart: unless-stopped

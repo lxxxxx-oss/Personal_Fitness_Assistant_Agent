@@ -1,0 +1,34 @@
+{
+  "pages": [
+    "pages/chat/chat",
+    "pages/history/history"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#0f172a",
+    "navigationBarTitleText": "健身助手",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0f172a"
+  },
+  "tabBar": {
+    "color": "#94a3b8",
+    "selectedColor": "#38bdf8",
+    "backgroundColor": "#1e293b",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/chat/chat",
+        "text": "对话",
+        "iconPath": "images/chat.png",
+        "selectedIconPath": "images/chat-active.png"
+      },
+      {
+        "pagePath": "pages/history/history",
+        "text": "历史",
+        "iconPath": "images/history.png",
+        "selectedIconPath": "images/history-active.png"
+      }
+    ]
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

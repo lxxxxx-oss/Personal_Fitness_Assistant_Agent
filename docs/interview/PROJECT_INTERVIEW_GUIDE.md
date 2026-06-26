@@ -1,0 +1,1745 @@
+# AI Agent 岗位面试项目讲解手册
+
+## 0. 使用方式
+
+这份文档用于帮助你围绕“健身智能助手 Agent”项目准备 AI Agent / LLM 应用开发岗位面试。
+
+它不是简历文案，而是面试复习手册，目标是让你能回答三类问题：
+
+1. **项目讲解类**：这个项目是做什么的？架构怎么设计？你负责了什么？
+2. **代码深挖类**：路由、子图、RAG、MCP、流式输出、动作分析具体怎么实现？
+3. **质疑反问类**：是不是套壳？为什么不用 LangChain Agent？为什么没上 Milvus？算法可靠吗？
+
+准备建议：
+
+- 先背第 1、2、3 节，保证项目能讲清楚。
+- 再看第 4、5 节，掌握代码调用链和模块职责。
+- 最后重点刷第 8、9、10 节，应对面试官深挖。
+
+## 1. 项目一句话定位
+
+### 1.1 面试开场版
+
+> 这是一个基于 LangGraph 的多任务健身智能助手 Agent。它不是简单把用户问题丢给大模型，而是先通过顶层 Router 做意图识别，再分发到不同专业子图，包括 RAG 健身知识问答、联网搜索、饮食推荐、3D 动作分析和 MCP 菜谱工具调用。项目同时支持 FastAPI 后端、SSE/WebSocket 流式输出、Web UI 和微信小程序端。
+
+### 1.2 更偏 AI Agent 岗位的版本
+
+> 这个项目的核心不是简单多挂几个 LangGraph 子图，而是把一个健身助手拆成“异构能力编排”的 Agent：最新信息交给搜索，领域知识交给 RAG，动作判断交给数值算法工具，菜谱能力通过 MCP 工具协议接入，LLM 主要负责语义理解、改写、画像提取、结果解释和自然语言生成。相比普通 Prompt 调用，它更强调 Agent 的路由、工具调用、状态管理、错误降级和可评测性。
+
+### 1.3 诚实边界版
+
+> 当前项目已经实现了主要后端子图、RAG、MCP Client、动作分析算法、`/motion/analyze` 上传接口、SSE/WebSocket 流式接口和小程序代码。但它还不是生产级系统：Milvus 还没真正接入，目前是内存向量检索；动作分析缺标准动作库数据；Docker 和小程序端到端还需要进一步验证。
+
+## 2. 面试时的三分钟完整讲法
+
+可以按这个顺序讲：
+
+> 这个项目是一个健身领域的多任务 AI Agent。用户可以问健身知识、查最新资讯、要饮食建议、问菜谱做法，也可以上传或描述动作分析需求。
+>
+> 架构上，我没有把所有问题都交给一个 Prompt，而是用 LangGraph 做了两层编排。第一层是 Router，用加权规则 + 语义样例 fallback 做意图分类，并预留 LLM classifier fallback 契约，把用户输入分到 `chat`、`search`、`diet`、`motion`、`mcp` 五类，并记录路由分数、置信度和原因。第二层是执行层，每个能力都是一个独立子图，有自己的流程。
+>
+> 比如 Chat 子图是 RAG：先从 `data/knowledge` 加载健身和营养知识，用 Sentence-Transformer 编码，NumPy 做余弦相似度检索，再把检索内容和滑动窗口记忆一起注入 Prompt。Search 子图先让 LLM 做 query rewrite，再调用 Tavily 搜索，最后合成带来源的回答。Diet 子图先提取用户画像，再检索营养知识，生成个性化饮食方案。
+>
+> Motion 子图比较特别，它实现了 ReAct 风格的链路：`think -> parse -> tool -> check`。LLM 只负责分析意图和最终解释，真正的工具执行是确定性数值算法，包括姿态归一化、关节角度计算、FastDTW 对齐和多指标相似度计算。
+>
+> MCP 子图则是自实现了一个轻量级 MCP Client，用 subprocess 启动 howtocook-mcp Server，通过 stdin/stdout 做 JSON-RPC 2.0 通信，支持工具发现和工具调用，也支持 mock 降级。
+>
+> 工程上，后端用 FastAPI 暴露 `/chat`、`/chat/stream`、`/chat/ws`、历史记录等接口；流式输出通过图执行和 LLM 生成分层解决；前端有 Web UI 和微信小程序。测试层面有 router、retriever、motion_tool、mcp_client、API 和 integration 测试，外部依赖都做了 mock 策略。
+>
+> 这个项目的亮点不是模型有多大，而是把 LLM 应用工程化成了一个可路由、可检索、可调用工具、可流式交互、可降级的 Agent 系统。
+
+## 3. 简历/面试亮点怎么包装才不虚
+
+### 3.1 可以重点包装的亮点
+
+#### 亮点 1：不是多挂几个子图，而是异构能力编排
+
+贴合实际的说法：
+
+> 我用 LangGraph 做的不是为了展示“节点很多”，而是把健身场景里不同性质的任务拆成不同执行范式：知识问答走 RAG，最新资讯走联网搜索，饮食建议结合用户画像和营养知识，动作分析走数值算法工具，菜谱能力通过 MCP 工具协议调用。Router 用加权规则和语义样例 fallback 做可解释分发，并记录 `_route_scores`、`_route_confidence` 和 `_route_reason`。所以子图只是实现手段，真正想体现的是 LLM、检索、搜索、算法工具和外部工具协议的协同。
+
+不要说：
+
+> 我实现了完全自主的多智能体协作系统。
+
+原因：当前项目更准确地说是多任务子图编排，不是多个自治 Agent 互相协商。
+
+面试防守：
+
+> 如果只是“Router 后面接五个节点”，确实不复杂，甚至可以用 if else 实现。这个项目的价值不在于子图数量，而在于每个子图承载的是不同任务生命周期：Search 不只是调用搜索工具，还包括 query rewrite、搜索、来源合成和失败降级；Motion 不只是一个函数调用，还包括意图解析、姿态数据工具计算、结果检查和 LLM 解释。只有当一个能力有多阶段处理、状态传递、失败回退或独立评测需求时，我才把它抽成子图。
+
+#### 亮点 2：确定性逻辑和 LLM 分工清楚
+
+贴合实际的说法：
+
+> 我没有让 LLM 负责所有决策。像意图分类、工具参数解析、姿态计算、参数校验这些确定性任务，尽量用规则或数值算法；LLM 主要负责语义改写、画像提取、结果解释和自然语言生成。
+
+这很适合 AI Agent 岗位，因为能体现你知道 LLM 什么时候该用、什么时候不该用。
+
+#### 亮点 3：自实现 MCP Client
+
+贴合实际的说法：
+
+> MCP 部分没有直接依赖官方 SDK，而是实现了 subprocess + stdio 的 JSON-RPC 客户端，包括 initialize 握手、initialized 通知、tools/list 工具发现和 tools/call 调用，同时支持 mock 模式。
+
+不要说：
+
+> 我完整实现了 MCP 协议的所有能力。
+
+原因：当前实现覆盖项目需要的核心链路，但不是完整 MCP 生态级实现。
+
+#### 亮点 4：Motion 子图体现 ReAct 思路，但结果来自工具
+
+贴合实际的说法：
+
+> 动作分析子图用了 ReAct 思路，但我没有让 LLM 直接判断动作好坏，而是把动作相似度交给 NumPy/FastDTW 工具计算，LLM 只解读结果。当前已实现 `.npz` 姿态序列分析链路，也新增了图片单帧静态姿态分析入口；视频上传和标准动作库对比仍是后续优化。
+
+这能回答“Agent 会不会幻觉”的质疑。
+
+#### 亮点 5：流式输出架构处理了图执行与 token streaming 的矛盾
+
+贴合实际的说法：
+
+> LangGraph 的图执行是同步构建上下文，而用户体验需要 token 流式输出。所以我让子图先构造 `_prompt`，再由 SSE/WebSocket 层调用 `LLMLoader.generate_stream()` 输出 token，实现图编排和流式生成解耦。
+
+### 3.2 核心卖点和防守主线
+
+这个项目最适合包装的核心创新点不是“用了 LangGraph 多子图”，而是：
+
+> 面向健身场景的异构能力编排 Agent：用可评测 Router 把 RAG、联网搜索、动作分析算法和 MCP 工具调用组合成一个统一助手，解决单一大模型不能稳定解决的任务。
+
+#### 为什么不能只说“多子图”
+
+如果只说“顶层 Router 下面挂了 chat/search/diet/motion/mcp 五个子图”，面试官很容易觉得：
+
+> 这不就是 if else 分发到几个函数吗？
+
+所以面试时要主动把重点从“子图数量”转到“任务性质不同”：
+
+- Chat / Diet：需要本地知识库、记忆和领域约束，适合 RAG。
+- Search：需要最新信息和来源，单纯本地大模型可能过时。
+- Motion：需要读取姿态数据并做数值计算，不能让 LLM 凭空判断。
+- MCP：体现外部工具协议和工具发现，不是让 LLM 硬编菜谱。
+- Router：负责把这些异构能力用可解释、可评测的方式组织起来。
+
+更稳的说法：
+
+> 从图结构看，顶层 Router 分发到多个子图并不复杂，复杂度也不是我想夸大的点。我真正想体现的是健身助手里不同任务的执行范式不同：知识问答靠 RAG，最新资讯靠搜索，动作判断靠算法工具，菜谱靠外部工具协议。LangGraph 在这里的价值是把这些不同流程用统一状态协议编排起来，并让路由、状态、失败回退和评测显式化。
+
+#### 为什么不是 toy
+
+个人项目可以在工程完备性上弱一些，但不能像 toy demo。这个项目“不太 toy”的地方主要有三点：
+
+1. **不是只有 Prompt**：Motion、Search、RAG、MCP 都引入了模型外部能力。
+2. **不是黑盒 Agent**：Router 有 `_route_scores`、`_route_confidence`、`_route_reason`，并且有 66 条绿色回归 eval、20 条 challenge eval 和 evaluation slices。
+3. **不是把所有任务都丢给 LLM**：确定性任务交给规则、检索、数值算法和工具协议，LLM 只负责它擅长的理解、改写、解释和生成。
+
+可以这样讲：
+
+> 我判断一个 Agent 是否有价值，标准不是它用了几个子图，而是它有没有解决单纯大模型不能稳定解决的问题。这个项目里，最新资讯需要搜索，动作分析需要算法工具，RAG 需要受控知识源，MCP 需要外部工具协议。LLM 在系统里不是唯一执行者，而是被放在更适合的位置。
+
+#### 最吸引面试官的排序
+
+如果面试时间有限，建议按这个优先级讲：
+
+1. **Motion 动作分析**：最有辨识度，因为它把姿态数据、NumPy/FastDTW 和 LLM 解释结合起来，能证明不是纯文本套壳；同时要诚实说明当前用户媒体输入还在技术路线阶段。
+2. **可评测 Router**：体现不是随手写 if else，而是有置信度、原因、评测集和切片统计。
+3. **异构能力编排**：把 RAG、Search、Motion、MCP 统一成一个对话入口。
+4. **MCP 工具协议**：作为加分项，体现外部工具生态接入。
+5. **SSE/WebSocket/小程序/Docker**：作为工程完整度补充，不建议作为核心创新点。
+
+不建议主打：
+
+- FastAPI 接口。
+- Web UI。
+- Docker。
+- 小程序端。
+- 本地模型加载。
+
+这些可以说明项目完整，但它们不是最能打动 AI Agent 面试官的核心。
+
+#### 一句话回答“最大亮点”
+
+> 最大亮点是我没有把健身助手做成一个普通聊天机器人，而是做成了一个异构能力编排 Agent。它会先用可评测 Router 判断任务类型，再把问题交给 RAG、联网搜索、饮食推荐、动作分析算法或 MCP 工具调用。这样大模型不负责所有事情，而是和检索、搜索、数值算法、外部工具协作，降低幻觉并提升可控性。
+
+#### 如果被质疑“这是不是冗余设计”
+
+可以回答：
+
+> 如果一个功能完全可以被一次 Prompt 稳定解决，那确实没必要包装成 Agent。比如单纯解释健身概念，直接问大模型就可以。所以我不会把 Chat 子图说成核心创新。这个项目真正强调的是那些单一大模型不稳定或做不到的部分：最新信息、来源追溯、姿态数据计算、受控知识库和外部工具调用。子图只是组织这些能力的方式，不是创新本身。
+
+### 3.3 诚实版边界
+
+面试官如果追问项目完成度，可以这样说：
+
+> 当前项目主体链路已经完成，但还有几个工程化待完善点：第一，向量检索现在是内存 NumPy，没有真正切到 Milvus；第二，动作分析算法、`/motion/analyze` 的 `.npz` 上传接口和 `/motion/analyze-image` 的图片静态姿态入口已实现，但缺标准动作库数据，视频上传还需要补抽帧和时序分析；第三，Docker 和小程序端到端联调还需要进一步验证。
+
+这样回答不会显得虚，反而显得你对项目边界清楚。
+
+## 4. 代码总览：从用户请求到回答
+
+### 4.1 后端入口
+
+核心文件：
+
+```text
+app/main.py
+```
+
+主要接口：
+
+```text
+GET /health
+POST /chat
+POST /chat/stream
+WebSocket /chat/ws
+GET /chat/{user_id}/history
+DELETE /chat/{user_id}/history
+GET /ui
+```
+
+`/chat` 调用链：
+
+```text
+ChatRequest
+  -> _get_or_create_memory(user_id)
+  -> 构造 RouterState
+  -> _get_router_graph()
+  -> graph.invoke(state)
+  -> 读取 result_state["result"] 和 intent
+  -> memory.add_turn()
+  -> ChatResponse
+```
+
+面试解释：
+
+> FastAPI 只负责协议层和会话记忆管理，真正业务处理交给 LangGraph。每个请求会构造一个 `RouterState`，里面包含用户输入、用户 ID、历史记忆、intent、result 和 error 等字段。
+
+### 4.2 全局状态 RouterState
+
+核心文件：
+
+```text
+app/graph/state.py
+```
+
+字段：
+
+```python
+user_input: str
+user_id: str
+intent: str
+memory: List[Dict[str, str]]
+result: str
+error: Optional[str]
+_prompt: str
+_route_scores: Dict[str, float]
+_route_confidence: float
+_route_reason: str
+_route_source: str
+_route_matches: List[str]
+```
+
+为什么 `total=False`：
+
+> 因为不同子图会挂载自己的临时状态，比如 `_retrieved`、`_search_results`、`_tool_results`、`_user_profile`。Router 也会挂载 `_route_scores`、`_route_confidence`、`_route_reason` 等调试字段。`total=False` 允许 TypedDict 承载不同子图的内部字段。
+
+面试可说：
+
+> `RouterState` 是整个 Agent 的状态协议。所有子图共享基础字段，同时允许挂载临时字段，这样既有统一接口，也保留了子图扩展性。
+
+### 4.3 顶层 Router
+
+核心文件：
+
+```text
+app/graph/router.py
+```
+
+核心逻辑：
+
+```text
+intent_classify
+  -> conditional_edges
+      search / motion / diet / chat / mcp
+  -> finalize
+```
+
+意图分类：
+
+```python
+WEIGHTED_RULES = {
+    "search": [("搜索", 6.0), ("查一下", 6.0), ("最新", 4.5), ("最近", 1.5)],
+    "motion": [(".npz", 8.0), ("动作分析", 7.0), ("姿势", 5.0), ("深蹲", 4.0)],
+    "diet": [("减脂", 5.0), ("怎么吃", 5.0), ("瘦一点", 5.0), ("控制体重", 5.0)],
+    "mcp": [("菜谱", 6.0), ("烹饪", 5.0), ("番茄炒蛋", 6.0), ("怎么做", 3.0)],
+}
+
+COMBO_RULES = [
+    ("diet", ("最近", "瘦"), 5.0, "recent weight-loss intent"),
+    ("search", ("最近", "新闻"), 5.0, "recent news"),
+    ("motion", ("深蹲", "哪里不对"), 5.0, "squat issue"),
+    ("mcp", ("怎么做", "番茄"), 5.0, "cooking recipe"),
+]
+```
+
+为什么用加权规则 + 语义样例，而不是直接 LLM 分类：
+
+> 这里的意图类别少，很多触发词明确，用加权规则更稳定、成本更低、延迟更小，也避免 LLM 把确定性任务做错。相比旧的“命中第一个关键词就返回”，加权规则会综合所有命中项和组合模式；规则低置信时再用语义样例相似度补判，能处理“我想把身材调整得更轻盈一点”这类隐式表达。
+
+如果被质疑“规则路由还是不够智能”：
+
+> 是的，当前还是轻量 hybrid router：Phase 1 是 weighted rule scoring，Phase 2 是 semantic example fallback。它还不是完整 embedding classifier 或 LLM router。生产环境可以继续升级：规则高置信命中时直接路由，规则不确定时再走 Sentence-Transformer embedding router 或 LLM classifier。
+
+## 5. 五个子图怎么讲
+
+### 5.1 Chat 子图：RAG 健身知识问答
+
+核心文件：
+
+```text
+app/graph/subgraphs/chat.py
+app/tools/retriever.py
+data/knowledge/
+```
+
+流程：
+
+```text
+retrieve -> generate
+```
+
+实现细节：
+
+1. `retrieve_node` 从共享 retriever 检索相关知识。
+2. `generate_node` 拼接：
+   - 检索上下文。
+   - 最近对话记忆。
+   - 用户问题。
+   - 回答规则。
+3. 调用 `LLMLoader.generate()` 得到回答。
+4. 将 Prompt 存入 `state["_prompt"]`，供流式接口复用。
+
+RAG 检索器：
+
+```text
+MemoryRetriever
+  -> add_documents()
+  -> _chinese_sentence_split()
+  -> SentenceTransformer.encode()
+  -> np.dot() 余弦相似度
+  -> threshold filter
+  -> top_k
+  -> deduplicate
+```
+
+降级策略：
+
+> 如果 Sentence-Transformer 加载失败，retriever 会降级为关键词匹配。这样模型没下载或离线环境下，系统不会完全不可用。
+
+面试深挖点：
+
+**为什么现在没用 Milvus？**
+
+> 当前知识库规模小，用内存 NumPy 可以减少部署复杂度。代码上把检索封装在 `MemoryRetriever` 里，上层只依赖 `search()` 接口，所以后续迁移 Milvus 时主要替换检索器实现，不影响子图调用。
+
+**RAG 的质量瓶颈在哪里？**
+
+> 主要在知识分块、检索模型和阈值。项目里做了 sentence-aware 分块，避免固定长度切断语义；检索后做阈值过滤和去重，避免把低相关上下文塞进 Prompt。
+
+### 5.2 Search 子图：联网搜索
+
+核心文件：
+
+```text
+app/graph/subgraphs/search.py
+app/tools/search_tool.py
+```
+
+流程：
+
+```text
+query_understanding -> search -> synthesis
+```
+
+各节点职责：
+
+- `query_understanding_node`：LLM 将用户问题改写成搜索关键词。
+- `search_node`：调用 TavilySearchTool。
+- `synthesis_node`：LLM 基于搜索结果生成带来源的回答。
+
+为什么要 query rewrite：
+
+> 用户问题往往是口语化的，比如“我膝盖老响是不是深蹲错了”，直接搜索效果不稳定。先提取核心关键词，可以提高搜索结果相关性。
+
+降级策略：
+
+> 没有 `TAVILY_API_KEY` 时使用 mock 结果，保证测试和演示不依赖外部网络。
+
+面试可能问：
+
+**搜索结果如何防止胡编？**
+
+回答：
+
+> Prompt 里要求基于搜索结果回答，并标注来源编号。如果搜索结果不足，要说明未找到相关信息，然后只给通用建议。但这个还不是严格事实校验系统，生产级可以加入 source grounding、引用片段校验和回答后验检查。
+
+### 5.3 Diet 子图：饮食推荐
+
+核心文件：
+
+```text
+app/graph/subgraphs/diet.py
+```
+
+流程：
+
+```text
+extract_profile -> retrieve_nutrition -> recommend
+```
+
+各节点职责：
+
+- `extract_profile_node`：从用户输入提取 JSON 画像。
+- `retrieve_nutrition_node`：基于问题和画像检索营养知识。
+- `recommend_node`：生成结构化饮食建议。
+
+为什么先提取画像：
+
+> 饮食推荐高度依赖用户身高、体重、目标、偏好。先结构化画像，可以让后续检索和生成更个性化，也便于发现信息缺失时反问用户。
+
+可以强调：
+
+> 这里体现了 Agent 中常见的“先结构化理解，再工具/知识增强，再生成”的流程。
+
+边界：
+
+> 它不是医疗营养系统，不做疾病诊断；Prompt 中也要求避免极端饮食并提醒有基础疾病咨询医生。
+
+### 5.4 Motion 子图：3D 动作分析
+
+核心文件：
+
+```text
+app/graph/subgraphs/motion.py
+app/tools/motion_tool.py
+```
+
+媒体输入技术路线详见：
+
+```text
+docs/interview/motion/MOTION_MEDIA_PIPELINE_DESIGN.md
+```
+
+流程：
+
+```text
+think -> parse -> tool -> check
+```
+
+这是最适合包装成技术亮点的模块。
+
+#### ReAct 设计怎么讲
+
+> Motion 子图借鉴 ReAct，把“思考、解析、执行工具、检查结果”拆成不同节点。但它不是让 LLM 自由调用任意工具，而是用图结构控制流程，用确定性代码解析参数，用数值算法执行分析。
+
+各节点职责：
+
+- `think_node`：LLM 根据用户输入和动作库情况制定分析计划。
+- `parse_node`：从用户输入中解析 `.npz` 文件路径和标准动作名称。
+- `tool_node`：加载姿态数据，执行相似度计算。
+- `check_node`：LLM 根据工具结果生成动作报告。
+- `should_continue`：根据 `_tools_to_call` 和迭代次数决定是否执行工具。
+
+#### 动作分析算法怎么讲
+
+输入：
+
+```text
+pose shape = (T, J, 3)
+T = 帧数
+J = 关键点数量
+3 = x/y/z 坐标
+```
+
+算法链路：
+
+```text
+load_npz_pose
+  -> normalize_pose
+  -> compute_similarity
+      -> FastDTW
+      -> cosine similarity
+      -> shape difference
+  -> labels + overall_verdict
+```
+
+关键算法：
+
+1. **姿态归一化**
+
+```python
+center = keypoints[0]
+centered = keypoints - center
+scale = mean(norm(centered))
+normalized = centered / scale
+```
+
+作用：
+
+> 消除人体位置和体型尺度差异，让比较更关注动作形态。
+
+2. **关节角度计算**
+
+```text
+angle(p1-p2-p3) = arccos(dot(v1, v2) / (|v1| * |v2|))
+```
+
+作用：
+
+> 用三点法计算关节夹角，比如膝角、肘角、髋角。
+
+3. **FastDTW 时间序列对齐**
+
+问题：
+
+> 两个人做同一个动作速度不同，帧数不同，不能直接第 i 帧对第 i 帧比较。
+
+解决：
+
+> 使用 FastDTW 做动态时间规整，对齐动作序列节奏。
+
+4. **多指标相似度**
+
+| 指标 | 含义 |
+|---|---|
+| DTW 距离 | 衡量动作节奏/时序差异 |
+| 余弦相似度 | 衡量整体姿态方向一致性 |
+| 形状差异 | 衡量动作幅度和轨迹形态差异 |
+
+为什么不是只用一个分数：
+
+> 单一指标容易误判。比如 DTW 距离小可能说明节奏相似，但动作幅度可能不对；余弦相似度高可能说明方向一致，但深度不足。多个指标能更细地解释问题。
+
+#### 诚实边界
+
+> 这个模块算法链路已经实现，但当前缺标准动作库 `.npz` 数据，所以完整的“用户动作 vs 标准动作”对比需要补数据。同时它只能提供参考分析，不能替代专业教练或物理治疗师。
+
+#### 用户上传图片/视频怎么办
+
+面试官很可能会追问：
+
+> 普通用户不会上传 `.npz`，那这个动作分析怎么真正使用？
+
+建议回答：
+
+> `.npz` 在当前项目里是内部姿态序列格式，不是最终用户输入形态。现在项目已经新增 `/motion/analyze-image`，可以把单张图片转成 `PoseSequence(T=1)` 并返回静态姿态摘要。后续视频场景还需要补 `视频 -> 抽帧 -> PoseSequence(T=N)`，再复用已有 Motion 分析工具做时序对齐和标准动作库对比。
+
+推荐技术路线：
+
+```text
+图片 / 视频
+  -> MediaPipe Pose / MoveNet / RTMPose / OpenPose
+  -> PoseSequence(T, J, C)
+  -> 内部 .npz 或 ndarray
+  -> normalize_pose + FastDTW + cosine similarity + shape difference
+  -> LLM 解释报告
+```
+
+一句话完整流程：
+
+> 用户上传图片或视频后，系统先用开源姿态估计模型提取人体关键点，再转成统一 PoseSequence；`.npz` 主要作为内部持久化、调试和标准动作库格式。Motion 分析层不会直接硬比坐标，而是先做归一化，再计算关节角度、轨迹、节奏和标准动作库相似度，最后由 LLM 把这些指标解释成专业但易懂的动作建议。
+
+当前代码边界：
+
+> 图片入口已经能做单帧姿态提取和置信度摘要，但不能判断完整动作节奏、轨迹或发力顺序；视频入口和标准动作库仍待补。
+
+为什么不从零训练模型：
+
+> 个人项目从零训练人体姿态估计模型不划算，也不符合工程主流路线。更合理的是先接 MediaPipe Pose 这类成熟模型打通链路，后续如果要提升精度，再把姿态估计模块替换成 MoveNet、RTMPose 或 OpenPose。标准动作库也可以用标准动作视频离线生成 `.npz`，不需要手工准备关键点。
+
+图片和视频的边界要分清：
+
+| 输入 | 可以讲什么 | 不能夸大什么 |
+|---|---|---|
+| 单张图片 | 静态姿态、明显关节位置、底部姿势等 | 动作节奏、轨迹、完整发力过程 |
+| 视频 | 动作周期、幅度、节奏、轨迹、与标准动作对齐 | 医疗诊断、复杂遮挡下的稳定判断 |
+| `.npz` | 算法测试、标准库、离线评测 | 普通用户直接使用 |
+
+### 5.5 MCP 子图：菜谱工具调用
+
+核心文件：
+
+```text
+app/graph/subgraphs/mcp.py
+app/tools/mcp_client.py
+```
+
+流程：
+
+```text
+discover -> plan -> execute -> format
+```
+
+MCPClient 做了什么：
+
+```text
+connect()
+  -> resolve command
+  -> subprocess.Popen()
+  -> initialize JSON-RPC
+  -> notifications/initialized
+
+list_tools()
+  -> tools/list
+
+call_tool()
+  -> tools/call
+  -> extract content[0].text
+  -> JSON parse fallback
+```
+
+支持的工具：
+
+- `mcp_howtocook_getAllRecipes`
+- `mcp_howtocook_getRecipesByCategory`
+- `mcp_howtocook_recommendMeals`
+- `mcp_howtocook_whatToEat`
+- `mcp_howtocook_getRecipeById`
+
+为什么这个模块重要：
+
+> 它体现了 AI Agent 的工具生态接入能力。LLM 不直接生成菜谱，而是先发现可用工具，再选择工具和参数，调用外部 MCP Server，最后把结果格式化给用户。
+
+如果被问 MCP 是什么：
+
+> MCP 可以理解为 AI 应用访问外部工具和数据源的标准协议。它把工具能力独立成 Server，Agent 作为 Client 通过标准协议发现和调用工具。这样工具不绑定某一个模型厂商。
+
+如果被问为什么不用 function calling：
+
+> Function Calling 通常绑定具体模型 API，而 MCP 更像外部工具协议。这个项目用 MCP 是为了模拟标准化工具接入，尤其是工具发现和跨进程调用能力。
+
+诚实边界：
+
+> 当前实现覆盖项目需要的核心 MCP 链路，但不是完整 MCP SDK。生产环境还需要更完整的超时、stderr 处理、长连接管理和安全沙箱。
+
+## 6. 横切能力怎么讲
+
+### 6.1 滑动窗口记忆
+
+核心文件：
+
+```text
+app/memory/sliding_window.py
+```
+
+作用：
+
+> 给不同子图共享最近几轮对话上下文，让用户追问时系统能保持短期连续性。
+
+实现：
+
+- `collections.deque`
+- 默认 `max_turns=6`
+- 每轮包含 user 和 assistant 两条消息
+- 按 `user_id` 存在 `_sessions` 字典里
+
+面试解释：
+
+> 这是短期记忆，不是长期用户画像系统。优点是简单、可控、无数据库依赖；缺点是服务重启会丢失，生产环境可以换成 Redis 或数据库。
+
+### 6.2 流式输出
+
+核心文件：
+
+```text
+app/main.py
+app/llm/loader.py
+```
+
+SSE 流程：
+
+```text
+POST /chat/stream
+  -> graph.invoke(state)
+  -> result_state["_prompt"]
+  -> send meta event
+  -> LLMLoader.generate_stream(prompt)
+  -> yield data token
+  -> memory.add_turn()
+  -> done event
+```
+
+WebSocket 流程：
+
+```text
+client send JSON
+  -> graph.invoke(state)
+  -> send {"type":"meta"}
+  -> generate_stream()
+  -> send {"type":"token"}
+  -> send {"type":"done"}
+```
+
+为什么要分层：
+
+> 图执行负责构建上下文和决定走哪个子图，流式生成负责用户体验。这样每个子图只需要准备 `_prompt`，不需要关心 SSE 或 WebSocket 协议。
+
+### 6.3 统一错误处理
+
+核心文件：
+
+```text
+app/tools/types.py
+```
+
+统一结构：
+
+```python
+ToolResult(
+    ok: bool,
+    data: Any,
+    error_code: Optional[str],
+    error_message: Optional[str],
+    meta: dict,
+)
+```
+
+错误码：
+
+- `CONFIG_MISSING`
+- `NETWORK_ERROR`
+- `PERMISSION_DENIED`
+- `INVALID_PARAM`
+- `DATA_NOT_FOUND`
+- `INTERNAL_ERROR`
+
+面试解释：
+
+> Agent 系统调用很多外部工具，如果每个工具异常格式都不一样，上层很难处理。所以项目用 `ToolResult` 统一成功/失败格式，便于子图安全地判断和降级。
+
+## 7. AI Agent 岗位知识点映射
+
+### 7.1 Agent 编排
+
+本项目体现：
+
+- LangGraph StateGraph。
+- 条件路由。
+- 子图拆分。
+- 状态传递。
+- 工具调用链路。
+
+可回答：
+
+> 我理解 Agent 不只是调用 LLM，而是围绕“状态、工具、规划、执行、反馈”构建应用流程。这个项目里 LangGraph 负责状态流转，工具层负责外部能力，LLM 负责语义理解和生成。
+
+### 7.2 Tool Use
+
+本项目体现：
+
+- Tavily Search Tool。
+- Motion 数值分析工具。
+- MCP 菜谱工具。
+- Retriever 知识检索工具。
+
+可回答：
+
+> 我把工具设计成可校验输入、统一输出、可降级的形式。工具失败时不直接抛给用户，而是返回结构化错误，让子图决定 fallback。
+
+### 7.3 RAG
+
+本项目体现：
+
+- 文档加载。
+- 分块。
+- embedding。
+- 相似度检索。
+- 阈值过滤。
+- Prompt 注入。
+
+可回答：
+
+> RAG 的关键不是“接一个向量库”这么简单，而是分块质量、检索召回、上下文裁剪和回答约束。项目里规模小，所以先用 NumPy 内存检索，接口上预留了后续 Milvus 替换空间。
+
+### 7.4 MCP
+
+本项目体现：
+
+- MCP Client。
+- subprocess。
+- stdio JSON-RPC。
+- 工具发现。
+- 工具调用。
+- mock fallback。
+
+可回答：
+
+> MCP 对 Agent 的价值在于把工具能力服务化、标准化。Agent 不需要硬编码每个外部系统细节，而是通过统一协议发现和调用工具。
+
+### 7.5 Streaming
+
+本项目体现：
+
+- SSE。
+- WebSocket。
+- token 级生成。
+- 小程序 chunk 解析。
+
+可回答：
+
+> 流式输出本质上是体验优化，但它会影响架构。同步图执行和异步 token 输出不能混在一起，所以我用 `_prompt` 作为图层和生成层之间的契约。
+
+### 7.6 Evaluation / Testing
+
+本项目体现：
+
+- 单元测试。
+- 集成测试。
+- mock 外部依赖。
+- 手工 smoke 测试。
+
+可回答：
+
+> LLM 应用测试难点是外部模型、网络和工具都不稳定，所以测试里对 LLM、embedding、search、MCP 做 mock，优先验证流程、路由、参数和工具返回处理。
+
+## 8. 高频面试问题与回答
+
+### Q1：这个项目和普通 ChatGPT 套壳有什么区别？
+
+回答：
+
+> 普通套壳通常是用户输入直接拼 Prompt 调 LLM。这个项目多了一层 Agent 编排：先做意图路由，再进入不同子图。每个子图有明确工具链，比如 RAG 检索、Tavily 搜索、MCP 工具调用、动作分析算法。LLM 不是唯一执行者，而是和确定性工具协作。
+
+追加亮点：
+
+> 特别是 Motion 和 MCP 两块，分别体现了“LLM + 数值工具”和“LLM + 外部协议工具”的 Agent 模式。
+
+### Q2：为什么用 LangGraph，而不是直接 LangChain Chain？
+
+回答：
+
+> Chain 更适合线性流程，而这个项目有条件路由和不同子图。LangGraph 的 StateGraph 更适合表达“状态 + 节点 + 条件边”的流程，比如 Router 根据 intent 分发，Motion 子图有 ReAct 风格的 think/parse/tool/check 节点。
+
+### Q2.1：多子图和多工具有什么区别？是不是工具就够了？
+
+回答：
+
+> 工具解决的是一个原子动作，子图解决的是一段任务流程。比如 Tavily 搜索工具只负责输入 query、返回搜索结果；但 Search 子图还包括 query rewrite、搜索调用、结果合成、来源约束和失败降级。动作分析工具只负责读取 `.npz` 并计算相似度；Motion 子图还要解析用户意图、决定是否需要工具、校验工具结果并生成解释。所以不是所有工具都要包装成子图，只有当能力有多阶段处理、状态传递、失败回退或独立评测需求时，才适合抽成子图。
+
+可以补充：
+
+> 如果一个能力只是一次确定性 API 调用，比如查天气或查一个固定表，我会直接做成 tool，不会为了 LangGraph 强行拆子图。这个项目里 Search、Motion、Diet、MCP 之所以做成子图，是因为它们不是单次函数调用，而是从用户输入到最终回答的一段完整流程。
+
+### Q2.2：这些子图会不会是冗余设计？直接让大模型回答不行吗？
+
+回答：
+
+> 如果只是解释“什么是增肌”这类通用概念，直接问大模型确实可以，所以我不会把 Chat 子图包装成核心创新。Agent 的价值在于把大模型做不到或不稳定的部分交给检索、搜索、算法和工具：最新资料需要联网搜索，动作分析需要读取姿态数据并运行 NumPy/FastDTW，领域知识问答需要受控知识库，外部菜谱能力通过 MCP 工具协议调用。LLM 不再是唯一执行者，而是负责理解、改写、解释和生成。
+
+更强的防守说法：
+
+> 我判断一个 Agent 是否有必要，标准是它是否解决了单纯大模型不能稳定解决的问题。如果一个功能完全可以被一次 Prompt 替代，那它就不应该被包装成复杂 Agent。这个项目真正想体现的是异构能力编排：把 LLM、RAG、搜索、动作算法和外部工具协议组合起来，让系统具备最新性、可追溯来源、确定性计算、工具调用和失败回退。
+
+### Q3：为什么 Router 用加权规则 + 语义样例，不用 LLM 分类？
+
+回答：
+
+> 当前意图集合小且很多触发词明显，用加权规则更稳定、成本更低、延迟更小。相比简单关键词 first-match，现在 Router 会给所有 intent 打分，记录 `_route_scores`、`_route_confidence` 和 `_route_reason`，能减少“最近想瘦一点”这类口语化问题误进 Search 的情况。对于规则低置信的隐式表达，又加了一层 semantic examples fallback。LLM 分类确实适合处理更隐式的低置信样本，所以当前代码已经预留 `_call_llm_router()` 契约桩，要求严格 JSON、合法 intent 和高置信才接管；默认不接真实模型，避免把稳定路由变成不可控依赖。
+
+### Q4：RAG 是怎么实现的？
+
+回答：
+
+> 文档从 `data/knowledge` 加载，先按中英文句号、问号、叹号和换行做 sentence-aware 分块，然后用 Sentence-Transformer 编码，向量归一化后用点积作为余弦相似度。检索时做阈值过滤、排序、Top-K 和去重，最后把上下文注入 Prompt。
+
+### Q5：为什么现在不用 Milvus？
+
+回答：
+
+> 当前知识库规模小，内存 NumPy 检索足够，而且减少部署复杂度。代码通过 `MemoryRetriever.search()` 抽象了检索接口，上层不关心底层是 NumPy 还是 Milvus，所以后续可以迁移。
+
+### Q6：MCP 模块怎么实现？
+
+回答：
+
+> MCP Client 用 subprocess 启动外部 server，通过 stdin/stdout 按 JSON-RPC 2.0 发请求。连接时先发 initialize，随后发 initialized 通知；工具发现用 tools/list，工具调用用 tools/call。返回结果按 MCP content block 解析，优先解析 `content[0].text` 里的 JSON。
+
+### Q7：如果 MCP Server 不存在怎么办？
+
+回答：
+
+> 项目支持 `server_command="mock"` 模式，会返回内置菜谱工具和数据。这样测试和演示不依赖外部 MCP Server。真实环境下如果命令找不到，会返回 `DATA_NOT_FOUND` 错误。
+
+### Q8：Motion 动作分析为什么可信？
+
+回答：
+
+> 它不是让 LLM 直接评价动作，而是先用数值算法算指标。包括姿态归一化、FastDTW 时间序列对齐、余弦相似度和形状差异。LLM 只负责把这些指标解释成人能理解的报告。
+
+补充边界：
+
+> 但这个模块需要标准动作库数据支持，目前项目缺少标准 `.npz` 数据，所以完整对比能力还没完全发挥。另外，当前图片接口只是单帧静态姿态摘要，视频序列分析还需要补抽帧和时序处理。
+
+如果追问“没有训练模型怎么办”：
+
+> 这里不应该从零训练姿态估计模型。更主流的工程路线是接入 MediaPipe Pose、MoveNet、RTMPose 或 OpenPose，把图片/视频转成关键点序列；自训练模型是后续精度优化，不是第一阶段打通产品链路的必要条件。
+
+### Q9：流式输出怎么做？
+
+回答：
+
+> `/chat/stream` 先执行图，拿到子图构建的 `_prompt` 和 intent，然后通过 SSE 先发 meta 事件，再调用 `LLMLoader.generate_stream()` 逐 token yield。WebSocket 也是类似，只是消息格式变成 JSON。
+
+### Q10：记忆怎么做？
+
+回答：
+
+> 用 `SlidingWindowMemory`，底层是 `deque`，按 user_id 隔离，默认保留最近 6 轮对话。它是短期记忆，注入到 Prompt 里帮助多轮追问。
+
+### Q11：测试怎么设计？
+
+回答：
+
+> 测试重点是验证确定性流程：router、retriever、motion_tool、mcp_client、API、integration。LLM、embedding、搜索、MCP 外部依赖通过 mock 降低不稳定性。
+
+### Q12：项目最大难点是什么？
+
+回答：
+
+> 最大难点是把不同性质的能力统一到一个 Agent 编排里：RAG 是检索增强，Search 是外部搜索，Motion 是数值算法，MCP 是外部工具协议，Diet 是画像提取和推荐。它们的数据流不一样，但对外要统一成一个对话接口。
+
+### Q13：你会如何把它升级到生产级？
+
+回答：
+
+> 第一，补标准动作库并完善动作分析数据集。第二，把内存检索迁移到 Milvus 或其他向量库。第三，验证 Docker 和小程序端到端联调。第四，完善 MCP 超时、进程生命周期和错误处理。第五，增加评测集和线上监控，比如意图分类准确率、检索命中率、工具调用成功率和响应延迟。
+
+### Q14：这个项目里哪些地方最能体现 AI Agent 能力？
+
+回答：
+
+> 最能体现 Agent 能力的不是“子图数量”，而是异构能力编排。第一，Router 把用户问题分发到 RAG、Search、Diet、Motion、MCP 这些不同执行范式，并且有置信度、原因和 eval；第二，Motion 子图把姿态分析交给 NumPy/FastDTW，LLM 只负责解释，体现 LLM 与确定性工具协作；第三，MCP 子图通过工具发现和 JSON-RPC 调用外部能力。这些都不是单纯 Prompt，而是任务分解、工具使用、状态管理和失败回退。
+
+## 9. 面试官深挖时的防守回答
+
+### 9.1 如果问“你是不是夸大了 Milvus？”
+
+回答：
+
+> 简历或文档里如果提到 Milvus，我会说明它是规划方向或预留接口，当前代码实际是内存 NumPy 检索。这个选择是因为 demo 阶段知识库规模小，先保证链路完整。真正生产化我会迁移到 Milvus，并复用当前 retriever 抽象。
+
+### 9.2 如果问“动作分析没有数据怎么演示？”
+
+回答：
+
+> 当前工具函数和 `/motion/analyze` 上传接口都可以加载 `.npz`，测试里也覆盖了上传和相似度计算。但项目缺标准动作库，所以实际 demo 时更多展示算法能力、基础上传分析和无标准动作时的 fallback。后续需要采集或生成标准动作 `.npz`。
+
+### 9.3 如果问“规则路由是不是太 low？”
+
+回答：
+
+> 规则路由不是为了炫技，而是工程取舍。当前意图少且明确，规则可解释、低成本、稳定。这个项目已经从简单关键词 first-match 升级为加权规则打分，并增加了 semantic examples fallback，会综合短语、组合规则和低置信样例匹配，并记录置信度与原因。LLM fallback 已经先做成工程契约桩，只有 JSON 合法、intent 合法、非澄清且置信度达标才会被接受。Agent 系统里并不是所有地方都该用 LLM，生产接入前还需要用 router eval 对比收益和误路由率。
+
+### 9.4 如果问“小程序端完成了吗？”
+
+回答：
+
+> 小程序代码已经完成了页面、组件、API 封装和 SSE 解析，但端到端联调还没完全验收。这个我会明确说是“代码完成，联调待验证”，不会说已经生产上线。
+
+### 9.5 如果问“本地 Qwen3-0.6B 效果够好吗？”
+
+回答：
+
+> 0.6B 模型主要是为了本地可运行和 demo 成本低，复杂推理效果有限。所以项目设计上尽量把确定性工作交给工具，把 LLM 用在改写、解释、生成这些环节。如果换成更强模型，上层架构不用大改。
+
+### 9.6 如果问“测试结果为什么你现在跑不了？”
+
+回答：
+
+> 文档里记录过测试通过，但当前机器环境缺 pytest，所以我会先补依赖再复现。我不会直接声称当前环境一定全部通过。工程上测试依赖应该纳入环境初始化或 CI。
+
+## 10. 按模块背代码
+
+### 10.1 `app/main.py`
+
+你要记住：
+
+- FastAPI 入口。
+- 管理 `_router_graph` 单例。
+- 管理 `_sessions` 用户记忆。
+- `/chat` 是非流式。
+- `/chat/stream` 是 SSE。
+- `/chat/ws` 是 WebSocket。
+- `/ui` 挂载静态页面。
+
+常见追问：
+
+**为什么 `_router_graph` 做单例？**
+
+> 避免每次请求都重新构建 LangGraph 和加载知识库。
+
+**为什么 `_sessions` 放内存？**
+
+> demo 简化实现。生产应迁移 Redis/数据库，否则服务重启会丢失。
+
+### 10.2 `app/graph/router.py`
+
+你要记住：
+
+- `WEIGHTED_RULES`
+- `COMBO_RULES`
+- `SEMANTIC_EXAMPLES`
+- `classify_intent_with_scores()`
+- `classify_intent()`
+- `intent_classify_node()`
+- `route_to_subgraph()`
+- `build_router_graph()`
+
+常见追问：
+
+**子图如何接入顶层图？**
+
+> `builder.add_node("chat", build_chat_subgraph())` 这种方式把编译后的子图作为节点注册到顶层图。
+
+### 10.3 `app/tools/retriever.py`
+
+你要记住：
+
+- `MemoryRetriever`
+- `_ensure_encoder()`
+- `_keyword_search()`
+- `_chinese_sentence_split()`
+- `get_shared_retriever()`
+- `load_shared_knowledge_base()`
+
+常见追问：
+
+**为什么共享 retriever？**
+
+> Chat 和 Diet 都需要知识库检索，共享实例可以避免重复加载和重复 embedding。
+
+### 10.4 `app/tools/motion_tool.py`
+
+你要记住：
+
+- `normalize_pose()`
+- `compute_joint_angles()`
+- `load_npz_pose()`
+- `compute_similarity()`
+- `list_motion_library()`
+
+常见追问：
+
+**相似度结果怎么解释？**
+
+> DTW 看节奏，cosine 看姿态方向，shape_difference 看轨迹/幅度。
+
+### 10.5 `app/tools/mcp_client.py`
+
+你要记住：
+
+- `connect()`
+- `_resolve_command()`
+- `_build_request()`
+- `_send_request()`
+- `list_tools()`
+- `call_tool()`
+- `_extract_mcp_content()`
+- `_mock_tool_call()`
+
+常见追问：
+
+**Windows 上怎么找 MCP 命令？**
+
+> 先 `shutil.which(server_command)`，再尝试 `.cmd`，最后通过 `npm config get prefix` 拼全局安装路径。
+
+### 10.6 `app/llm/loader.py`
+
+你要记住：
+
+- 延迟加载模型。
+- `generate()` 返回完整文本。
+- `generate_stream()` 逐 token 输出。
+- CPU 使用 float32，CUDA 可用时用 bfloat16。
+
+常见追问：
+
+**为什么延迟加载？**
+
+> 避免应用启动时立刻加载大模型，只有首次生成时才加载，适合开发和测试。
+
+## 11. AI Agent 岗位可展示的工程意识
+
+### 11.1 降级策略
+
+项目里有多处 fallback：
+
+- Embedding 失败 -> 关键词检索。
+- Tavily 无 key -> mock 搜索。
+- MCP Server 不可用 -> mock 菜谱。
+- Motion 无数据 -> 不瞎猜，解释如何准备数据。
+
+面试表达：
+
+> Agent 系统依赖外部工具和模型，必须考虑工具不可用时怎么退化，而不是让整个链路崩掉。
+
+### 11.2 可测试性
+
+项目没有把所有逻辑塞进 Prompt，而是拆成：
+
+- Router 规则。
+- Retriever 工具。
+- Motion 数值函数。
+- MCP Client。
+- API 层。
+
+这些都能单测。
+
+面试表达：
+
+> LLM 输出不可完全确定，所以我把可确定的逻辑尽量模块化，让测试覆盖路由、工具和协议处理。
+
+### 11.3 可替换性
+
+可替换点：
+
+- Qwen3 -> 更强 LLM。
+- NumPy retriever -> Milvus。
+- mock MCP -> 真实 MCP Server。
+- 内存 session -> Redis。
+- Web UI -> 小程序。
+
+面试表达：
+
+> 我设计时尽量让上层依赖稳定接口，而不是依赖具体实现。
+
+## 12. 可能的白板题
+
+### 12.1 画架构图
+
+```text
+Client
+  |-- Web UI
+  |-- WeChat MiniProgram
+  v
+FastAPI
+  |-- /chat
+  |-- /chat/stream
+  |-- /chat/ws
+  v
+Router StateGraph
+  |-- Chat RAG
+  |-- Search Tavily
+  |-- Diet RAG
+  |-- Motion ReAct + NumPy/FastDTW
+  |-- MCP JSON-RPC Client
+  v
+LLM / Tools / Knowledge Base
+```
+
+### 12.2 画 RAG 流程
+
+```text
+knowledge txt
+  -> sentence split
+  -> embedding
+  -> vector store in memory
+query
+  -> embedding
+  -> cosine similarity
+  -> threshold + top_k + dedup
+  -> prompt context
+  -> LLM answer
+```
+
+### 12.3 画 MCP 流程
+
+```text
+MCP subgraph
+  -> discover tools
+  -> LLM plan JSON
+  -> MCPClient.call_tool()
+      -> JSON-RPC tools/call
+      -> MCP Server
+      -> content blocks
+  -> LLM format result
+```
+
+### 12.4 画 Motion 流程
+
+```text
+user input
+  -> think
+  -> parse .npz/ref action
+  -> load pose
+  -> normalize
+  -> FastDTW + cosine + shape diff
+  -> check
+  -> report
+```
+
+## 13. 最后总结模板
+
+如果面试最后让你总结项目，可以这样说：
+
+> 这个项目对我最大的价值，是让我把 LLM 应用从“Prompt 调用”推进到“异构能力编排”。我没有让大模型直接回答所有问题，而是把最新信息交给 Search，把领域知识交给 RAG，把动作判断交给 NumPy/FastDTW，把外部菜谱能力交给 MCP 工具协议，再用 LangGraph 做状态编排和路由。项目还有一些生产化不足，比如 Milvus、Docker、小程序联调和动作库数据，但核心链路已经能体现 AI Agent 系统的设计思路：任务路由、工具调用、状态管理、错误降级和可评测性。
+
+## 14. 带注释代码精读
+
+这一节用于面试官要求“贴代码讲实现”的场景。你不需要逐字背代码，但要能说清楚每段代码解决什么问题、为什么这么写、有哪些边界。
+
+### 14.1 配置管理：为什么要从环境变量读取
+
+对应文件：`app/config.py`
+
+```python
+def _get_int_env(name: str, default: int) -> int:
+    """Read an integer environment variable with a safe fallback."""
+    value = os.getenv(name)
+    if value is None or value == "":
+        # 环境变量没配置时使用代码里的默认值，保证本地开发可直接启动。
+        return default
+    try:
+        # Docker/CI 中环境变量都是字符串，这里显式转换成 int。
+        return int(value)
+    except ValueError:
+        # 配错时不让应用启动直接崩溃，而是回退到默认值。
+        # 面试时可以补充：生产环境也可以选择 fail fast。
+        return default
+```
+
+```python
+@dataclass
+class Config:
+    model_path: str = field(
+        default_factory=lambda: os.getenv(
+            "MODEL_PATH",
+            "D:/Users/Agent/model/models/Qwen/Qwen3-0___6B",
+        )
+    )
+    model_device: str = field(default_factory=lambda: os.getenv("MODEL_DEVICE", "cpu"))
+```
+
+讲解重点：
+
+- 原来模型路径写死在代码里，不利于 Docker 和换机器部署。
+- 改成环境变量后，本地默认值和容器配置可以共存。
+- `default_factory` 保证 `Config()` 创建时读取当前环境变量。
+
+面试可说：
+
+> Agent 项目经常依赖模型路径、API Key、工具命令和向量库地址，这些配置不应该写死。这里把配置改成环境变量驱动，能让同一套代码适配本地、Docker 和服务器环境。
+
+### 14.2 FastAPI 非流式入口：一次请求如何进入图
+
+对应文件：`app/main.py`
+
+```python
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    """Process user message, route to subgraph, return reply."""
+    # 1. 按 user_id 获取滑动窗口记忆。
+    #    不同用户的上下文隔离，避免串话。
+    memory = _get_or_create_memory(request.user_id)
+
+    # 2. 构造 LangGraph 的共享状态。
+    #    后续 Router 和各子图都围绕这个 state 读写。
+    state: RouterState = {
+        "user_input": request.message,
+        "user_id": request.user_id,
+        "intent": "",
+        "memory": memory.get_all(),
+        "result": "",
+        "error": None,
+    }
+
+    try:
+        # 3. 获取编译后的顶层图。
+        #    _get_router_graph 内部做单例缓存，避免每次请求重复构图。
+        graph = _get_router_graph()
+
+        # 4. 执行图：intent_classify -> 对应子图 -> finalize。
+        result_state = graph.invoke(state)
+
+        reply = result_state.get("result", "")
+        intent = result_state.get("intent", "chat")
+
+        # 5. 将本轮对话写入短期记忆，供后续追问使用。
+        memory.add_turn(request.message, reply)
+
+        return ChatResponse(
+            user_id=request.user_id,
+            intent=intent,
+            reply=reply,
+        )
+    except Exception as e:
+        # 6. API 层兜底，避免异常堆栈直接暴露给客户端。
+        logger.exception(f"Error processing chat: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+```
+
+讲解重点：
+
+- API 层不直接写业务逻辑，只负责协议、状态构造和记忆更新。
+- 真正的 Agent 编排在 LangGraph 中完成。
+- `RouterState` 是 API 层和图层之间的契约。
+
+### 14.3 Router：为什么加权规则 + 语义样例路由能成立
+
+对应文件：`app/graph/router.py`
+
+```python
+WEIGHTED_RULES = {
+    "search": [("搜索", 6.0), ("查一下", 6.0), ("最新", 4.5), ("最近", 1.5)],
+    "motion": [(".npz", 8.0), ("动作分析", 7.0), ("姿势", 5.0), ("深蹲", 4.0)],
+    "diet": [("减脂", 5.0), ("怎么吃", 5.0), ("瘦一点", 5.0), ("控制体重", 5.0)],
+    "mcp": [("菜谱", 6.0), ("烹饪", 5.0), ("番茄炒蛋", 6.0), ("怎么做", 3.0)],
+    "chat": [("什么是", 5.0), ("有哪些好处", 5.0), ("有什么作用", 6.0)],
+}
+
+SEMANTIC_EXAMPLES = {
+    "diet": ["我想把身材调整得更轻盈一点", "我想吃得健康一点"],
+    "mcp": ["晚饭做什么菜", "给我一个家常菜做法"],
+    "chat": ["什么是渐进超负荷", "蛋白质有什么作用"],
+}
+
+
+def classify_intent_with_scores(user_input: str) -> RouteDecision:
+    """Classify intent with weighted rule scores and route metadata."""
+    scores = _empty_scores()
+    matches = []
+
+    for intent, rules in WEIGHTED_RULES.items():
+        for phrase, weight in rules:
+            if phrase in user_input:
+                scores[intent] += weight
+                matches.append(f"{intent}:{phrase}+{weight:g}")
+
+    # 继续计算 COMBO_RULES，例如“最近 + 瘦”偏 diet，“最近 + 新闻”偏 search。
+    # 如果规则低置信，则调用 semantic examples fallback。
+    # 最终选择最高分 intent，并记录 confidence、reason、scores 和 matches。
+    ...
+```
+
+```python
+builder.add_conditional_edges(
+    "intent_classify",
+    route_to_subgraph,
+    {
+        "search": "search",
+        "motion": "motion",
+        "diet": "diet",
+        "chat": "chat",
+        "mcp": "mcp",
+    },
+)
+```
+
+讲解重点：
+
+- 当前 Router 仍然是轻量可解释逻辑，但已经从 first-match 关键词升级为 weighted rule scoring + semantic examples fallback，并预留 LLM classifier fallback 契约桩。
+- 它会综合所有命中的短语和组合规则，而不是命中第一个就返回；规则低置信时，再用样例相似度处理隐式表达。
+- `intent_classify_node()` 会把 `_route_scores`、`_route_confidence`、`_route_reason`、`_route_source` 和 `_route_matches` 写入 `RouterState`，方便调试和后续评测。
+- 当前已新增 `data/eval/router_eval.jsonl`，测试会读取该评测集验证 Router 行为；绿色回归评测集已扩充到 66 条，并按主流 intent routing 切片组织，包括隐式意图、低置信、fallback、多意图 primary routing、相近意图边界、具体工具触发和文件信号。
+- 当前另有 `data/eval/router_challenge_eval.jsonl`，用于记录困难/失败样本。它当前覆盖 20 条样本，当前 Router 为 55.0% accuracy，主要暴露 multi-intent ordering、diet-vs-recipe、plan-vs-motion、explicit lookup 等边界问题。每条 challenge case 已补充 `primary_intent`、`secondary_intents`、`route_plan` 和 `expected_failure_reason`，用于提前定义后续 multi-intent routing 的评测目标。
+- Multi-intent routing 目前是设计和评测准备阶段，详见 `docs/interview/router/MULTI_INTENT_ROUTING_DESIGN.md`；当前执行链路仍然只执行 `primary_intent` 对应的单个子图，没有把多个子图真正串联执行。
+- `scripts/eval_router.py` 除了输出总 accuracy 和 per-intent precision/recall/F1，也会输出 evaluation slices，方便面试时说明评测覆盖面。
+- LLM classifier 当前只完成工程契约：`_call_llm_router()` 默认不接真实模型；只有合法 JSON、合法 intent、非澄清请求、且置信度达到阈值时才允许接管，否则回退。
+- 后续可以继续升级成“加权规则 + Sentence-Transformer embedding router + LLM classifier fallback”的 hybrid router。
+
+面试防守：
+
+> 我没有直接用 LLM 做 Router，是因为当前意图集合小，很多触发词明确，规则更稳定。现在的 Router 不是简单 first-match，而是加权规则打分；对低置信隐式表达，又加了 semantic examples fallback，并记录分数、置信度和原因。LLM classifier 我先做成了低置信 fallback 的契约桩，而不是马上接真实模型，这样可以先把输入输出、解析失败、低置信回退和测试边界固定下来。除了 66 条绿色回归集，我还单独保留了 20 条 challenge/failure set，专门暴露当前规则路由在多意图顺序、饮食和菜谱边界、泛化训练计划等场景的不足。生产化时再基于这些 challenge case 判断是否接入真实 LLM、embedding router 或 multi-intent route plan。
+
+### 14.4 Chat RAG：检索结果如何进入 Prompt
+
+对应文件：`app/graph/subgraphs/chat.py`
+
+```python
+def retrieve_node(state: RouterState) -> RouterState:
+    """Retrieve relevant documents from the shared knowledge base."""
+    # Chat 和 Diet 共享同一个 retriever，避免重复加载知识库和 embedding。
+    retriever = get_shared_retriever()
+
+    # 根据用户问题检索 top 5，过滤相似度低于 0.3 的 chunk。
+    result = retriever.search(state["user_input"], top_k=5, threshold=0.3)
+
+    # 将检索结果挂到 state 的临时字段上，供 generate_node 使用。
+    state["_retrieved"] = result.data if result.ok else []
+    state["_retrieval_meta"] = result.meta
+    return state
+```
+
+```python
+def generate_node(state: RouterState) -> RouterState:
+    retrieved = state.get("_retrieved", [])
+    context_text = ""
+
+    # 把检索 chunk 编号后塞进 Prompt，便于回答时引用。
+    if retrieved:
+        for i, r in enumerate(retrieved):
+            context_text += f"\n[Ref{i+1}] {r['content']}"
+
+    # 取最近历史对话，让回答支持多轮追问。
+    memory = state.get("memory", [])
+    memory_text = ""
+    if memory:
+        recent = memory[-6:]
+        memory_text = "\n".join(
+            [f"{m['role']}: {m['content']}" for m in recent]
+        )
+
+    prompt = f"""# 角色
+你是一个专业的健身知识助手，由运动科学和力量训练领域的知识库支持。
+
+## 参考资料
+{context_text or "暂无相关参考资料"}
+
+## 对话历史
+{memory_text or "无历史对话"}
+
+## 用户问题
+{state['user_input']}
+
+请回答："""
+
+    # 保存 _prompt 是为了给 /chat/stream 复用。
+    state["_prompt"] = prompt
+
+    # 非流式 /chat 直接生成完整回答。
+    answer = llm.generate(prompt)
+    state["result"] = answer
+    return state
+```
+
+讲解重点：
+
+- RAG 不是只“搜一下”，还包括分块、阈值、去重、上下文组织和 Prompt 约束。
+- `_prompt` 是图层和流式生成层之间的契约。
+
+### 14.5 Retriever：为什么能从 embedding 降级到关键词
+
+对应文件：`app/tools/retriever.py`
+
+```python
+def _ensure_encoder(self):
+    """延迟加载 Sentence-Transformer 编码器."""
+    if self._encoder is not None:
+        return
+    from sentence_transformers import SentenceTransformer
+
+    try:
+        # 首次使用时才加载 embedding 模型，避免应用启动阶段就下载/加载模型。
+        self._encoder = SentenceTransformer(
+            self.embedding_model_name, device=self.device
+        )
+    except Exception as e:
+        # 如果模型下载失败或离线，不让系统整体不可用。
+        # 后续 search() 会走关键词匹配 fallback。
+        logger.warning(
+            f"Cannot load embedding model '{self.embedding_model_name}': {e}. "
+            f"Falling back to keyword-based matching."
+        )
+        self._encoder = None
+```
+
+```python
+if self._encoder is None:
+    # embedding 不可用时，不抛异常，而是走关键词匹配。
+    results = self._keyword_search(query, top_k)
+    return ToolResult.ok(
+        data=results,
+        mode="keyword",
+        total_docs=len(self._documents),
+        note="Embedding model unavailable, using keyword matching",
+    )
+```
+
+讲解重点：
+
+- Agent 系统依赖外部模型，必须考虑不可用时的退化路径。
+- fallback 不一定效果最好，但能保证 demo、测试和离线环境可用。
+
+### 14.6 `/motion/analyze`：文件上传接口如何设计
+
+对应文件：`app/main.py`
+
+```python
+@app.post("/motion/analyze", response_model=MotionAnalyzeResponse)
+async def analyze_motion(
+    file: UploadFile = File(...),
+    reference_name: str | None = Form(default=None),
+):
+    """Analyze an uploaded .npz pose file."""
+    from app.tools.motion_tool import compute_similarity, list_motion_library, load_npz_pose
+
+    # 1. 输入边界：只接受 .npz，避免用户上传任意文件。
+    if not file.filename or not file.filename.lower().endswith(".npz"):
+        raise HTTPException(status_code=422, detail="Only .npz pose files are supported")
+
+    suffix = os.path.splitext(file.filename)[1] or ".npz"
+    tmp_path = None
+    try:
+        # 2. UploadFile 是流式文件对象。先写入临时文件，
+        #    复用 motion_tool.load_npz_pose(path) 的既有逻辑。
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                tmp.write(chunk)
+
+        # 3. 工具层负责真正的 .npz 解析和格式校验。
+        pose_result = load_npz_pose(tmp_path)
+        if not pose_result.ok:
+            raise HTTPException(status_code=422, detail=pose_result.error_message)
+
+        pose = pose_result.data
+        response = MotionAnalyzeResponse(
+            filename=file.filename,
+            frames=int(pose.shape[0]),
+            joints=int(pose.shape[1]),
+            message="姿态数据已加载。未提供 reference_name，当前仅返回基础信息。",
+        )
+
+        # 4. 如果用户传了 reference_name，就从标准动作库找同名 .npz 做对比。
+        if reference_name:
+            library_result = list_motion_library(config.motion_library_dir)
+            library = library_result.data if library_result.ok else {}
+            ref_path = library.get(reference_name)
+            if ref_path is None:
+                raise HTTPException(status_code=404, detail=f"Reference motion not found: {reference_name}")
+
+            ref_result = load_npz_pose(ref_path)
+            metrics_result = compute_similarity(pose, ref_result.data)
+
+            response.reference = reference_name
+            response.metrics = metrics_result.data
+            response.message = "姿态数据已加载，并完成与标准动作的相似度对比。"
+
+        return response
+    finally:
+        # 5. 无论成功还是失败，都关闭上传文件并删除临时文件，避免磁盘残留。
+        await file.close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+```
+
+讲解重点：
+
+- 这个接口不调用 LLM，只做确定性工具分析，所以更快、更稳定。
+- 输入、输出、错误都清晰：`.npz` 格式错误是 422，标准动作不存在是 404。
+- 复用 `motion_tool.py`，没有把算法写在 API 层。
+
+### 14.7 Motion 工具：相似度如何计算
+
+对应文件：`app/tools/motion_tool.py`
+
+```python
+def normalize_pose(keypoints: np.ndarray) -> np.ndarray:
+    """Normalize pose: center at hip (index 0), scale to unit size."""
+    # 输入必须是一帧姿态：(J, 3)
+    if keypoints.ndim != 2 or keypoints.shape[1] != 3:
+        raise ValueError(f"keypoints must have shape (N, 3), got {keypoints.shape}")
+
+    # 全零姿态没有几何意义，不能归一化。
+    if np.allclose(keypoints, 0.0):
+        raise ValueError("keypoints is all zeros, cannot normalize")
+
+    # 以第 0 个关键点作为中心点，消除人体在空间中的平移差异。
+    center = keypoints[0].copy()
+    centered = keypoints - center
+
+    # 用所有点到中心点的平均距离作为尺度，消除体型大小差异。
+    distances = np.linalg.norm(centered, axis=1)
+    scale = np.mean(distances)
+    if scale < 1e-8:
+        scale = 1.0
+    return centered / scale
+```
+
+```python
+def compute_similarity(seq1: np.ndarray, seq2: np.ndarray) -> ToolResult:
+    # 1. 每一帧先做姿态归一化。
+    seq1_norm = np.array([normalize_pose(f) for f in seq1])
+    seq2_norm = np.array([normalize_pose(f) for f in seq2])
+
+    # 2. 将 (T, J, 3) 拉平成 (T, J*3)，作为时间序列输入 FastDTW。
+    flat1 = seq1_norm.reshape(seq1_norm.shape[0], -1)
+    flat2 = seq2_norm.reshape(seq2_norm.shape[0], -1)
+
+    # 3. FastDTW 处理不同动作速度和不同帧数问题。
+    dtw_dist, _ = fastdtw(flat1, flat2, dist=euclidean)
+    dtw_normalized = dtw_dist / max(len(flat1), len(flat2))
+
+    # 4. 平均姿态向量的余弦相似度，衡量整体方向一致性。
+    vec1 = flat1.mean(axis=0)
+    vec2 = flat2.mean(axis=0)
+    cos_sim = np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-8)
+
+    # 5. 形状差异衡量关键点相对距离分布的差异。
+    shape1 = np.array([np.linalg.norm(f - f[0]) for f in seq1_norm])
+    shape2 = np.array([np.linalg.norm(f - f[0]) for f in seq2_norm])
+```
+
+讲解重点：
+
+- DTW 解决动作节奏问题。
+- Cosine 解决姿态方向问题。
+- Shape difference 解决幅度/轨迹问题。
+- LLM 最终解释这些数值，但数值本身来自确定性算法。
+
+### 14.8 MCP Client：JSON-RPC 调用链怎么讲
+
+对应文件：`app/tools/mcp_client.py`
+
+```python
+def connect(self) -> ToolResult:
+    """Start MCP server subprocess and complete initialize handshake."""
+    if self.server_command == "mock":
+        # mock 模式用于测试和演示，不依赖真实 MCP Server。
+        self._connected = True
+        return ToolResult.ok(connected=True, is_mock=True)
+
+    # 1. 找到 MCP Server 可执行文件。
+    resolved = self._resolve_command(self.server_command)
+    if resolved is None:
+        return ToolResult.fail(
+            ErrorCode.DATA_NOT_FOUND,
+            f"MCP server command not found: '{self.server_command}'.",
+        )
+
+    # 2. 用 subprocess 启动 server，通过 stdin/stdout 通信。
+    self._process = subprocess.Popen(
+        [resolved],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+
+    # 3. MCP 初始化握手。
+    init_request = self._build_request("initialize", {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "fitness-assistant", "version": "0.1.0"},
+    })
+    response = self._send_request(init_request)
+
+    # 4. 根据 MCP 规范，initialize 后发送 initialized 通知。
+    initialized_notification = self._build_request("notifications/initialized", {})
+    self._send_request(initialized_notification)
+```
+
+```python
+def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> ToolResult:
+    # 输入校验：工具名必须非空，arguments 必须是 dict。
+    err = check_str_nonempty(tool_name, "tool_name")
+    if err:
+        return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
+    if not isinstance(arguments, dict):
+        return ToolResult.fail(ErrorCode.INVALID_PARAM, "'arguments' must be a dict")
+
+    # mock 模式直接返回内置菜谱数据。
+    if self.server_command == "mock":
+        raw_data = self._mock_tool_call(tool_name, arguments)
+        parsed = self._extract_mcp_content(raw_data)
+        return ToolResult.ok(data=parsed, is_mock=True)
+
+    # 真实模式发送 tools/call JSON-RPC 请求。
+    request = self._build_request("tools/call", {
+        "name": tool_name,
+        "arguments": arguments,
+    })
+    response = self._send_request(request)
+```
+
+讲解重点：
+
+- MCP 的核心不是 LLM，而是标准化工具协议。
+- 这个实现展示了 initialize、tools/list、tools/call 的核心链路。
+- mock 模式让测试不依赖 Node/npm/global MCP Server。
+
+### 14.9 测试夹具：为什么要 mock LLM 和 embedding
+
+对应文件：`tests/conftest.py`
+
+```python
+@pytest.fixture(autouse=True)
+def mock_sentence_transformer():
+    """Mock SentenceTransformer globally to avoid network downloads in tests."""
+    mock_st = MagicMock()
+
+    def fake_encode(texts, normalize_embeddings=False):
+        # 测试只需要稳定向量，不需要真实语义 embedding。
+        if isinstance(texts, str):
+            texts = [texts]
+        vecs = np.zeros((len(texts), 384), dtype=np.float32)
+        for i, t in enumerate(texts):
+            seed = hash(t) % (2**31)
+            rng = np.random.RandomState(seed)
+            vecs[i] = rng.rand(384).astype(np.float32)
+        return vecs
+```
+
+```python
+@pytest.fixture(autouse=True)
+def mock_llm_generation(monkeypatch):
+    """Mock local LLM generation so tests do not require model files."""
+    from app.llm.loader import LLMLoader
+
+    def fake_generate(self, prompt, *args, **kwargs):
+        return "Mock LLM response"
+
+    def fake_generate_stream(self, prompt, *args, **kwargs):
+        yield "Mock"
+        yield " stream"
+        yield " response"
+
+    monkeypatch.setattr(LLMLoader, "generate", fake_generate)
+    monkeypatch.setattr(LLMLoader, "generate_stream", fake_generate_stream)
+```
+
+讲解重点：
+
+- LLM 应用测试不要依赖真实模型下载和生成结果。
+- 测试目标是验证路由、接口、工具调用和错误处理。
+- mock 让测试稳定、快速、可在 CI 中运行。
+
+### 14.10 `/motion/analyze` 测试：如何验证文件上传
+
+对应文件：`tests/test_api.py`
+
+```python
+def test_motion_analyze_accepts_npz_upload(self):
+    # 1. 在内存中构造一个 .npz 文件，不依赖真实磁盘测试数据。
+    buffer = io.BytesIO()
+    pose = np.random.randn(8, 17, 3).astype(np.float32)
+    np.savez(buffer, keypoints=pose)
+    buffer.seek(0)
+
+    # 2. 用 TestClient 以 multipart/form-data 方式上传。
+    response = client.post(
+        "/motion/analyze",
+        files={"file": ("sample.npz", buffer, "application/octet-stream")},
+    )
+
+    # 3. 验证 API 能正确读取 T=8、J=17。
+    assert response.status_code == 200
+    data = response.json()
+    assert data["filename"] == "sample.npz"
+    assert data["frames"] == 8
+    assert data["joints"] == 17
+    assert data["metrics"] is None
+```
+
+讲解重点：
+
+- 测试不需要真实上传文件，`BytesIO` 即可模拟。
+- 验证的是接口协议和工具解析链路。
+- 标准动作库对比可以后续通过准备 `data/motions/*.npz` 再补测试。
+
+ 

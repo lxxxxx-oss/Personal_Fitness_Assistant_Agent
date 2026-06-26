@@ -1,0 +1,27 @@
+# LLM & Graph
+langgraph>=0.2.0
+langchain-core>=0.3.0
+transformers>=4.51.0
+torch>=2.0.0
+
+# API
+fastapi>=0.100.0
+uvicorn>=0.20.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+
+# Embedding & Vector
+sentence-transformers>=3.0.0
+numpy>=1.24.0
+
+# Motion Analysis
+fastdtw>=0.3.0
+scipy>=1.10.0
+Pillow>=10.0.0
+
+# Search
+tavily-python>=0.3.0
+
+# Dev
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

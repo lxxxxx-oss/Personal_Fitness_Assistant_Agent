@@ -1,0 +1,66 @@
+{"text": "我最近想瘦一点，有什么建议？", "intent": "diet", "note": "colloquial weight-loss goal"}
+{"text": "我想把身材调整得更轻盈一点", "intent": "diet", "note": "implicit diet/body-composition intent"}
+{"text": "我想控制体重，应该怎么吃？", "intent": "diet", "note": "weight management with diet planning"}
+{"text": "减重期间怎么安排三餐？", "intent": "diet", "note": "meal planning"}
+{"text": "最近有什么健身新闻？", "intent": "search", "note": "recent news"}
+{"text": "有没有新的运动科学研究？", "intent": "search", "note": "implicit latest research"}
+{"text": "帮我搜索一下最新增肌研究", "intent": "search", "note": "explicit search"}
+{"text": "查一下深蹲的标准动作", "intent": "search", "note": "explicit lookup should search"}
+{"text": "帮我看看深蹲哪里不对", "intent": "motion", "note": "motion review"}
+{"text": "我的硬拉姿势有问题吗？", "intent": "motion", "note": "posture analysis"}
+{"text": "这个动作标准吗？", "intent": "motion", "note": "implicit motion analysis"}
+{"text": "analyze this .npz file", "intent": "motion", "note": "motion data upload"}
+{"text": "番茄炒蛋步骤是什么？", "intent": "mcp", "note": "recipe steps"}
+{"text": "晚饭做什么菜？", "intent": "mcp", "note": "cooking recommendation"}
+{"text": "给我一个家常菜做法", "intent": "mcp", "note": "recipe method"}
+{"text": "蛋白质有什么作用？", "intent": "chat", "note": "general knowledge"}
+{"text": "什么是渐进超负荷？", "intent": "chat", "note": "fitness concept explanation"}
+{"text": "深蹲有哪些好处？", "intent": "chat", "note": "conceptual question, not motion analysis"}
+{"text": "你好", "intent": "chat", "note": "greeting fallback"}
+{"text": "我有点胖，想改善一下体型", "intent": "diet", "note": "implicit body composition goal"}
+{"text": "想练得更结实，饮食要注意什么？", "intent": "diet", "note": "muscle gain diet planning without explicit 增肌"}
+{"text": "一天吃多少蛋白质比较合适？", "intent": "diet", "note": "protein intake planning"}
+{"text": "蛋白质为什么能帮助增肌？", "intent": "chat", "note": "concept explanation rather than diet plan"}
+{"text": "深蹲膝盖疼怎么办？", "intent": "motion", "note": "movement pain and technique context"}
+{"text": "为什么深蹲能练腿？", "intent": "chat", "note": "training knowledge explanation"}
+{"text": "帮我看看卧推姿势有没有问题", "intent": "motion", "note": "bench press posture review"}
+{"text": "卧推怎么做才标准？", "intent": "motion", "note": "movement technique, not recipe"}
+{"text": "鸡胸肉怎么做不柴？", "intent": "mcp", "note": "cooking method"}
+{"text": "怎么做硬拉比较安全？", "intent": "motion", "note": "movement how-to should not go to recipe"}
+{"text": "查一下最近减脂饮食研究", "intent": "search", "note": "explicit search should beat diet"}
+{"text": "最近想控制体重，怎么吃？", "intent": "diet", "note": "recent + weight control should be diet"}
+{"text": "帮我找一下最近蛋白质摄入的研究", "intent": "search", "note": "explicit lookup research"}
+{"text": "今天练什么比较好？", "intent": "chat", "note": "general planning without enough routing signal"}
+{"text": "我想开始健身，需要注意什么？", "intent": "chat", "note": "general beginner advice"}
+{"text": "晚餐推荐一个高蛋白菜", "intent": "mcp", "note": "meal dish recommendation"}
+{"text": "不吃猪肉怎么安排减脂餐？", "intent": "diet", "note": "diet preference and fat loss meal planning"}
+{"text": "有什么适合新手的训练计划？", "intent": "chat", "note": "general training plan"}
+{"text": "搜索一下最近的马拉松训练新闻", "intent": "search", "note": "explicit search news"}
+{"text": "分析这个动作数据 sample.npz", "intent": "motion", "note": "motion data file"}
+{"text": "我工作太忙，想吃得清淡一点", "intent": "diet", "category": "implicit_intent", "note": "implicit personal diet preference without explicit diet keyword"}
+{"text": "我想备赛马拉松，饮食怎么安排", "intent": "diet", "category": "implicit_intent", "note": "sports goal with nutrition planning"}
+{"text": "我想减脂但不知道每天吃多少", "intent": "diet", "category": "implicit_intent", "note": "personal intake planning"}
+{"text": "我肩推的时候肩膀不舒服，帮我看看是不是动作问题", "intent": "motion", "category": "implicit_intent", "note": "pain plus technique review should route to motion"}
+{"text": "帮我看看硬拉背部是不是弯了", "intent": "motion", "category": "implicit_intent", "note": "implicit posture review"}
+{"text": "俯卧撑肩膀疼是不是动作不对", "intent": "motion", "category": "implicit_intent", "note": "bodyweight movement technique concern"}
+{"text": "给我解释一下碳水循环是什么", "intent": "chat", "category": "boundary_concept", "note": "concept explanation should not become diet planning"}
+{"text": "什么是HIIT，适合新手吗", "intent": "chat", "category": "boundary_concept", "note": "training concept explanation"}
+{"text": "想提高体能，有什么方向", "intent": "chat", "category": "low_confidence", "note": "broad training direction handled by chat"}
+{"text": "我有点迷茫，不知道从哪里开始", "intent": "chat", "category": "fallback_unclear", "note": "unclear request should safely fallback to chat"}
+{"text": "我只是想聊聊健身", "intent": "chat", "category": "fallback_unclear", "note": "open-ended chat request"}
+{"text": "我只有哑铃，在家怎么练", "intent": "chat", "category": "boundary_training_plan", "note": "general training plan handled by chat RAG"}
+{"text": "有没有适合办公室久坐人群的训练建议", "intent": "chat", "category": "boundary_training_plan", "note": "general training advice, not motion analysis"}
+{"text": "给我一个不需要器械的训练计划", "intent": "chat", "category": "boundary_training_plan", "note": "plan request should stay in chat"}
+{"text": "我不知道该问饮食还是训练，先给我个建议", "intent": "chat", "category": "fallback_unclear", "note": "ambiguous meta request should not be forced into diet"}
+{"text": "最近有新的HIIT研究吗", "intent": "search", "category": "freshness_search", "note": "freshness signal plus research"}
+{"text": "查一下今年肌酸补剂的研究", "intent": "search", "category": "freshness_search", "note": "time-sensitive supplement research"}
+{"text": "帮我找一下最新的膝盖疼训练建议", "intent": "search", "category": "freshness_search", "note": "explicit lookup should route to search"}
+{"text": "我想减脂，顺便查一下最近间歇性禁食的研究", "intent": "search", "category": "multi_intent_primary", "note": "explicit latest research wins over diet in single-intent router"}
+{"text": "先搜一下最新深蹲技术文章，再帮我判断动作要点", "intent": "search", "category": "multi_intent_primary", "note": "explicit search is primary before motion follow-up"}
+{"text": "我深蹲膝盖疼，查一下可能原因", "intent": "search", "category": "multi_intent_primary", "note": "explicit lookup wins over motion review"}
+{"text": "我想减脂，能推荐一道晚餐菜吗", "intent": "mcp", "category": "multi_intent_primary", "note": "specific dish recommendation wins over broad diet goal"}
+{"text": "低脂晚餐做什么比较方便", "intent": "mcp", "category": "recipe_tool", "note": "concrete cooking request"}
+{"text": "今晚做鸡胸肉沙拉", "intent": "mcp", "category": "recipe_tool", "note": "concrete recipe request"}
+{"text": "用鸡蛋和番茄做个高蛋白晚餐", "intent": "mcp", "category": "recipe_tool", "note": "ingredient-based dinner request"}
+{"text": "分析一下这个pose文件", "intent": "motion", "category": "tool_file_signal", "note": "pose file signal should route to motion"}
+{"text": "我上传了sample.npz，帮我分析动作", "intent": "motion", "category": "tool_file_signal", "note": "npz upload signal should route to motion"}

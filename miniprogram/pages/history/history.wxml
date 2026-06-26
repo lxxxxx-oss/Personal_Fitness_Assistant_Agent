@@ -1,0 +1,35 @@
+<view class="history-container">
+
+  <!-- 加载中 -->
+  <view class="status-message" wx:if="{{isLoading}}">
+    <text>加载中...</text>
+  </view>
+
+  <!-- 错误 -->
+  <view class="status-message error" wx:elif="{{error}}">
+    <text>加载失败: {{error}}</text>
+    <button class="retry-btn" bindtap="loadHistory">重试</button>
+  </view>
+
+  <!-- 空状态 -->
+  <view class="status-message" wx:elif="{{isEmpty}}">
+    <text class="empty-icon">📭</text>
+    <text>暂无对话历史</text>
+    <text class="empty-hint">去"对话"页面开始和助手聊天吧</text>
+  </view>
+
+  <!-- 历史列表 -->
+  <scroll-view class="history-list" scroll-y wx:else>
+    <view class="history-item" wx:for="{{history}}" wx:key="index">
+      <view class="role-tag {{item.role}}">
+        {{item.role === 'user' ? '👤 你' : '🤖 助手'}}
+      </view>
+      <view class="history-content">{{item.content}}</view>
+    </view>
+  </scroll-view>
+
+  <!-- 清空按钮 -->
+  <view class="clear-bar safe-area-bottom" wx:if="{{!isEmpty && !isLoading}}">
+    <button class="clear-btn" bindtap="onClearHistory">清空全部历史</button>
+  </view>
+</view>
