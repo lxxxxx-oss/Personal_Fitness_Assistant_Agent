@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-06-30 | [面试回答风格再梳理](./2026-06-30-interview-answer-style-refinement.md) | 从标准答案改为项目思路、技术取舍、问题解决和边界说明 |
 | 2026-06-30 | [Router Phase 4 实施](./2026-06-30-router-phase4-implementation.md) | 多意图识别、白名单组合执行、错误隔离和结果合成 |
 | 2026-06-30 | [MCP 菜谱退出核心架构](./2026-06-30-mcp-core-scope-reduction-decision.md) | 四模块目标架构、Diet 合并方向和后续代码迁移边界 |
 | 2026-06-30 | [面试学习材料重组](./2026-06-30-interview-study-material-reorganization.md) | `interview/` 收敛为 P0/P1/P2 分级材料 |
@@ -22,7 +23,6 @@
 | 2026-06-30 | [面试官视角审查与材料收紧](./2026-06-30-interview-interviewer-review-adjustment.md) | 个人贡献、证据边界、代码真实口径和高压追问 |
 | 2026-06-30 | [docs 目录收口整理](./2026-06-30-docs-directory-cleanup.md) | 顶层文档减负、链接修复和 progress 最近 10 条策略 |
 | 2026-06-27 | [Router Phase 3 实施](./2026-06-27-router-phase3-implementation.md) | Hybrid classifier、真实 Qwen A/B 和收益判断 |
-| 2026-06-27 | [LLM 内存不足修复](./2026-06-27-llm-memory-oom-fix.md) | 共享模型缓存、加载锁和流式单次生成 |
 
 ## 维护方式
 
