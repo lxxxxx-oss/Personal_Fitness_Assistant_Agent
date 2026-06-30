@@ -14,15 +14,15 @@
 | 日期 | 记录 | 重点 |
 |---|---|---|
 | 2026-06-30 | [Router Phase 4 实施](./2026-06-30-router-phase4-implementation.md) | 多意图识别、白名单组合执行、错误隔离和结果合成 |
+| 2026-06-30 | [MCP 菜谱退出核心架构](./2026-06-30-mcp-core-scope-reduction-decision.md) | 四模块目标架构、Diet 合并方向和后续代码迁移边界 |
 | 2026-06-30 | [面试学习材料重组](./2026-06-30-interview-study-material-reorganization.md) | `interview/` 收敛为 P0/P1/P2 分级材料 |
 | 2026-06-30 | [面试与运行边界](./2026-06-30-interview-runtime-boundary.md) | 明确已实现、当前边界和后续规划的表达原则 |
 | 2026-06-30 | [面试准备审查](./2026-06-30-interview-preparation-audit.md) | 面试资料事实审查和优化清单 |
+| 2026-06-30 | [P0 面试主线可读性优化](./2026-06-30-interview-p0-readability-optimization.md) | 通俗比喻、口语化主线、分轮学习和自测标准 |
 | 2026-06-30 | [面试官视角审查与材料收紧](./2026-06-30-interview-interviewer-review-adjustment.md) | 个人贡献、证据边界、代码真实口径和高压追问 |
 | 2026-06-30 | [docs 目录收口整理](./2026-06-30-docs-directory-cleanup.md) | 顶层文档减负、链接修复和 progress 最近 10 条策略 |
 | 2026-06-27 | [Router Phase 3 实施](./2026-06-27-router-phase3-implementation.md) | Hybrid classifier、真实 Qwen A/B 和收益判断 |
 | 2026-06-27 | [LLM 内存不足修复](./2026-06-27-llm-memory-oom-fix.md) | 共享模型缓存、加载锁和流式单次生成 |
-| 2026-06-26 | [Web UI Motion 图片上传](./2026-06-26-web-ui-motion-image-upload.md) | Motion 图片入口和用户反馈修复 |
-| 2026-06-26 | [Web UI 对话等待状态](./2026-06-26-web-ui-chat-pending-state.md) | pending 状态、intent meta 和错误提示 |
 
 ## 维护方式
 

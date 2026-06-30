@@ -16,7 +16,7 @@
 - 能力、证据和当前边界。
 - 三个主打亮点。
 - 为什么使用 LangGraph 和子图。
-- Router、RAG、Motion、MCP 和 Streaming 的准确口径。
+- Router、RAG、Motion 和 Streaming 的准确口径。
 
 ### P1：最好掌握
 
@@ -25,7 +25,7 @@
 这一份用于应对技术追问：
 
 - Python / FastAPI / SSE 基础。
-- LLM、RAG、Agent、Tool Use、MCP 基础。
+- LLM、RAG、Agent 和 Tool Use 基础。
 - Router eval、测试证据和泛化边界。
 - async 阻塞、流式实现、Memory 和内存治理。
 - 安全、权限、来源和高压追问。
@@ -39,7 +39,7 @@
 - 关键代码调用链。
 - Router Phase 1 到 Phase 4 的具体实现。
 - `.npz` 与图片两条 Motion 链路。
-- RAG、MCP 和测试证据深挖。
+- RAG、测试证据和架构收敛决策深挖。
 - 生产化顺序、白板题和演示脚本。
 
 ## 不在本目录的材料

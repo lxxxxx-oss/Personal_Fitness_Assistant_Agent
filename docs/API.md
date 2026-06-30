@@ -353,12 +353,14 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 
 当前 Router 使用“加权规则 + 确定性歧义处理 + 语义样例 fallback + 可选本地 LLM classifier”。系统会扫描所有 intent 的短语和组合规则，识别顺序词、否定约束、跨域计划、plan-vs-motion、diet-vs-recipe 等 ambiguity signals；低置信或指定 review signal 才允许尝试 LLM。真实 Qwen provider 已接入，但 `LLM_ROUTER_ENABLED` 默认关闭。即使开启，LLM 也必须通过严格 JSON、合法 intent、非澄清、最低置信度，并且置信度高于当前规则才允许覆盖。
 
+> 过渡说明：当前代码和 API 响应仍可能返回 `intent=mcp`。架构决策已经改为把菜谱请求并入 `diet`，但在代码、评测集和测试真正迁移前，本节继续记录当前可运行行为，不能把计划状态写成已完成。
+
 | Intent | 高权重示例 | 处理模块 |
 |---|---|---|
 | `search` | 搜索、查一下、联网、最新、新闻、最近 + 研究 | Search 子图 |
 | `motion` | `.npz`、动作分析、姿势、深蹲 + 哪里不对、硬拉 + 姿势 | Motion 子图 |
 | `diet` | 减脂、增肌、怎么吃、瘦一点、控制体重、饮食、热量 | Diet 子图 |
-| `mcp` | 菜谱、烹饪、做法、番茄炒蛋、红烧肉、怎么做 + 菜名 | MCP 子图 |
+| `mcp`（待移除） | 菜谱、烹饪、做法、番茄炒蛋、红烧肉、怎么做 + 菜名 | 当前仍进入 MCP 子图；后续并入 Diet |
 | `chat` | 低置信、纯知识解释、概念问题或无规则/语义样例命中 | Chat 子图 |
 
 路由节点会在内部 `RouterState` 中记录 `_route_scores`、`_route_confidence`、`_route_reason`、`_route_source`、`_route_matches` 和 `_route_ambiguity_signals`。Phase 4.1 还会记录 `_primary_intent`、`_secondary_intents`、`_route_plan`、`_multi_intent_reason` 和 `_needs_clarification`；这些字段当前不作为 API 响应返回，公开响应中的 `intent` 始终等于主意图。评测脚本会额外输出 secondary intent 和 route plan 精确匹配率。`_route_source` 可能为 `weighted_rules`、`semantic_examples`、`llm_classifier` 或 `fallback`。
