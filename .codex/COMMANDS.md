@@ -4,12 +4,12 @@
 
 ## 两台电脑协作
 
-每次开始工作前，先同步 `main` 分支：
+每次开始工作前，先同步 `master` 分支：
 
 ```bash
-git checkout main
+git checkout master
 git status
-git pull origin main
+git pull origin master
 ```
 
 如果 `git status` 不干净，先提交或暂存本地修改，再继续同步。每次阶段性工作结束后：
@@ -18,14 +18,14 @@ git pull origin main
 git status
 git add .
 git commit -m "描述本次修改"
-git push origin main
+git push origin master
 ```
 
 另一台电脑测试前执行：
 
 ```bash
-git checkout main
-git pull origin main
+git checkout master
+git pull origin master
 ```
 
 ## 依赖

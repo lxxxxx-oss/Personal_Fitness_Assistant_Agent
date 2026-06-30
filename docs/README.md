@@ -138,9 +138,9 @@ cd C:\Users\黎\Desktop\Personal_Fitness_Assistant_Agent-master
 两台电脑统一使用 `main` 分支。每次开始工作前，先在当前电脑同步远端最新代码：
 
 ```bash
-git checkout main
+git checkout master
 git status
-git pull origin main
+git pull origin master
 ```
 
 如果 `git status` 显示有未提交修改，先确认这些修改是否需要保留，再选择提交或暂存，不要直接覆盖。每次阶段性工作结束后，再提交并推送：
@@ -149,14 +149,14 @@ git pull origin main
 git status
 git add .
 git commit -m "描述本次修改"
-git push origin main
+git push origin master
 ```
 
 另一台电脑测试前只需要进入自己的项目目录，然后执行：
 
 ```bash
-git checkout main
-git pull origin main
+git checkout master
+git pull origin master
 ```
 
 这样可以避免 `main` / `master` 分支混用，也能减少两台电脑之间出现 unrelated histories 或本地文件覆盖冲突的概率。

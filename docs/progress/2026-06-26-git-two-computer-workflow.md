@@ -15,9 +15,9 @@
 每次开始工作前：
 
 ```bash
-git checkout main
+git checkout master
 git status
-git pull origin main
+git pull origin master
 ```
 
 每次阶段性工作结束后：
@@ -26,14 +26,14 @@ git pull origin main
 git status
 git add .
 git commit -m "描述本次修改"
-git push origin main
+git push origin master
 ```
 
 另一台电脑测试前：
 
 ```bash
-git checkout main
-git pull origin main
+git checkout master
+git pull origin master
 ```
 
 ## 注意事项
