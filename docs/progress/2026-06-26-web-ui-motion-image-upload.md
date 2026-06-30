@@ -17,8 +17,8 @@
 更新文档：
 
 - `docs/README.md`
-- `docs/interview/motion/MOTION_OPTIMIZATION_ROADMAP.md`
-- `docs/progress/2026-06-26-motion-image-static-analysis.md`
+- `docs/technical/motion/MOTION_OPTIMIZATION_ROADMAP.md`
+- `docs/tests/2026-06-26-motion-image-static-analysis.md`
 - `docs/tests/2026-06-26-web-ui-motion-image-upload.md`
 
 ## 实现内容

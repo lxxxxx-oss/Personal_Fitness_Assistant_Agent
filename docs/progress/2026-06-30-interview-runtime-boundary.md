@@ -7,7 +7,7 @@
 ## 本次记录内容
 
 - 在 `AGENTS.md` 中新增“可运行版本与面试表达边界”，作为后续协作的长期约束。
-- 在 `docs/interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md` 中补充同样原则，确保面试资料维护时遵守该边界。
+- 当时在 `docs/interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md` 中补充同样原则；该计划当前已归档到 `docs/technical/interview-archive/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`。
 
 ## 后续执行原则
 

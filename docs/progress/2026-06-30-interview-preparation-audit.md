@@ -8,7 +8,7 @@
 
 - 通读面试导航、项目主讲稿、高频问答、代码精读和专题文档结构。
 - 从真实面试节奏、项目事实一致性、基础知识覆盖和口头表达长度四个维度完成审查。
-- 新增 `docs/interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`，记录已完成、待完成和明确不做的内容。
+- 当时新增 `docs/interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`，记录已完成、待完成和明确不做的内容；当前已归档到 `docs/technical/interview-archive/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`。
 - 修正面试导航中 Phase 4 仍处于设计阶段的过期表述。
 - 明确下一阶段以面试准备为主，不继续无边界扩展项目功能。
 

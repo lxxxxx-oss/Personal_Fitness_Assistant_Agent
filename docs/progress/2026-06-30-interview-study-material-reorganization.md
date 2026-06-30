@@ -19,7 +19,7 @@
 
 - `PROJECT_INTERVIEW_GUIDE.md` -> `docs/technical/interview-archive/PROJECT_INTERVIEW_GUIDE_FULL.md`
 - `SUBGRAPH_OPTIMIZATION_GUIDE.md` -> `docs/technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md`
-- `INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md` -> `docs/progress/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`
+- 当时将 `INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md` 移到 `docs/progress/`；当前进一步归档到 `docs/technical/interview-archive/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`。
 - `router/*` -> `docs/technical/router/`
 - `motion/*` -> `docs/technical/motion/`
 
