@@ -38,6 +38,7 @@
 | [2026-06-23-interview-guide.md](./2026-06-23-interview-guide.md) | 面试手册整理 |
 | [2026-06-25-interview-docs-reorganization.md](./2026-06-25-interview-docs-reorganization.md) | `interview/` 目录重组和专题目录划分 |
 | [2026-06-26-docs-documentation-map.md](./2026-06-26-docs-documentation-map.md) | 新增 docs 文档地图 |
+| [2026-06-30-interview-preparation-audit.md](./2026-06-30-interview-preparation-audit.md) | AI Agent 面试资料审查、基础优先原则和后续优化清单 |
 
 ### 4. Router 演进
 

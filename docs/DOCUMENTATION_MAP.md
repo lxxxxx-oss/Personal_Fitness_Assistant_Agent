@@ -74,6 +74,7 @@
 |---|---|
 | [interview/README.md](./interview/README.md) | 面试文档导航 |
 | [interview/PROJECT_INTERVIEW_GUIDE.md](./interview/PROJECT_INTERVIEW_GUIDE.md) | 面试主讲稿、高频问答、代码讲解、边界说明 |
+| [interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md](./interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md) | 面试资料优化优先级、完成状态和验收标准 |
 | [interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md) | Chat、Search、Diet、Motion、MCP、Router 的优化总览 |
 | [interview/motion/MOTION_MEDIA_PIPELINE_DESIGN.md](./interview/motion/MOTION_MEDIA_PIPELINE_DESIGN.md) | Motion 从 `.npz` 扩展到图片/视频输入的设计 |
 | [interview/motion/MOTION_OPTIMIZATION_ROADMAP.md](./interview/motion/MOTION_OPTIMIZATION_ROADMAP.md) | Motion 分阶段路线和实际推进台账 |
