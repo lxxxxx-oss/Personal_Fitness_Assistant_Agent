@@ -59,7 +59,7 @@
 | `README.md` | 项目当前能力、边界、进度和下一步 | 大段运行命令、历史过程 |
 | `API.md` | HTTP、SSE、WebSocket、上传接口事实 | 项目路线规划 |
 | `RUNBOOK.md` | 安装、启动、配置、测试和联调命令 | 面试讲稿 |
-| `interview/` | 基于实现、证据和边界的面试复习材料 | 开发台账、原始长设计稿 |
+| `interview/` | 以本地简历为主线、由实现与边界支撑的面试复习材料 | 个人信息、开发台账、原始长设计稿 |
 | `technical/` | 技术设计、专题状态和深挖材料 | 日常流水记录 |
 | `miniprogram/` | 小程序设计、实施计划和完成度 | 后端通用说明 |
 | `progress/` | 日期化实现、重构、修复和整理记录 | 当前状态的唯一事实源 |
@@ -78,7 +78,7 @@
 | Motion 输入、PoseSequence、姿态估计和动作库 | `technical/motion/` | `API.md`、`README.md`、progress、tests |
 | Web UI 用户入口和交互状态 | `README.md` | progress、tests、必要时 API |
 | 小程序页面、组件、API 封装和联调 | `miniprogram/` | `README.md` |
-| 面试主线、亮点和高频问答 | `interview/` | 确保不超出 README/API 当前事实 |
+| 面试主线、亮点和高频问答 | `interview/` | 以简历主线组织，并为 README/API 的实现差异准备防守口径 |
 | 阶段性实现、重构或 Bug 修复 | 新增 `progress/YYYY-MM-DD-*.md` | 更新 `progress/README.md` |
 | 自动化测试或手工验收 | 新增 `tests/YYYY-MM-DD-*.md` | 更新 `tests/README.md` |
 

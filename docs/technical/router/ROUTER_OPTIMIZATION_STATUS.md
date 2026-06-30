@@ -2,7 +2,7 @@
 
 本文档用于快速回答：Router 现在优化到哪一步了，下一步应该先做什么。
 
-> 架构收敛决定：`mcp` intent 与 Diet 职责重叠，后续代码迭代会把菜谱请求并入 Diet 并删除 MCP 路由。本文当前仍记录五 intent 的已实现状态，直到代码、评测集和测试同步迁移完成。
+> 当前口径：产品层按四类能力介绍，代码层保留五个 intent。Diet 负责画像与营养建议，MCP 负责标准化外部菜谱工具调用；二者同属饮食域，但执行职责不同。
 
 详细路线仍以 [../interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md](../interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md#6-router-和横切能力优化方向) 为准；多意图设计见 [MULTI_INTENT_ROUTING_DESIGN.md](./MULTI_INTENT_ROUTING_DESIGN.md)。
 

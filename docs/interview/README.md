@@ -1,79 +1,93 @@
 # 面试复习资料导航
 
-这个目录只保留可以直接用于面试复习的事实口径。重点不是逐字背诵，而是学会用“项目思路、技术取舍、问题解决、能力边界”来回答面试官。
+本目录以 `agent.json` 中的简历项目描述为主线，目标是回答两类问题：简历亮点怎样讲得有吸引力，以及面试官追到代码时怎样把当前实现、原型取舍和生产化路径讲圆。
 
-面试回答不要像百科定义。大多数问题都可以按下面顺序组织：
+`agent.json` 包含个人信息，只在本地使用，已由 `.gitignore` 精确忽略，不上传 GitHub，也不在其他文档复制个人信息。
+
+## 1. 回答原则
 
 ```text
-面试官真正想了解什么
-  -> 我当时为什么这样设计
-  -> 我比较过哪些方案或遇到过什么问题
-  -> 当前做到哪里，有什么证据
-  -> 当前边界是什么，为什么先设置这个边界
-  -> 如果生产化，下一步怎么做
+先讲项目价值与个人贡献
+  -> 再讲核心实现与选择原因
+  -> 追问代码时说明当前仓库事实
+  -> 最后给出生产化补齐路径
 ```
 
-设计原稿、阶段计划、优化台账和实现状态已经移到 `docs/technical/` 或 `docs/progress/`。
+允许适当强化：
 
-## 简历口径优先
+- 把零散实现组织成完整的“路由层 + 执行层”架构。
+- 用目标技术方案说明系统如何生产化。
+- 突出 Motion、MCP、RAG、Tavily、Memory 的组合价值。
 
-`docs/interview/agent.json` 是本地简历源文件，包含个人信息，不上传到 GitHub。面试复习材料要围绕简历中的项目描述来组织：简历里写到的技术点，就是面试官最可能追问的技术点。
+不能制造低级矛盾：
 
-如果简历表述比当前代码更“前置”，本目录的任务不是简单否定简历，而是准备可防守回答：
+- 当前仓库的 Retriever 是 NumPy 内存实现，不能说代码正在直接执行 Milvus IVF_FLAT。
+- MCP Client 和真实协议路径已实现，但默认 `MCP_SERVER_COMMAND=mock`，不能把 mock 说成真实 Server 联调结果。
+- Search 有来源数据、Prompt 引用和内部 `_sources`，但普通 `/chat` 还没有完整透传结构化 `sources`。
+- 图片只提供单帧静态姿态，不能包装成完整视频动作判断。
 
-- 这个技术点为什么写进简历。
-- 当前项目哪部分已经支撑它。
-- 哪些部分还属于目标架构或后续生产化。
-- 面试官追问代码时，如何解释当前边界和补齐路径。
+## 2. 简历主线
 
-也就是说，简历是对外主线，interview 文档负责把这条主线讲清楚、讲稳、讲得能应对追问。
+| 简历关键词 | 面试重点 | 当前边界 |
+|---|---|---|
+| LangGraph / StateGraph | 多任务路由、子图、统一状态、组合执行 | 是受控工作流，不是通用自主 Agent |
+| 3D Motion / FastDTW | 姿态归一化、关节角、时序对齐、多指标 | 主要输入为 `.npz` 时序；图片仅单帧 |
+| ReAct | `think -> parse -> tool -> check`、最大迭代 | 当前主路径通常一次工具执行后检查 |
+| MCP | stdio JSON-RPC、initialize、工具发现与调用 | 默认 mock 保证演示，真实 Server 需显式配置 |
+| Milvus / RAG | 分块、Embedding、COSINE、阈值、去重、排序 | 当前仓库存储层为 NumPy，Milvus 是简历目标方案口径 |
+| Tavily | query rewrite、搜索、来源约束合成 | 尚不是严格逐句 citation 系统 |
+| 6 轮 Memory | `deque`、`user_id` 隔离、跨任务上下文 | 进程内短期记忆，不是长期持久化记忆 |
 
-## 阅读顺序
+## 3. 阅读顺序
 
-### P0：必须掌握
+### P0：项目主线
 
-先读 [01_MUST_MASTER_PROJECT_STORY.md](./01_MUST_MASTER_PROJECT_STORY.md)。
+[01_MUST_MASTER_PROJECT_STORY.md](./01_MUST_MASTER_PROJECT_STORY.md)
 
-这一份是面试主线，必须能基于事实脱稿讲：
+必须掌握：
 
-- 30 秒项目开场。
-- 3 分钟项目介绍。
-- 个人实际完成的工程工作。
-- 能力、证据和当前边界。
-- 三个主打亮点。
-- 为什么使用 LangGraph 和子图。
-- Router、RAG、Motion 和 Streaming 的准确口径。
+- 一句话、30 秒和 3 分钟介绍。
+- 四类业务能力与五条执行路径的关系。
+- 七项个人贡献与三个主打亮点。
+- Milvus、MCP mock、来源透传三个高压问题。
 
-### P1：最好掌握
+### P1：技术问答
 
-再读 [02_SHOULD_MASTER_TECH_QA.md](./02_SHOULD_MASTER_TECH_QA.md)。
+[02_SHOULD_MASTER_TECH_QA.md](./02_SHOULD_MASTER_TECH_QA.md)
 
-这一份用于应对技术追问，但重点不是背定义，而是讲清楚“我为什么这么选、怎么发现问题、为什么设置边界”：
+按简历逐项准备：
 
-- Python / FastAPI / SSE 基础。
-- LLM、RAG、Agent 和 Tool Use 基础。
-- Router eval、测试证据和泛化边界。
-- async 阻塞、流式实现、Memory 和内存治理。
-- 安全、权限、来源和高压追问。
+- LangGraph、Router 与 multi-intent。
+- Motion、FastDTW、多指标与 ReAct。
+- RAG、Sentence-Transformers、Milvus 和 IVF_FLAT。
+- MCP Client、JSON-RPC、工具安全与 fallback。
+- Tavily、来源、Memory、流式和模型治理。
 
-### P2：了解即可
+### P2：代码深挖
 
-最后读 [03_GOOD_TO_KNOW_DEEP_DIVE.md](./03_GOOD_TO_KNOW_DEEP_DIVE.md)。
+[03_GOOD_TO_KNOW_DEEP_DIVE.md](./03_GOOD_TO_KNOW_DEEP_DIVE.md)
 
-这一份用于深挖时兜底：
+用于代码定位、调用链、白板题、测试边界、演示顺序和生产化路线。
 
-- 关键代码调用链。
-- Router Phase 1 到 Phase 4 的具体实现。
-- `.npz` 与图片两条 Motion 链路。
-- RAG、测试证据和架构收敛决策深挖。
-- 生产化顺序、白板题和演示脚本。
+## 4. 证据入口
 
-## 不在本目录的材料
+| 想核对什么 | 文档 |
+|---|---|
+| 项目当前事实 | [../README.md](../README.md) |
+| 接口与 Router 行为 | [../API.md](../API.md) |
+| 启动和演示命令 | [../RUNBOOK.md](../RUNBOOK.md) |
+| Router 设计 | [../technical/router/](../technical/router/) |
+| Motion 设计 | [../technical/motion/](../technical/motion/) |
+| 测试证据 | [../tests/README.md](../tests/README.md) |
 
-- 原完整长版主手册：`docs/technical/interview-archive/PROJECT_INTERVIEW_GUIDE_FULL.md`
-- 原子图优化总览：`docs/technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md`
-- Router 技术设计和状态：`docs/technical/router/`
-- Motion 技术设计和路线：`docs/technical/motion/`
-- 面试准备优化计划归档：`docs/technical/interview-archive/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md`
+历史长版材料位于 `docs/technical/interview-archive/`，只用于追溯，不作为当前面试口径。
 
-这些材料是证据和参考，不要求直接背诵。复习时优先看本目录的三份分级材料，并用自己的语言重新组织答案。
+## 5. 复习标准
+
+不要逐字背答案。每个问题至少能说清：
+
+1. 面试官为什么问。
+2. 项目具体怎么做。
+3. 为什么这样选。
+4. 当前哪部分是原型或目标方案。
+5. 如果继续做，如何验证升级真的有效。

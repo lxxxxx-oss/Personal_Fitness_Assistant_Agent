@@ -16,7 +16,7 @@
 | 2026-06-30 | [简历口径优先规则](./2026-06-30-resume-first-interview-rule.md) | 忽略本地简历 JSON，interview 材料围绕简历项目描述组织 |
 | 2026-06-30 | [面试回答风格再梳理](./2026-06-30-interview-answer-style-refinement.md) | 从标准答案改为项目思路、技术取舍、问题解决和边界说明 |
 | 2026-06-30 | [Router Phase 4 实施](./2026-06-30-router-phase4-implementation.md) | 多意图识别、白名单组合执行、错误隔离和结果合成 |
-| 2026-06-30 | [MCP 菜谱退出核心架构](./2026-06-30-mcp-core-scope-reduction-decision.md) | 四模块目标架构、Diet 合并方向和后续代码迁移边界 |
+| 2026-06-30 | [MCP 菜谱退出核心架构（已被后续口径取代）](./2026-06-30-mcp-core-scope-reduction-decision.md) | 保留当时的范围收敛记录；当前路线继续保留 MCP 工具适配层 |
 | 2026-06-30 | [面试学习材料重组](./2026-06-30-interview-study-material-reorganization.md) | `interview/` 收敛为 P0/P1/P2 分级材料 |
 | 2026-06-30 | [面试与运行边界](./2026-06-30-interview-runtime-boundary.md) | 明确已实现、当前边界和后续规划的表达原则 |
 | 2026-06-30 | [面试准备审查](./2026-06-30-interview-preparation-audit.md) | 面试资料事实审查和优化清单 |

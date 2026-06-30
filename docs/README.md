@@ -6,17 +6,16 @@
 
 健身智能助手是一个基于 LangGraph 的多任务 LLM Agent 原型。系统先判断用户意图，再把请求交给对应专业子图，不是把所有能力塞进一个通用 Prompt。
 
-目标架构聚焦四类核心能力；当前代码仍保留一条待移除的 MCP 菜谱实验链路：
+产品层聚焦四类核心能力；代码层为了隔离营养建议与外部菜谱工具，保留五条执行路径：
 
 | 能力 | 当前做法 |
 |---|---|
 | 健身知识问答 | 本地知识库 RAG 检索后由 LLM 生成回答 |
 | 联网搜索 | Tavily 搜索、来源整理和 mock 降级 |
-| 饮食与菜谱建议 | 用户画像提取、营养知识检索、饮食建议；后续统一承接菜谱请求 |
+| 饮食与菜谱建议 | Diet 负责用户画像、营养检索和饮食建议；MCPTool 负责外部菜谱工具发现与调用 |
 | 动作分析 | `.npz` 姿态序列分析，以及图片单帧静态姿态摘要 |
-| MCP 菜谱实验（待移除） | 当前代码仍有 MCP Client 和 `mcp` intent；目标是把菜谱并入 Diet 后完整删除 |
 
-项目面试展示重点是：四类核心任务的受控编排、可评测 Router、Motion 算法工具链，以及流式输出和失败降级。MCP 不再作为核心亮点。
+项目面试展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、RAG/Search 数据增强，以及记忆、流式输出和失败降级。简历中的 Milvus 表述代表 RAG 的目标技术方案；当前仓库为降低本地部署成本，实际使用 Sentence-Transformers + NumPy 内存向量检索。
 
 ## 2. 系统架构
 
@@ -27,7 +26,7 @@
       -> Search：Query 改写 -> Tavily/mock -> 回答合成
       -> Diet：画像提取 -> 营养 RAG -> 饮食/菜谱建议
       -> Motion：think -> parse -> tool -> check
-      -> MCP：当前遗留菜谱实验，待并入 Diet 后删除
+      -> MCP：工具发现 -> 调用规划 -> JSON-RPC 工具调用 -> 结果格式化
   -> 白名单组合执行或单路由执行
   -> 返回回答
 ```
@@ -39,9 +38,9 @@
 | 后端 | FastAPI、Pydantic、uvicorn |
 | 图编排 | LangGraph、StateGraph、条件边、子图嵌套 |
 | LLM | Qwen3-0.6B、HuggingFace Transformers 本地加载 |
-| 检索 | Sentence-Transformers + NumPy 余弦相似度，失败时关键词降级 |
+| 检索 | Sentence-Transformers + NumPy COSINE 检索，失败时关键词降级；接口预留 Milvus 迁移 |
 | 姿态算法 | NumPy、SciPy、FastDTW、Pillow；MediaPipe 为图片姿态估计可选依赖 |
-| 遗留工具实验 | subprocess + stdio JSON-RPC 2.0 MCP Client，待移除 |
+| 工具协议 | subprocess + stdio JSON-RPC 2.0 MCP Client，支持真实 Server 与 mock fallback |
 | 前端 | Web UI、微信小程序原生 WXML/WXSS/JS |
 | 测试 | pytest、Router 离线评测、专项验收记录 |
 
@@ -54,7 +53,7 @@
 | Search | 已完成 Tavily 接入和 mock 降级 |
 | Diet | 已完成画像提取、营养 RAG 和建议生成 |
 | Motion | 子图、算法、`PoseSequence`、姿态估计适配器、`.npz` 接口和图片静态接口已完成；标准动作库和视频时序入口待补 |
-| MCP | 当前代码仍保留，但架构决策已改为删除；菜谱请求将并入 Diet，删除后重新建立 Router 与 pytest 基线 |
+| MCP | Client、initialize 握手、`tools/list`、`tools/call`、content 解析和 MCP 子图已完成；默认 mock，真实 Server 需显式配置与联调 |
 | Memory | 已完成滑动窗口记忆，默认保留 6 轮并按 `user_id` 隔离 |
 | 流式接口 | SSE 和 WebSocket 已完成 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
@@ -70,8 +69,9 @@
 | LLM 不适合完全承担确定性路由 | 加权规则、语义样例和离线 eval 优先；LLM classifier 默认关闭 | 积累真实困难样本后再评估接管收益 |
 | 本地 LLM 重复加载可能 OOM | 进程级模型缓存、首次加载锁和生成串行化 | 拆成独立模型推理服务 |
 | Embedding 首次加载依赖网络 | 加载失败时降级为关键词匹配 | 固化模型资产并建设向量服务 |
-| Tavily 不可用 | 提供 mock fallback，保证演示链路可运行 | 增加超时、熔断和可观测性 |
-| MCP 菜谱与 Diet 职责重叠 | 当前代码暂时保留以维持可运行版本 | 下一次代码迭代并入 Diet，并删除 MCP 路由、配置与测试 |
+| Tavily 未配置或调用失败 | 未配置 key 时返回 mock；真实调用失败时返回可处理错误并记录降级 warning | 增加超时、重试、熔断和可观测性 |
+| MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
+| 简历使用 Milvus 技术栈口径 | 当前仓库以 NumPy 内存向量保持轻量可运行，未直接创建 Milvus 索引 | 数据与并发增长后替换 Retriever 存储层，并以 Recall@K、延迟评测迁移收益 |
 | Motion 缺标准动作库 | 支持 `.npz` 和图片静态分析，不伪造完整动作判断 | 补标准动作数据、视频抽帧和时序分析 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
 | 小程序 SSE 存在端侧差异 | `wx.request enableChunked`，可降级到非流式接口 | 完成真机和不同基础库版本验收 |
@@ -127,13 +127,13 @@ docs/superpowers/            早期方案与规格
 
 ## 8. 下一步优先级
 
-1. 将菜谱请求并入 Diet，删除 `mcp` intent、MCP 子图、Client、配置、评测样本和专项测试。
-2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 实现视频抽帧到 `PoseSequence` 的时序分析入口。
-3. 准备 `data/motions/` 标准动作库。
-4. 完成微信小程序端到端联调。
-5. 验证 Docker 完整构建和启动。
-6. 积累真实多意图样本与组合成功率，再决定是否扩充 Router 白名单。
-7. 数据规模确有需要后，再把内存 NumPy 检索迁移到 Milvus 等向量库。
+1. 为 RAG 建立标准问答与检索评测集，补 Recall@K、MRR 和来源覆盖率。
+2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 实现视频抽帧到 `PoseSequence` 的时序分析入口，并扩充标准动作库。
+3. 完成真实 MCP Server 的稳定性、超时、Schema、进程生命周期和权限联调。
+4. 补全 Search 的结构化来源透传和 citation 校验。
+5. 数据规模与并发达到需要后，把 NumPy Retriever 迁移到 Milvus，并对比检索质量与延迟基线。
+6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。
+7. 积累真实多意图样本与组合成功率，再决定是否扩充 Router 白名单。
 
 ## 9. 文档入口
 

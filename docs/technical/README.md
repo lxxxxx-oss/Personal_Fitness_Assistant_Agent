@@ -1,6 +1,6 @@
 # Technical 文档索引
 
-`docs/technical/` 用于保存技术设计、路线图、历史长文档和专题状态记录。这里的内容用于追溯细节和支撑面试追问，但不作为面试前直接背诵入口。
+`docs/technical/` 用于保存技术设计、路线图、历史长文档和专题状态记录。这里的内容用于追溯细节和支撑面试追问，但不作为面试前直接背诵入口。当前面试主线以本地简历中的 LangGraph、Motion、ReAct、MCP、RAG/Milvus、Tavily 和 Memory 为核心，具体口径见 `docs/interview/`。
 
 面试复习请优先阅读 `docs/interview/`：
 

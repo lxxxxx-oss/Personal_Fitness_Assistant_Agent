@@ -2,7 +2,7 @@
 
 本文档集中维护本地开发、测试、评测、Docker 和端侧联调命令。项目能力和当前进度看 [README.md](./README.md)，接口参数看 [API.md](./API.md)。
 
-> 过渡说明：当前代码仍保留 MCP 菜谱实验，因此启动命令和配置项暂时继续有效。目标架构已决定将菜谱并入 Diet；在代码迁移完成前不要删除这些运行说明。
+MCP 是简历和面试材料中的工具协议亮点。默认 `MCP_SERVER_COMMAND=mock` 用于离线测试和稳定演示；显式配置真实 Server 命令时，系统会走 subprocess + stdio JSON-RPC，并在连接失败时记录原因后回退 mock。
 
 以下命令默认在项目根目录执行。Windows 示例目录为：
 

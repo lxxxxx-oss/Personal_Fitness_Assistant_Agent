@@ -1,323 +1,338 @@
 # P2 了解即可：代码深挖与白板防守
 
-这份不用逐字背。目标是面试官打开代码继续追问时，你能准确说明调用链、实现细节、已知缺口和生产化方案。
+这份文档用于面试官继续追问代码位置、数据结构、调用顺序和生产化方案时兜底。复习时先掌握 P0、P1，不要从这里开始背。
 
-深挖时不要只讲“代码怎么走”，还要主动补一句“为什么这样写”。建议每个深挖问题都按这个顺序回答：
+## 1. 简历技术点与代码入口
+
+| 技术点 | 主要入口 | 能证明什么 |
+|---|---|---|
+| LangGraph Router | `app/graph/router.py` | 五 intent、受控多意图、错误隔离、结果合成 |
+| 统一状态 | `app/graph/state.py` | 用户输入、记忆、路由和子图临时字段 |
+| RAG | `app/tools/retriever.py` | 分块、Embedding、COSINE、阈值、Top-K、去重、关键词降级 |
+| Search | `app/graph/subgraphs/search.py` | Query Understanding、Tavily Search、Answer Synthesis |
+| MCP | `app/tools/mcp_client.py`、`app/graph/subgraphs/mcp.py` | JSON-RPC Client、工具发现/调用、真实与 mock 模式 |
+| Motion | `app/tools/motion_tool.py`、`app/graph/subgraphs/motion.py` | 3D 姿态相似度与 ReAct 风格状态流 |
+| PoseSequence | `app/tools/pose_sequence.py` | 不同姿态输入的统一中间结构 |
+| 图片姿态 | `app/tools/pose_estimator.py` | 单帧关键点提取与置信度 |
+| Memory | `app/memory/sliding_window.py` | `deque`、6 轮窗口、淘汰与清空 |
+| FastAPI/流式 | `app/main.py` | REST、SSE、WebSocket、上传接口 |
+| Router eval | `scripts/eval_router.py`、`data/eval/` | 绿色集与 challenge set 回归 |
+
+## 2. 总体架构白板
 
 ```text
-当前代码链路
-  -> 当时为什么这样实现
-  -> 这个实现解决了什么问题
-  -> 它的边界是什么
-  -> 如果生产化怎么替换或增强
+FastAPI /chat
+  -> 读取 user_id 对应最近 6 轮 Memory
+  -> LangGraph Router
+       -> intent + confidence + reason
+       -> optional secondary intents / route plan
+  -> 执行层
+       -> Chat: Retriever -> Prompt -> LLM
+       -> Search: Rewrite -> Tavily -> Synthesis
+       -> Diet: Profile -> Nutrition RAG -> Advice
+       -> Motion: Think -> Parse -> Tool -> Check
+       -> MCP: Discover -> Plan -> Execute -> Format
+  -> 单结果返回，或白名单多结果合成
+  -> 写回 Memory
 ```
 
-## 1. 五条真实调用链
+讲图时先说控制面与执行面：Router 决定“去哪”，子图决定“怎么做”，Tool 完成具体原子动作。
 
-### 普通聊天
+## 3. 五条关键调用链
+
+### 3.1 普通知识问答
 
 ```text
 POST /chat
-  -> 根据 user_id 获取进程内 SlidingWindowMemory
-  -> 构造 RouterState
-  -> 同步 graph.invoke(state)
+  -> _get_or_create_memory(user_id)
+  -> graph.invoke(state)
   -> intent_classify_node
-  -> 一个或多个受控子图
-  -> collect_route_result
-  -> synthesize / finalize
-  -> 保存对话历史
-  -> 返回 intent + reply
+  -> Chat subgraph
+  -> get_shared_retriever().search()
+  -> retrieved chunks 注入 prompt
+  -> LLMLoader.generate()
+  -> memory.add_turn()
 ```
 
-注意：`/chat` 是 `async def`，但内部 graph 调用是同步的。
+Shared Retriever 避免 Chat 与 Diet 分别加载同一套 Embedding 和知识库。
 
-### SSE
+### 3.2 Tavily 联网搜索
+
+```text
+用户问题
+  -> query_understanding_node
+      -> LLM 改写为搜索关键词
+  -> search_node
+      -> TavilySearchTool.search(max_results=5)
+      -> title/content/url
+  -> synthesis_node
+      -> 结果编号 + 来源 URL 注入 prompt
+      -> _sources 收集 URL
+      -> LLM 合成回答
+```
+
+代码边界：`_sources` 在 Router 内部能够随结果收集与合并，但普通 `/chat` 构造 `ChatResponse` 时目前没有显式传入该字段，所以 `sources` 仍使用默认空列表。
+
+### 3.3 Motion ReAct
+
+```text
+think
+  -> 判断用户要查看库、加载文件还是对比标准动作
+parse
+  -> 生成 _tools_to_call
+  -> 更新 _iteration
+tool
+  -> load_npz_pose / compute_similarity
+check
+  -> 解释指标或说明缺失输入
+```
+
+当前条件边位于 parse 之后：有工具且未超过迭代上限时进入 tool，否则进入 check。tool 执行后直接进入 check，因此主要路径不是开放式无限循环。
+
+### 3.4 MCP 工具调用
+
+```text
+discover
+  -> MCPClient.connect()
+  -> initialize
+  -> notifications/initialized
+  -> tools/list
+plan
+  -> LLM 或 mock 规则生成 {tool, arguments}
+execute
+  -> tools/call
+  -> 解析 content block
+format
+  -> 工具结果转为用户回答
+```
+
+真实 Server 连接失败时，MCP 子图切换到 mock Client，并记录：
+
+- `_mcp_mode`
+- `_mcp_configured_command`
+- `_mcp_fallback_reason`
+
+### 3.5 SSE 流式输出
 
 ```text
 POST /chat/stream
-  -> graph.invoke(_streaming=True) 准备最终 Prompt
-  -> 先发送 meta(intent)
-  -> 同步 generate_stream(prompt)
-  -> 每取得一个 token 就 yield SSE data
-  -> 保存完整回答
-  -> done
-```
-
-准确口径：有增量 SSE 输出，但图执行和推理没有完全从事件循环隔离，也没有实现客户端断开后的生成取消。
-
-### WebSocket
-
-```text
-/chat/ws
-  -> 接收一次 user_id + message
   -> graph.invoke(_streaming=True)
-  -> 在线程中执行 list(generate_stream(prompt))
-  -> 等完整 token 列表生成后逐条发送 token 消息
-  -> done
+  -> 子图只准备最终 _prompt，不提前生成完整答案
+  -> event: meta
+  -> LLMLoader.generate_stream(prompt)
+  -> data: token...
+  -> 写入 Memory
+  -> event: done
 ```
 
-准确口径：消息协议已打通，但当前先缓存完整输出，不是真正实时生成一条发一条。
+这避免“子图生成一次完整答案，接口再生成一次”的重复推理。WebSocket 使用相似思路。
 
-### `.npz` 动作序列分析
+## 4. Motion 算法深挖
+
+### 4.1 输入验证
+
+动作序列要求形状 `(T, J, 3)`，至少包含足够帧数和关键点，数据必须是有限数值。错误通过统一 `ToolResult` 和 `ErrorCode` 返回，而不是让 NumPy 异常直接穿透到 Agent。
+
+### 4.2 归一化
+
+核心目标：消除平移和尺度对相似度的干扰。
 
 ```text
-POST /motion/analyze
-  -> 分块保存上传的 .npz 临时文件
-  -> load_npz_pose / PoseSequence 校验
-  -> 可选加载 reference_name
-  -> normalize + FastDTW + similarity
-  -> 返回 frames / joints / metrics
+原始关键点
+  -> 以索引 0 的约定中心点做平移归一化
+  -> 以全部关键点到中心点的平均距离做缩放
+  -> 保留相对关节结构
 ```
 
-聊天中的 Motion 子图也主要围绕 `.npz` 路径、标准动作库和相似度工具工作。
+生产化还可增加：朝向校正、左右镜像检测、低置信关键点插值、相机坐标标定。
 
-### 图片姿态提取
+### 4.3 FastDTW
+
+将每一帧 `(J, 3)` 拉平成一维特征，比较两条时间序列。FastDTW 允许同一动作以不同速度完成，不要求第 10 帧必须和第 10 帧对应。
+
+不能把 DTW distance 直接叫“准确率”。它是距离，阈值需要基于动作类别和真实样本标定。
+
+### 4.4 多指标
+
+| 指标 | 关注点 | 趋势 |
+|---|---|---|
+| DTW distance | 对齐后的时序轨迹差异 | 越小越接近 |
+| cosine similarity | 归一化姿态方向一致性 | 越接近 1 越相似 |
+| shape difference | 人体结构幅度序列差异 | 越小越接近 |
+| joint angles | 局部关节几何 | 需按动作阶段解释 |
+
+综合标签目前是工程阈值，不是经大规模运动科学数据验证的医学或教练结论。
+
+### 4.5 从图片到视频
 
 ```text
-Web UI 上传图片
-  -> POST /motion/analyze-image
-  -> 解码图片
-  -> MediaPipe PoseLandmarker
-  -> 单帧 PoseSequence
-  -> 关键点数量和置信度摘要
-  -> Web UI 展示
+video
+  -> 固定 fps 抽帧
+  -> 每帧姿态估计
+  -> 置信度过滤、缺失点插值、平滑
+  -> PoseSequence(T, J, 3)
+  -> 动作阶段切分
+  -> FastDTW + 多指标 + 专项规则
+  -> 反馈
 ```
 
-关键事实：这条路径直接由 FastAPI 调用 Pose Estimator，没有进入 LangGraph Motion 子图，也没有调用 FastDTW、标准动作对比或动作专项规则。
+当前图片接口只完成 `T=1` 的第一部分，不能越级描述为完整视频动作分析。
 
-## 2. Router 四阶段的代码级口径
+## 5. RAG 与 Milvus 深挖
 
-### Phase 1：Weighted Rules
-
-实现：
-
-- 每个 intent 有若干 `phrase -> weight`。
-- 文本可以同时给多个 intent 累积分数。
-- combo rule 和 pattern boost 处理跨词组合与边界表达。
-- 根据最高分和分差计算工程置信度。
-
-置信度是启发式映射，不是经过概率校准的真实概率。不要把 `0.85` 解释成“85% 正确率”。
-
-为什么这样做：最早的关键词路由容易被单个词抢走意图。Weighted Rules 的优势是快、可解释、可测试；缺点是泛化依赖规则设计。所以我把它作为默认控制面，而不是直接让 LLM 接管。
-
-### Phase 2：Semantic Examples
-
-实现：
-
-- 规范化文本后生成 token、字符 2-gram 和 3-gram 特征。
-- 与人工样例计算 Jaccard 相似度。
-- 用最佳分数和分差生成启发式 confidence。
-
-它不是 Embedding 模型，也不是大规模语义检索；优点是离线、快速、可解释，缺点是对改写和长句泛化有限。
-
-为什么这样做：当时的目标不是一步到位做复杂语义路由，而是在不引入新模型依赖的情况下补一部分隐式表达。这个边界是性价比选择，不是说 embedding router 没价值。
-
-### Phase 3：LLM Classifier Fallback
-
-实现：
-
-- 只有 `LLM_ROUTER_ENABLED=true` 才调用本地 Qwen。
-- 输出必须是合法 JSON。
-- intent 必须在白名单内。
-- `needs_clarification=true`、低于 0.70 或不高于已有确定性置信度时不会接管。
-- 记录调用结果、选择结果和延迟指标。
-
-A/B 结论：当前 challenge 样本没有新增正确项，却增加约 6.22 秒审查延迟，因此默认关闭。该结论不能推广到更强模型或真实线上样本。
-
-为什么这样做：Router 是控制面，不是越智能越好。只有当 LLM 能明显提升准确率，并且延迟可接受时，才值得让它接管。当前默认关闭是基于 A/B 结果的取舍。
-
-### Phase 4：Controlled Multi-intent
-
-实现：
-
-- 使用中文标点和“然后、顺便、同时、再”等连接词切分子句。
-- 子句继续走规则/语义分类，形成 observed secondary intents。
-- 只有显式顺序表达才扩展 route plan。
-- 只有四种两步组合允许执行。
-- 每个子图由安全包装器捕获异常，成功结果最后统一合成。
-
-当前缺口：
-
-- `needs_clarification` 只记录状态并退回主意图，没有真的和用户多轮澄清。
-- `chat -> search` 等很多合理顺序不在执行白名单；代码中的 `mcp` 路径也计划在菜谱并入 Diet 后删除。
-- 规则中存在针对当前领域样本的人工修正，泛化依赖后续真实数据。
-
-为什么这样做：多意图能力如果开放任意组合，会让原型很快失控，也难以评测。所以当前只开放少数白名单组合，先证明思路，再根据真实样本扩展。
-
-## 3. Motion 深挖
-
-### Q：`.npz` 为什么存在？
-
-> `.npz` 是姿态序列的内部持久化格式，不应要求普通用户理解。它让姿态估计层和动作分析层解耦：上游可以来自图片、视频或其他模型，下游只消费统一的 `T × J × C` 数据和 metadata。
-
-### Q：为什么图片目前不能判断完整动作？
-
-> 单帧只有一个时间点。它能观察关节位置、身体对齐和关键点置信度，但无法知道下降、最低点、上升、节奏、轨迹和重复稳定性。当前接口甚至还没有把单帧关键点送入动作专项角度规则，所以只能称为静态姿态提取和摘要。
-
-### Q：FastDTW 和余弦相似度分别看什么？
-
-> FastDTW 用于对齐不同速度或帧数的动作序列，距离反映时序轨迹差异；余弦相似度更关注归一化后姿态方向的整体一致性。两者都是统计相似度，不自动等于“动作标准”。要转成教练反馈，还需要动作阶段、关节角度阈值、左右侧规则和真实标注。
-
-### Q：为什么不从零训练姿态模型？
-
-> 这个项目的核心是 Agent 编排和动作工具链，不是姿态估计算法研究。使用 MediaPipe 这样的预训练模型更符合个人项目资源约束；个人工程工作集中在输入校验、模型适配、PoseSequence、分析接口和失败边界。
-
-### Q：下一步如何真正形成视频动作分析？
+### 5.1 当前代码数据流
 
 ```text
-视频上传
-  -> 文件大小/格式校验
-  -> 解码和按 fps 抽帧
-  -> 每帧 Pose Estimator
-  -> 缺失点插值和置信度过滤
-  -> PoseSequence
-  -> 动作分段
-  -> 角度、轨迹、节奏和标准序列对比
-  -> 结构化问题与建议
-```
-
-## 4. RAG 深挖
-
-### 当前数据流
-
-```text
-data/knowledge 文本
-  -> sentence-aware chunk（约 500 字符）
-  -> SentenceTransformer normalized embedding
-  -> NumPy 向量矩阵
-
-用户问题
-  -> normalized embedding
-  -> 点积/余弦相似度
-  -> threshold 过滤
+data/knowledge/*.txt
+  -> sentence-aware split (max 500 chars)
+  -> SentenceTransformer.encode(normalize_embeddings=True)
+  -> NumPy vectors
+  -> query embedding
+  -> dot product == cosine
+  -> threshold
+  -> sort
   -> Top-K
-  -> Prompt 中的 Ref 片段
-  -> LLM 回答
+  -> content dedupe
+  -> prompt context
 ```
 
-### 如果问 Recall@K
+Embedding 不可用时降级关键词搜索；返回 meta 中标明 `mode=embedding|keyword`，便于判断本轮不是同一种检索质量。
 
-> 当前没有问题到证据片段的冻结标注集，所以没有可靠 Recall@K。我不会编数字。下一步会从知识库构造问题、标注支持片段，拆分开发集和留出集，再评估 Recall@K、MRR、无关片段率以及答案忠实度。
+### 5.2 当前实现与简历 Milvus 口径
 
-### 如果问怎么优化
+| 层级 | 当前仓库 | 简历/目标方案 |
+|---|---|---|
+| 文档分块 | 已实现 | 保留 |
+| Embedding | Sentence-Transformers | 保留 |
+| 相似度 | normalized dot product / COSINE | Milvus COSINE |
+| 存储 | 进程内 NumPy | Milvus Collection |
+| ANN 索引 | 无 | IVF_FLAT 或 HNSW |
+| 后处理 | threshold、排序、Top-K、去重 | 保留，可增加 rerank |
+| 元数据过滤 | 很轻 | source/topic/version/filter expr |
+| 持久化与扩展 | 无 | Milvus 服务负责 |
 
-1. 清理知识来源和版本。
-2. 建立检索标注集。
-3. 对比 chunk 粒度和 overlap。
-4. 调整 Top-K 与 threshold。
-5. 增加 BM25/关键词混合检索。
-6. 加 reranker。
-7. 返回结构化引用并验证 citation correctness。
+面试时可以详细讲 Milvus 设计，但看到当前代码时必须明确右列是目标方案。
 
-不要把“迁移 Milvus”放在第一位。当前数据量很小，先解决数据与评测比替换数据库更有价值。
-
-## 5. 为什么删除 MCP 菜谱实验
-
-当前仓库仍保留早期 MCP Client、菜谱子图、`mcp` intent 和相关测试，但目标架构已经决定不再把它作为核心能力。
-
-删除原因：
-
-- 菜谱和 Diet 都在解决“吃什么、怎么吃”，职责重叠。
-- 菜谱 MCP 默认依赖 mock，对项目核心价值贡献有限。
-- 它增加了一类 intent、一个子图、一套配置和大量测试维护成本。
-- MCP 不是用户当前熟悉和准备主打的技术，继续保留会扩大面试攻击面。
-
-面试口径：
-
-> MCP Client 是项目早期探索标准化工具调用的一次实验。复盘后发现菜谱与 Diet 业务重叠，默认 mock 也没有形成足够真实价值，所以我决定把菜谱并入 Diet，并删除 MCP 路由。这体现的是架构收敛，而不是技术堆叠。
-
-在代码真正删除前，必须说明它仍是遗留实现，不能把“计划删除”说成“已经删除”。
-
-## 6. 测试证据深挖
-
-### 自动化测试覆盖
+### 5.3 IVF_FLAT 白板
 
 ```text
-API / Router / eval script
-Retriever / LLM loader cache
-Search Tool
-Motion Tool / PoseSequence / Pose Estimator adapter
-SlidingWindowMemory
+build:
+  embeddings -> k-means clusters (nlist) -> inverted lists
+
+search:
+  query -> nearest clusters (nprobe) -> exact distance in selected lists -> top-k
 ```
 
-测试策略：
+权衡：
 
-- LLM 和 SentenceTransformer 全局 mock，保证离线和可重复。
-- 外部搜索主要测试 mock、失败和降级路径；当前 114 条基线仍包含待删除的 MCP 遗留测试。
-- MediaPipe 主要测输入、缺依赖、缺模型和伪造关键点转换。
-- Router eval 使用真实确定性分类逻辑，但数据是项目自建回归样本。
+- `nlist` 太小：每个桶过大，查询扫描多。
+- `nlist` 太大：训练和管理成本上升，小数据还可能分桶不稳定。
+- `nprobe` 大：召回更好但延迟更高。
+- 数据很小：暴力 NumPy 检索往往更简单，未必更慢到值得部署 Milvus。
 
-因此可以说“自动化回归覆盖较完整”，不能说“真实端到端质量已经充分验证”。真正的端到端验收还要补：
+### 5.4 迁移接口
 
-- 真实 Qwen 回答抽样与评分。
-- 真实 Embedding 的 RAG 检索集。
-- 真实 Tavily 来源与引用校验。
-- 真实图片和视频动作数据集。
+上层 Chat/Diet 目前只关心类似下面的结果：
 
-## 7. 生产化升级顺序
-
-不要一次罗列十个技术名词。按风险和收益排序：
-
-1. 认证、会话隔离、限流、输入和上传安全。
-2. 结构化日志、trace id、Router/RAG/工具指标。
-3. 拆独立模型服务，解决阻塞、并发和资源治理。
-4. 建立 Router 留出集、RAG eval 和真实回答抽检。
-5. 返回结构化来源并增加搜索内容安全处理。
-6. Memory 迁移 Redis/PostgreSQL，并增加 TTL。
-7. Motion 建真实标准动作库、视频管线和专项规则。
-8. 数据规模增长后再决定是否迁移 pgvector/Milvus。
-
-## 8. 白板题模板
-
-### 当前架构
-
-```text
-Web UI / MiniProgram
-  -> FastAPI
-      -> /chat -> LangGraph Router
-           -> Chat RAG
-           -> Search
-           -> Diet RAG
-           -> Motion .npz Workflow
-      -> /motion/analyze -> .npz Analysis
-      -> /motion/analyze-image -> Pose Estimator -> Static Summary
-  -> JSON / SSE / WebSocket protocol
+```json
+[
+  {"content": "...", "score": 0.82, "index": 3}
+]
 ```
 
-这个图表示目标四模块架构。当前代码仍有待移除的 MCP 菜谱子图；图片接口则刻意画在 LangGraph 之外，避免把“未来要串联”画成“当前已串联”。
+Milvus 适配器应维持统一 `search(query, top_k, threshold) -> ToolResult` 契约，让子图不感知底层数据库变化。
 
-### 生产化目标
+## 6. MCP 协议深挖
 
-```text
-Client
-  -> API Gateway / Auth / Rate Limit
-  -> Agent Service
-       -> Router + Trace
-       -> RAG Service / Search
-       -> Motion Service
-  -> Model Serving
-  -> Redis / PostgreSQL
-  -> Metrics / Logs / Evaluation Pipeline
+### 6.1 为什么选择 stdio
+
+本地 MCP Server 与 Agent 在同一机器时，stdio 不需要额外监听端口和鉴权服务，适合 CLI 工具和面试原型。缺点是进程生命周期、阻塞读写和 stderr 管理更复杂；远程生产服务更适合 HTTP transport、独立鉴权和连接池。
+
+### 6.2 JSON-RPC 请求
+
+典型请求包含：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "unique-id",
+  "method": "tools/call",
+  "params": {
+    "name": "tool-name",
+    "arguments": {}
+  }
+}
 ```
+
+`initialize` 建立能力与版本上下文，`notifications/initialized` 是通知，不应期待普通结果；`tools/list` 返回描述与 input schema；`tools/call` 返回 content blocks。
+
+### 6.3 当前错误处理
+
+- Server 命令找不到：`DATA_NOT_FOUND`。
+- 未连接调用：`NETWORK_ERROR`。
+- 无响应或 JSON-RPC error：转换成 `ToolResult.fail`。
+- 工具名为空、arguments 非字典：`INVALID_PARAM`。
+- 真实配置连接失败：子图记录原因并回退 mock。
+
+生产化缺口：完整 schema validation、请求级超时取消、进程健康检查、并发请求匹配、权限 allowlist 和审计。
+
+## 7. Router 四阶段深挖
+
+| 阶段 | 当前实现 | 价值 |
+|---|---|---|
+| Phase 1 | weighted rules、combo、pattern boosts | 快、可解释、可控 |
+| Phase 2 | semantic examples、char n-gram Jaccard | 补隐式表达，不依赖模型 |
+| Phase 3 | 可选 Qwen classifier、严格 JSON 契约 | 处理少量模糊样本，默认关闭 |
+| Phase 4 | secondary intents、白名单组合、错误隔离、合成 | 支持受控复合任务 |
+
+LLM classifier 默认关闭的核心原因不是“不会做”，而是 A/B 中没有带来足够正确率收益，却增加延迟和不确定性。面试里这是一项合理工程取舍。
+
+## 8. 测试证据怎么讲
+
+### 已覆盖
+
+- FastAPI 参数与响应。
+- Router 主流、困难和多意图样本。
+- RAG 分块、排序、降级和参数错误。
+- Motion 输入、相似度、PoseSequence 和图片适配。
+- MCP mock 工具、请求结构和子图调用。
+- Memory 容量、淘汰、读取与清空。
+- 模型共享加载与部分错误路径。
+
+### 未被这些测试证明
+
+- 真实 Qwen 回答质量。
+- 真实 Sentence-Transformer 的领域召回率。
+- 真实 Tavily 每条结论的来源有效性。
+- 真实 howtocook-mcp 的长期稳定性。
+- Milvus 当前分支的直接集成。
+- Motion 对真实用户动作的教练级准确性。
+- Docker 跨机器完整构建与小程序真机体验。
 
 ## 9. 五分钟演示顺序
 
-1. 健身知识问题：展示 Chat 路由和回答。
-2. 明确搜索请求：展示 Search 与 mock/真实状态。
-3. 多意图白名单样本：展示 route plan，而不是宣称任意组合。
-4. 上传图片：明确只展示关键点与静态摘要。
-5. 展示 Router eval 报告和一条 mismatch 调试信息。
-6. 主动展示一个 fallback，例如搜索无 Key 后使用 mock，或 Embedding 失败后使用关键词匹配。
+1. `/health`：证明服务启动。
+2. `/ui` 普通知识问题：展示 Chat RAG 与 Memory。
+3. 联网问题：展示 Search intent 和来源文本。
+4. 菜谱问题：展示 MCP intent，并主动说明当前是 mock 还是真实 Server。
+5. `/motion/analyze`：上传 `.npz` 并展示多指标。
+6. Router eval：展示 66/66 和 36/36。
+7. 收尾说明：Milvus、视频 Motion、真实来源校验是生产化重点。
 
-演示重点是“行为可解释、失败可控”，不是强行展示所有页面。
+演示前不要临时依赖没有验证的真实外部服务。稳定演示和明确模式，比现场赌网络更专业。
 
-## 10. 面试收尾
+## 10. 生产化路线
 
-> 这个项目最能代表我的地方，不是调用了多少模型，而是我把一个容易堆成 Demo 的 Agent 项目拆成了控制面、任务域、工具契约和评测证据。我也会主动删除与 Diet 重叠的 MCP 菜谱实验，并指出当前没有完成的部分：RAG 和 Motion 缺真实质量评测，流式和并发仍是单机原型。下一步会优先补真实数据闭环和运行治理，而不是继续堆功能。
+优先级建议：
 
-## 11. 可以反问面试官
+1. 建立 RAG 标准问答、Motion 标准动作和 Router 真实误判数据集。
+2. 补全 Search 结构化来源透传与 citation validation。
+3. 把视频转换成多帧 `PoseSequence`，再标定动作阈值。
+4. 接入 Milvus 并以 Recall@K、P95 latency 对比 NumPy 基线。
+5. 完善 MCP schema、超时、进程生命周期、权限和真实联调。
+6. 把 Memory 迁移到 Redis/PostgreSQL，增加认证、TTL 和隐私删除。
+7. 把本地模型拆成推理服务，再做 Docker 多环境验证。
 
-- 团队的 Agent 更偏开放式自主规划，还是受控 Workflow？如何定义二者的验收指标？
-- 线上如何构建 Router、Tool Use 和 RAG 的持续评测数据？
-- 模型推理是独立服务还是应用进程内调用？团队如何处理流式取消和资源隔离？
-- 团队如何判断一个实验性模块应该继续投入，还是应该合并或删除？
+## 11. 面试收尾
+
+> 这个项目最有价值的地方，是把健身场景里不同性质的能力统一到一个受控 Agent 中：RAG 负责领域知识，Tavily 负责最新信息，NumPy/FastDTW 负责确定性动作计算，MCP 负责标准化外部工具调用，LangGraph 负责路由、状态和失败处理。我已经把原型链路、测试和演示入口打通，也清楚当前仓库与生产化方案的差异。下一步不是继续堆技术名词，而是用真实数据和指标把 Milvus、视频 Motion、来源校验和外部工具治理逐项做实。
