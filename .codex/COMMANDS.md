@@ -35,7 +35,33 @@ pip install -r requirements.txt
 pip install pytest pytest-asyncio
 ```
 
+Motion 图片姿态分析需要额外安装 MediaPipe：
+
+```bash
+pip install -r requirements-motion.txt
+```
+
+MediaPipe Tasks API 还需要本地 `pose_landmarker.task` 模型文件。该文件不提交到 Git，默认放在 `data/models/pose_landmarker.task`，或通过 `MEDIAPIPE_POSE_MODEL_PATH` 指向绝对路径。
+
 ## 后端服务
+
+Conda 环境启动：
+
+```powershell
+cd D:\Users\Agent\Personal_Fitness_Assistant_Agent
+conda activate fitness-agent
+pip install -r requirements.txt
+$env:MCP_SERVER_COMMAND="mock"
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+Motion 图片分析准备：
+
+```powershell
+pip install -r requirements-motion.txt
+New-Item -ItemType Directory -Force data\models
+curl.exe -L -o data\models\pose_landmarker.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
+```
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000

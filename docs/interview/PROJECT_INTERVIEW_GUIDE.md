@@ -42,7 +42,7 @@
 >
 > Motion 子图比较特别，它实现了 ReAct 风格的链路：`think -> parse -> tool -> check`。LLM 只负责分析意图和最终解释，真正的工具执行是确定性数值算法，包括姿态归一化、关节角度计算、FastDTW 对齐和多指标相似度计算。
 >
-> MCP 子图则是自实现了一个轻量级 MCP Client，用 subprocess 启动 howtocook-mcp Server，通过 stdin/stdout 做 JSON-RPC 2.0 通信，支持工具发现和工具调用，也支持 mock 降级。
+> MCP 子图则是自实现了一个轻量级 MCP Client，用 subprocess 启动 howtocook-mcp Server，通过 stdin/stdout 做 JSON-RPC 2.0 通信，支持工具发现和工具调用。当前默认使用 mock 菜谱数据保证演示稳定；如果显式配置真实 MCP Server，会优先连接真实服务，失败后自动降级到 mock。
 >
 > 工程上，后端用 FastAPI 暴露 `/chat`、`/chat/stream`、`/chat/ws`、历史记录等接口；流式输出通过图执行和 LLM 生成分层解决；前端有 Web UI 和微信小程序。测试层面有 router、retriever、motion_tool、mcp_client、API 和 integration 测试，外部依赖都做了 mock 策略。
 >
@@ -131,7 +131,7 @@
 个人项目可以在工程完备性上弱一些，但不能像 toy demo。这个项目“不太 toy”的地方主要有三点：
 
 1. **不是只有 Prompt**：Motion、Search、RAG、MCP 都引入了模型外部能力。
-2. **不是黑盒 Agent**：Router 有 `_route_scores`、`_route_confidence`、`_route_reason`，并且有 66 条绿色回归 eval、20 条 challenge eval 和 evaluation slices。
+2. **不是黑盒 Agent**：Router 有 `_route_scores`、`_route_confidence`、`_route_reason`、ambiguity signals，并且有 66 条绿色回归 eval、36 条 challenge eval 和 LLM A/B 指标。
 3. **不是把所有任务都丢给 LLM**：确定性任务交给规则、检索、数值算法和工具协议，LLM 只负责它擅长的理解、改写、解释和生成。
 
 可以这样讲：
@@ -175,6 +175,63 @@
 > 当前项目主体链路已经完成，但还有几个工程化待完善点：第一，向量检索现在是内存 NumPy，没有真正切到 Milvus；第二，动作分析算法、`/motion/analyze` 的 `.npz` 上传接口和 `/motion/analyze-image` 的图片静态姿态入口已实现，但缺标准动作库数据，视频上传还需要补抽帧和时序分析；第三，Docker 和小程序端到端联调还需要进一步验证。
 
 这样回答不会显得虚，反而显得你对项目边界清楚。
+
+### 3.4 项目难点：本地 LLM 的内存治理
+
+这是项目中一个已经真实出现并完成修复的工程难点，不是预设问题。
+
+#### 问题现象
+
+运行本地 Qwen 模型时出现系统内存不足。该问题会导致请求失败，严重时进程可能被操作系统终止。
+
+模型文件约 1.4 GB，但 CPU 推理使用 `float32` 后，单份模型权重理论内存约 2.8 GB，还没有计算 tokenizer、输入张量和生成 KV cache。
+
+#### 根因
+
+根因不是“模型本身太大”，而是模型资源的生命周期设计错误：
+
+1. Chat、Diet、Search、Motion、MCP 的节点都会创建 `LLMLoader`。
+2. 原实现只在单个 loader 实例内部缓存模型，不同实例之间不共享。
+3. Diet、Search、Motion、MCP 一次请求可能经过多个 LLM 节点，因此可能加载多份模型。
+4. SSE/WebSocket 原来会在 `graph.invoke()` 中生成一次完整答案，随后再执行一次流式生成。
+5. 并发首次请求没有加载锁，可能同时执行多次 `from_pretrained()`。
+
+因此一个 0.6B 模型也可能因为重复加载和并发生成造成数 GB 级内存叠加。
+
+#### 解决方案
+
+- 将 tokenizer/model 改为进程级共享缓存，缓存 key 使用模型路径、设备和 dtype。
+- 使用 double-checked loading lock，确保并发首次请求只加载一份模型。
+- 使用生成锁串行化共享模型推理，避免多个 KV cache 同时堆积。
+- 加载失败时清理半初始化对象，不向共享缓存写入失败状态。
+- SSE/WebSocket 使用 `_streaming` 状态，子图只构建最终 prompt，不再重复生成完整答案。
+- 本地部署保持单 uvicorn worker，避免不同进程各自复制模型。
+
+#### 验证结果
+
+```text
+多个 LLMLoader 实例：cache_entries=1
+底层对象：same_model=True, same_tokenizer=True
+真实 Qwen 两次短生成：first_error=False, second_error=False
+全量测试：102 passed, 1 skipped
+```
+
+新增测试覆盖：
+
+- 多 loader 只加载一次模型。
+- 8 个并发首次加载请求只创建一个模型对象。
+- 模拟 `MemoryError` 后不污染共享缓存。
+- SSE 最终回答只执行一次生成。
+
+#### 工程取舍
+
+当前方案选择“单进程、单模型、串行生成”，优先解决本地演示环境的内存稳定性。代价是并发吞吐有限。
+
+生产化时不会简单增加 uvicorn worker，因为每个 worker 都会复制模型。更合理的演进是把模型拆成独立推理服务，在服务层增加请求队列、批处理、并发限制和资源监控。
+
+面试时可以这样讲：
+
+> 项目里一个比较典型的工程难点是本地模型的内存治理。最初每个子图节点都会创建 loader，而模型只在实例内部缓存，导致一次请求可能重复加载多份 Qwen 权重；流式接口还存在先完整生成、再流式生成的重复计算。CPU float32 下单份权重约 2.8 GB，多节点和并发请求会快速耗尽内存。我把模型改成进程级共享缓存，用加载锁防止并发重复初始化，用生成锁限制 KV cache 峰值，并让流式接口只生成一次。验证时多个 loader 的缓存条目保持 1，真实模型生成和 102 条测试都通过。这个修复让我更明确地区分了普通 Python 对象和进程级模型资源的生命周期。
 
 ## 4. 代码总览：从用户请求到回答
 
@@ -290,6 +347,34 @@ COMBO_RULES = [
 如果被质疑“规则路由还是不够智能”：
 
 > 是的，当前还是轻量 hybrid router：Phase 1 是 weighted rule scoring，Phase 2 是 semantic example fallback。它还不是完整 embedding classifier 或 LLM router。生产环境可以继续升级：规则高置信命中时直接路由，规则不确定时再走 Sentence-Transformer embedding router 或 LLM classifier。
+
+#### 典型边界案例：`蛋炒饭怎么做`
+
+这个案例适合面试时主动说明 Router 的真实边界：
+
+```text
+蛋炒饭怎么做 -> 应进入 MCP 菜谱工具
+深蹲怎么做 -> 应进入 Motion 或 Chat/Motion 边界
+减脂餐怎么做 -> 可能是 Diet，也可能是 MCP，取决于用户要饮食规划还是具体做法
+```
+
+问题不在于系统缺少“蛋炒饭”这个关键词，而在于“怎么做”本身是一个歧义表达：做菜、做动作、做训练计划都可能这样问。因此不适合靠继续堆菜名词库解决。
+
+更合理的面试说法：
+
+> 这个问题暴露了当前 Router 的一个典型边界：加权规则适合处理高置信触发词，但“X 怎么做”这种句式需要先判断 X 是菜品、训练动作还是饮食规划。下一步我会把它放进 challenge/eval 集，作为 Phase 3 LLM classifier 或 embedding router 的验证样本，而不是简单把“蛋炒饭”硬编码进关键词表。
+
+推荐后续实现路径：
+
+```text
+weighted rules
+  -> ambiguity check
+  -> semantic examples
+  -> LLM classifier fallback
+  -> fallback chat / clarification
+```
+
+这样可以保留规则路由的稳定性，同时把模糊问题交给更适合的语义分类层处理。
 
 ## 5. 五个子图怎么讲
 
@@ -845,7 +930,7 @@ ToolResult(
 
 回答：
 
-> 当前意图集合小且很多触发词明显，用加权规则更稳定、成本更低、延迟更小。相比简单关键词 first-match，现在 Router 会给所有 intent 打分，记录 `_route_scores`、`_route_confidence` 和 `_route_reason`，能减少“最近想瘦一点”这类口语化问题误进 Search 的情况。对于规则低置信的隐式表达，又加了一层 semantic examples fallback。LLM 分类确实适合处理更隐式的低置信样本，所以当前代码已经预留 `_call_llm_router()` 契约桩，要求严格 JSON、合法 intent 和高置信才接管；默认不接真实模型，避免把稳定路由变成不可控依赖。
+> 当前意图集合小且很多触发词明确，加权规则更稳定、成本更低。Router 会记录分数、置信度、原因和 ambiguity signals，低置信时再用 semantic examples。本地 Qwen classifier 已真实接入并完成 A/B，但开启后没有提高 66 条绿色集或 36 条 challenge set 的准确率，单次分类平均约 6 秒，且没有置信度保护时曾造成误覆盖。因此它默认关闭；即使开启，也必须通过严格 JSON、最低置信度，并且高于规则置信度才允许接管。
 
 ### Q4：RAG 是怎么实现的？
 
@@ -869,7 +954,7 @@ ToolResult(
 
 回答：
 
-> 项目支持 `server_command="mock"` 模式，会返回内置菜谱工具和数据。这样测试和演示不依赖外部 MCP Server。真实环境下如果命令找不到，会返回 `DATA_NOT_FOUND` 错误。
+> 项目现在默认就是 `server_command="mock"`，会返回内置菜谱工具和数据，所以测试和演示不依赖外部 MCP Server。如果显式设置 `MCP_SERVER_COMMAND=howtocook-mcp`，系统会先尝试真实 MCP；命令不存在或连接失败时，会记录 fallback 原因并自动切回 mock，避免菜谱链路因为本机环境问题不可用。
 
 ### Q8：Motion 动作分析为什么可信？
 
@@ -909,6 +994,20 @@ ToolResult(
 
 > 最大难点是把不同性质的能力统一到一个 Agent 编排里：RAG 是检索增强，Search 是外部搜索，Motion 是数值算法，MCP 是外部工具协议，Diet 是画像提取和推荐。它们的数据流不一样，但对外要统一成一个对话接口。
 
+可以补充一个已经解决的工程难点：
+
+> 除了架构编排，本地模型内存治理是一个实际遇到的难点。原实现把模型当成普通实例资源，多个子图节点和流式接口会重复加载或重复生成，最终触发内存不足。修复后模型成为进程级共享资源，并增加加载锁、生成锁和单 worker 约束。
+
+### Q12.1：为什么 0.6B 小模型也会导致内存不足？
+
+回答：
+
+> 参数量小不等于可以随意复制。模型文件约 1.4 GB，CPU float32 展开后单份权重约 2.8 GB。原来不同 `LLMLoader` 实例各自加载，Diet、Search、Motion、MCP 又可能在一次请求中经过多个 LLM 节点，再叠加流式重复生成和并发 KV cache，峰值会迅速增加。问题本质是模型生命周期和并发控制错误，不是单纯机器内存小。
+
+如果追问“为什么不直接加 worker”：
+
+> uvicorn worker 是独立进程，每个 worker 都会加载自己的模型，加 worker 会提高模型权重复制数量。当前本地部署采用单 worker 和串行生成；生产高并发会拆独立推理服务，而不是在 API 进程内复制模型。
+
 ### Q13：你会如何把它升级到生产级？
 
 回答：
@@ -939,7 +1038,7 @@ ToolResult(
 
 回答：
 
-> 规则路由不是为了炫技，而是工程取舍。当前意图少且明确，规则可解释、低成本、稳定。这个项目已经从简单关键词 first-match 升级为加权规则打分，并增加了 semantic examples fallback，会综合短语、组合规则和低置信样例匹配，并记录置信度与原因。LLM fallback 已经先做成工程契约桩，只有 JSON 合法、intent 合法、非澄清且置信度达标才会被接受。Agent 系统里并不是所有地方都该用 LLM，生产接入前还需要用 router eval 对比收益和误路由率。
+> 规则路由是经过 A/B 验证的工程取舍。项目已从 first-match 升级为加权规则、确定性歧义处理和 semantic examples，并记录完整路由元信息。本地 Qwen fallback 也已经实现和评测，但没有带来净收益，反而增加约 6 秒分类延迟，所以默认关闭。这说明 Agent 系统里不是所有决策都应该交给 LLM。
 
 ### 9.4 如果问“小程序端完成了吗？”
 
@@ -1338,19 +1437,35 @@ builder.add_conditional_edges(
 
 讲解重点：
 
-- 当前 Router 仍然是轻量可解释逻辑，但已经从 first-match 关键词升级为 weighted rule scoring + semantic examples fallback，并预留 LLM classifier fallback 契约桩。
+- 当前 Router 已完成 weighted rules、deterministic ambiguity handling、semantic examples 和可选本地 LLM classifier；真实模型默认关闭。
 - 它会综合所有命中的短语和组合规则，而不是命中第一个就返回；规则低置信时，再用样例相似度处理隐式表达。
 - `intent_classify_node()` 会把 `_route_scores`、`_route_confidence`、`_route_reason`、`_route_source` 和 `_route_matches` 写入 `RouterState`，方便调试和后续评测。
 - 当前已新增 `data/eval/router_eval.jsonl`，测试会读取该评测集验证 Router 行为；绿色回归评测集已扩充到 66 条，并按主流 intent routing 切片组织，包括隐式意图、低置信、fallback、多意图 primary routing、相近意图边界、具体工具触发和文件信号。
-- 当前另有 `data/eval/router_challenge_eval.jsonl`，用于记录困难/失败样本。它当前覆盖 20 条样本，当前 Router 为 55.0% accuracy，主要暴露 multi-intent ordering、diet-vs-recipe、plan-vs-motion、explicit lookup 等边界问题。每条 challenge case 已补充 `primary_intent`、`secondary_intents`、`route_plan` 和 `expected_failure_reason`，用于提前定义后续 multi-intent routing 的评测目标。
+- `data/eval/router_challenge_eval.jsonl` 已扩充到 36 条，当前确定性 Router 为 36/36。样本继续保留 `primary_intent`、`secondary_intents`、`route_plan` 和 `expected_failure_reason`，作为后续 multi-intent routing 基线。
 - Multi-intent routing 目前是设计和评测准备阶段，详见 `docs/interview/router/MULTI_INTENT_ROUTING_DESIGN.md`；当前执行链路仍然只执行 `primary_intent` 对应的单个子图，没有把多个子图真正串联执行。
 - `scripts/eval_router.py` 除了输出总 accuracy 和 per-intent precision/recall/F1，也会输出 evaluation slices，方便面试时说明评测覆盖面。
-- LLM classifier 当前只完成工程契约：`_call_llm_router()` 默认不接真实模型；只有合法 JSON、合法 intent、非澄清请求、且置信度达到阈值时才允许接管，否则回退。
+- LLM classifier 已接本地 Qwen；默认由 `LLM_ROUTER_ENABLED=false` 关闭。开启后还需满足合法 JSON、合法 intent、非澄清、最低置信度和高于规则置信度。
 - 后续可以继续升级成“加权规则 + Sentence-Transformer embedding router + LLM classifier fallback”的 hybrid router。
+
+### 14.3.1 本地模型内存管理
+
+当前本地 Qwen 模型是进程级共享资源，不由每个子图节点独立持有。
+
+实现要点：
+
+- 不同子图仍可创建带不同生成参数的 `LLMLoader`，但底层 tokenizer/model 按模型路径、设备和 dtype 复用。
+- 并发首次请求通过加载锁保证只执行一次 `from_pretrained()`。
+- 推理通过生成锁串行化，避免并发 KV cache 叠加导致 CPU/GPU 内存峰值失控。
+- SSE/WebSocket 请求只在子图中构建最终 prompt，不再先完整生成一次再流式生成第二次。
+- 本地模型启动使用单 uvicorn worker；多 worker 会按进程复制模型。
+
+面试时可以这样解释：
+
+> 本地模型不能按普通无状态 Python 对象使用。之前每个子图节点新建 loader 时会重复加载同一份模型，CPU float32 下单份权重约 2.8 GB，多节点和并发请求可能直接耗尽系统内存。我把模型改为进程级共享缓存，并对首次加载和生成分别加锁；同时去掉流式接口的重复生成。这样单 worker 只保留一份模型。生产环境如果需要并发，不会简单增加 uvicorn worker，而会把模型拆成独立推理服务。
 
 面试防守：
 
-> 我没有直接用 LLM 做 Router，是因为当前意图集合小，很多触发词明确，规则更稳定。现在的 Router 不是简单 first-match，而是加权规则打分；对低置信隐式表达，又加了 semantic examples fallback，并记录分数、置信度和原因。LLM classifier 我先做成了低置信 fallback 的契约桩，而不是马上接真实模型，这样可以先把输入输出、解析失败、低置信回退和测试边界固定下来。除了 66 条绿色回归集，我还单独保留了 20 条 challenge/failure set，专门暴露当前规则路由在多意图顺序、饮食和菜谱边界、泛化训练计划等场景的不足。生产化时再基于这些 challenge case 判断是否接入真实 LLM、embedding router 或 multi-intent route plan。
+> 我没有让 LLM 成为主 Router，不是因为没接模型，而是因为接入后做了 A/B。确定性 Router 在绿色集和 36 条 challenge 上都满分；本地 Qwen 的 5 次 review 平均约 6.22 秒，只接管 1 次，没有提高准确率，并且早期曾误覆盖正确规则。因此默认关闭真实 LLM，只保留 feature flag、严格契约和观测。之后我完成了 Phase 4：用确定性策略记录多意图，只对白名单中的四种两步组合执行多子图，并增加结果合成和失败降级。
 
 ### 14.4 Chat RAG：检索结果如何进入 Prompt
 

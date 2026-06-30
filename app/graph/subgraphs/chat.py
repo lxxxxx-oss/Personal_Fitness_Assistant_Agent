@@ -64,6 +64,11 @@ def generate_node(state: RouterState) -> RouterState:
 
 请回答："""
 
+    state["_prompt"] = prompt  # type: ignore
+    if state.get("_streaming"):
+        state["result"] = ""
+        return state
+
     llm = LLMLoader(
         model_path=config.model_path,
         device=config.model_device,
@@ -71,7 +76,6 @@ def generate_node(state: RouterState) -> RouterState:
         temperature=config.model_temperature,
         top_p=config.model_top_p,
     )
-    state["_prompt"] = prompt  # type: ignore
     answer = llm.generate(prompt)
     state["result"] = answer
     return state

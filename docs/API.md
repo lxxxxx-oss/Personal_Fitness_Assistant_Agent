@@ -351,7 +351,7 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 
 ## 11. 意图路由规则
 
-当前 Router 使用“加权规则 + 语义样例 fallback + LLM classifier 契约桩”。系统会先扫描所有 intent 的短语和组合规则，累加分数后选择最高分子图；当规则低置信或无规则命中时，会用 `SEMANTIC_EXAMPLES` 做轻量样例相似度路由；仍然低置信时才尝试 LLM classifier fallback。当前 `_call_llm_router()` 默认不接真实模型，因此生产行为仍会稳定 fallback 到 `chat`。
+当前 Router 使用“加权规则 + 确定性歧义处理 + 语义样例 fallback + 可选本地 LLM classifier”。系统会扫描所有 intent 的短语和组合规则，识别顺序词、否定约束、跨域计划、plan-vs-motion、diet-vs-recipe 等 ambiguity signals；低置信或指定 review signal 才允许尝试 LLM。真实 Qwen provider 已接入，但 `LLM_ROUTER_ENABLED` 默认关闭。即使开启，LLM 也必须通过严格 JSON、合法 intent、非澄清、最低置信度，并且置信度高于当前规则才允许覆盖。
 
 | Intent | 高权重示例 | 处理模块 |
 |---|---|---|
@@ -361,9 +361,11 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 | `mcp` | 菜谱、烹饪、做法、番茄炒蛋、红烧肉、怎么做 + 菜名 | MCP 子图 |
 | `chat` | 低置信、纯知识解释、概念问题或无规则/语义样例命中 | Chat 子图 |
 
-路由节点会在内部 `RouterState` 中记录 `_route_scores`、`_route_confidence`、`_route_reason`、`_route_source` 和 `_route_matches`，用于调试和后续评测；这些字段当前不作为 API 响应返回。`_route_source` 可能为 `weighted_rules`、`semantic_examples`、`llm_classifier` 或 `fallback`，LLM 解析失败、低置信、需要澄清等情况会被记录为中间原因后回退。当前已有 `data/eval/router_eval.jsonl` 作为 Router 评测样例集。
+路由节点会在内部 `RouterState` 中记录 `_route_scores`、`_route_confidence`、`_route_reason`、`_route_source`、`_route_matches` 和 `_route_ambiguity_signals`。Phase 4.1 还会记录 `_primary_intent`、`_secondary_intents`、`_route_plan`、`_multi_intent_reason` 和 `_needs_clarification`；这些字段当前不作为 API 响应返回，公开响应中的 `intent` 始终等于主意图。评测脚本会额外输出 secondary intent 和 route plan 精确匹配率。`_route_source` 可能为 `weighted_rules`、`semantic_examples`、`llm_classifier` 或 `fallback`。
 
-## 11. 状态码
+Phase 4 的执行层只允许四种两步组合：`search -> diet`、`search -> chat`、`motion -> chat`、`motion -> diet`。其他 route plan、需要澄清的请求仍只执行主意图。多步结果由 final synthesis 合并；部分子图失败时保留成功结果，全部失败时返回错误文本。SSE 和 WebSocket 对多步请求仍只进行一次最终流式生成，公开协议没有新增字段。
+
+## 12. 状态码
 
 | 状态码 | 说明 |
 |---|---|
@@ -371,7 +373,7 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 | 422 | 请求参数校验失败，例如 `user_id` 或 `message` 为空/超长 |
 | 500 | 服务内部错误，例如模型加载失败、子图执行异常 |
 
-## 12. 快速启动
+## 13. 快速启动
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000

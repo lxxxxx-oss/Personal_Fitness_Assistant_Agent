@@ -91,12 +91,16 @@ def recommend_node(state: RouterState) -> RouterState:
 
 请提供饮食建议："""
 
+    state["_prompt"] = prompt  # type: ignore
+    if state.get("_streaming"):
+        state["result"] = ""
+        return state
+
     llm = LLMLoader(
         model_path=config.model_path,
         device=config.model_device,
         max_tokens=config.model_max_tokens,
     )
-    state["_prompt"] = prompt  # type: ignore
     answer = llm.generate(prompt)
     state["result"] = answer
     return state

@@ -40,6 +40,34 @@ class TestChatEndpoint:
         data = response.json()
         assert data["intent"] == "chat"
 
+    def test_streaming_endpoint_does_not_generate_final_answer_twice(
+        self,
+        monkeypatch,
+    ):
+        from app.llm.loader import LLMLoader
+
+        calls = {"generate": 0, "generate_stream": 0}
+
+        def fake_generate(self, prompt, *args, **kwargs):
+            calls["generate"] += 1
+            return "duplicate"
+
+        def fake_generate_stream(self, prompt, *args, **kwargs):
+            calls["generate_stream"] += 1
+            yield "streamed"
+
+        monkeypatch.setattr(LLMLoader, "generate", fake_generate)
+        monkeypatch.setattr(LLMLoader, "generate_stream", fake_generate_stream)
+
+        response = client.post(
+            "/chat/stream",
+            json={"user_id": "stream_user", "message": "你好"},
+        )
+
+        assert response.status_code == 200
+        assert "streamed" in response.text
+        assert calls == {"generate": 0, "generate_stream": 1}
+
 
 class TestHistoryEndpoint:
     def test_get_history_empty(self):

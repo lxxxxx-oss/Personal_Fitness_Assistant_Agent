@@ -1,5 +1,24 @@
 """MCP client tests — real howtocook-mcp tool names and MCP content format."""
+import pytest
+
+from app.config import Config
 from app.tools.mcp_client import MCPClient
+
+
+class TestMCPConfig:
+    def test_default_mcp_server_command_is_mock(self, monkeypatch):
+        monkeypatch.delenv("MCP_SERVER_COMMAND", raising=False)
+
+        config = Config()
+
+        assert config.mcp_server_command == "mock"
+
+    def test_mcp_server_command_can_use_real_server_env(self, monkeypatch):
+        monkeypatch.setenv("MCP_SERVER_COMMAND", "howtocook-mcp")
+
+        config = Config()
+
+        assert config.mcp_server_command == "howtocook-mcp"
 
 
 class TestMCPClient:
@@ -112,3 +131,34 @@ class TestMCPMockMode:
         assert result.ok
         # Unknown tool returns error at application level in data
         assert "error" in result.data
+
+
+class TestMCPSubgraphFallback:
+    def test_missing_real_mcp_server_falls_back_to_mock(self, monkeypatch):
+        pytest.importorskip("langgraph")
+
+        from app.config import config
+        from app.graph.subgraphs import mcp as mcp_subgraph
+
+        mcp_subgraph._mcp_client = None
+        mcp_subgraph._mcp_configured_command = None
+        mcp_subgraph._mcp_fallback_reason = None
+        monkeypatch.setattr(config, "mcp_server_command", "missing-howtocook-mcp")
+
+        state = mcp_subgraph.discover_tools_node({
+            "user_input": "怎么做番茄炒蛋",
+            "user_id": "u1",
+            "intent": "mcp",
+            "memory": [],
+            "result": "",
+            "error": None,
+        })
+
+        assert state["_mcp_mode"] == "mock"
+        assert state["_mcp_configured_command"] == "missing-howtocook-mcp"
+        assert "missing-howtocook-mcp" in state["_mcp_fallback_reason"]
+        assert state["_mcp_tools"]
+
+        mcp_subgraph._mcp_client = None
+        mcp_subgraph._mcp_configured_command = None
+        mcp_subgraph._mcp_fallback_reason = None

@@ -21,6 +21,8 @@ def test_router_eval_dataset_is_currently_green():
     assert result["mismatches"] == []
     assert set(result["per_intent"]) >= {"chat", "search", "diet", "motion", "mcp"}
     assert result["by_category"]
+    assert "ambiguity_counts" in result
+    assert "llm_router_metrics" in result
 
 
 def test_load_router_challenge_eval_dataset():
@@ -31,6 +33,7 @@ def test_load_router_challenge_eval_dataset():
     assert rows
     assert result["total"] == len(rows)
     assert result["by_category"]
+    assert result["ambiguity_counts"]
     assert {"multi_intent_order", "diet_vs_recipe", "plan_vs_motion"} <= categories
 
 
@@ -45,3 +48,8 @@ def test_router_challenge_eval_has_multi_intent_annotations():
         assert row["route_plan"][0] == row["primary_intent"]
         assert isinstance(row["expected_failure_reason"], str)
         assert row["expected_failure_reason"].strip()
+
+    result = evaluate(rows)
+    assert result["multi_intent_metrics"]["annotated_cases"] == len(rows)
+    assert result["multi_intent_metrics"]["secondary_exact_accuracy"] >= 0.75
+    assert result["multi_intent_metrics"]["route_plan_exact_accuracy"] >= 0.90

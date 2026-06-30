@@ -45,6 +45,13 @@ class Config:
     llm_mock: bool = field(
         default_factory=lambda: os.getenv("LLM_MOCK", "").lower() in {"1", "true", "yes"}
     )
+    llm_router_enabled: bool = field(
+        default_factory=lambda: os.getenv("LLM_ROUTER_ENABLED", "").lower()
+        in {"1", "true", "yes"}
+    )
+    llm_router_max_tokens: int = field(
+        default_factory=lambda: _get_int_env("LLM_ROUTER_MAX_TOKENS", 128)
+    )
 
     # Memory
     memory_max_turns: int = field(
@@ -78,7 +85,7 @@ class Config:
 
     # MCP
     mcp_server_command: str = field(
-        default_factory=lambda: os.getenv("MCP_SERVER_COMMAND", "howtocook-mcp")
+        default_factory=lambda: os.getenv("MCP_SERVER_COMMAND", "mock")
     )
 
     # API

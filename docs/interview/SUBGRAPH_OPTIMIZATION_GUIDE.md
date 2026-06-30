@@ -454,9 +454,14 @@ Motion 的核心优化方向不是让用户直接准备 `.npz`，而是把当前
 
 ## 5. MCP 子图优化方向
 
-待补充。
+当前实现：
 
-建议后续围绕以下问题记录：
+- 默认 `MCP_SERVER_COMMAND=mock`，开发、测试和面试演示不依赖本机安装 `howtocook-mcp`。
+- 显式配置真实 MCP Server 时，系统会优先尝试真实 subprocess + stdio JSON-RPC 连接。
+- 真实 MCP 连接失败时，MCP 子图自动降级到 mock client，并在内部 state 中记录 `_mcp_mode`、`_mcp_configured_command` 和 `_mcp_fallback_reason`，便于调试和面试解释。
+- mock 模式仍保留真实 howtocook-mcp 风格的工具名，例如 `mcp_howtocook_getRecipeById`、`mcp_howtocook_whatToEat` 和 `mcp_howtocook_recommendMeals`。
+
+后续建议围绕以下问题记录：
 
 - MCP Client 生命周期管理。
 - subprocess 超时和重启。
@@ -467,7 +472,7 @@ Motion 的核心优化方向不是让用户直接准备 `.npz`，而是把当前
 
 ## 6. Router 和横切能力优化方向
 
-当前 Router 已从关键词 first-match 升级为加权规则 + 语义样例 fallback，并预留 LLM classifier fallback 契约桩。优点是稳定、低成本、可解释；边界是对复杂多意图问题和真实语义泛化仍需要更多评测数据支撑。
+当前 Router 已完成 Phase 3：从关键词 first-match 升级为加权规则、确定性歧义处理、语义样例 fallback 和可选本地 LLM classifier。真实 Qwen provider 已接入并完成 A/B，但因为没有带来准确率收益且平均调用约 6 秒，默认关闭。
 
 工程级 Router 的目标：
 
@@ -500,7 +505,7 @@ Phase 3: LLM Classifier Fallback
   -> 要求输出 JSON: intent / confidence / reason / needs_clarification
   -> 解析失败或低置信时 fallback 到 chat 或澄清
   -> 记录 LLM router 的成本、延迟和错误率
-  -> 当前已落地契约桩，尚未接真实 LLM provider
+  -> 本地 Qwen provider 已接入并完成 A/B，默认关闭
 
 Phase 4: Multi-intent Routing
   -> 支持 primary_intent + secondary_intents
@@ -564,7 +569,7 @@ _route_matches: list[str]
 - 新增 `scripts/eval_router.py`，输出 accuracy、per-intent precision/recall/F1、evaluation slices、confusion matrix、route source counts 和 mismatches。
 - 新增样本按主流 intent routing 评测切片组织：`implicit_intent`、`low_confidence`、`fallback_unclear`、`freshness_search`、`multi_intent_primary`、`boundary_concept`、`boundary_training_plan`、`recipe_tool`、`tool_file_signal`。
 - 当前单 intent Router 的 primary intent policy 是：显式搜索/最新研究优先 `search`，动作文件或姿势判断优先 `motion`，具体做菜优先 `mcp`，个性化饮食规划优先 `diet`，泛化训练建议或不清楚时 `chat`。
-- 新增 `data/eval/router_challenge_eval.jsonl` 作为困难/失败样本集，当前覆盖 20 条样本，当前 Router 为 55.0% accuracy。该数据集不作为 CI 强制 100% 回归集，而是用于暴露 multi-intent ordering、diet-vs-recipe、plan-vs-motion、explicit lookup 等后续优化方向。
+- `data/eval/router_challenge_eval.jsonl` 已从 20 条扩充到 36 条。经过确定性边界修正后当前为 36/36；它仍作为困难边界基线，不应把小样本满分解释成生产泛化完成。
 - Challenge set 已补充 `primary_intent`、`secondary_intents`、`route_plan` 和 `expected_failure_reason`，用于提前定义多意图场景下的主意图、次意图、未来组合执行顺序和当前失败原因。
 
 评测命令：
@@ -606,13 +611,16 @@ search:
 
 只在规则和语义样例都不确定时调用 LLM，降低成本和不稳定性。
 
-当前已落地的是工程契约桩，不是真实在线 LLM 路由：
+当前已落地工程契约和真实本地 Qwen provider，但 provider 默认关闭：
 
 - `_build_llm_router_prompt()` 生成严格 JSON 输出提示词。
-- `_call_llm_router()` 是 provider hook，默认返回 `None`，测试中可 monkeypatch，后续可接 `LLMLoader` 或外部模型服务。
+- `_call_llm_router()` 复用进程级共享 `LLMLoader`；通过 `LLM_ROUTER_ENABLED=1` 显式开启。
 - `_extract_json_object()` 只接受可解析的 JSON object。
 - `_llm_classifier_route()` 只接受合法 intent、非澄清请求、且 `confidence >= 0.70` 的结果。
 - JSON 解析失败、intent 非法、低置信、需要澄清、provider 未配置时，都不会硬分流到业务子图，而是回退到 `chat` 或最终 fallback。
+- Ambiguity detector 会记录全部 signals，但只有少数 review signals 会调用 LLM，避免高频模型分类。
+- 高置信规则场景中，LLM 置信度必须高于规则置信度才能覆盖。
+- A/B 中绿色集保持 66/66，challenge 保持 36/36；但 5 次调用平均约 6.22 秒且仅 1 次接管，因此默认关闭真实 LLM。
 
 期望输出：
 
@@ -627,13 +635,96 @@ search:
 
 低置信或解析失败时，不硬分流。
 
-后续接真实模型的顺序：
+本次实际执行顺序：
 
 1. 先在评测集中增加更多低置信、隐式表达和多意图样本。
 2. 接入真实 LLM provider，但只在规则与语义样例都无法高置信判断时触发。
 3. 记录 LLM 路由的命中率、解析失败率、低置信率、平均延迟和成本。
 4. 对比“无 LLM fallback”和“有 LLM fallback”的 eval accuracy、fallback rate 与误路由率。
-5. 如果收益不足或误分流增多，则保持当前确定性 router，仅把 LLM 用于澄清问题生成。
+5. A/B 结果显示没有净收益且延迟明显，因此真实 provider 默认关闭。
+
+#### Phase 3 优先验证样本：`蛋炒饭怎么做`
+
+`蛋炒饭怎么做` 是一个适合加入 Router challenge/eval 的典型样本。它的问题不是缺少某个菜名关键词，而是“怎么做”同时适用于菜谱、训练动作和计划建议。
+
+建议将这一类样本拆成一组边界用例：
+
+```text
+蛋炒饭怎么做 -> mcp
+水煮鱼怎么做 -> mcp
+深蹲怎么做 -> motion
+硬拉怎么做比较安全 -> motion
+减脂餐怎么做 -> challenge，可能需要区分 Diet 与 MCP
+高蛋白早餐怎么安排 -> diet 或 challenge，取决于是否要求具体菜谱
+```
+
+实际实施策略：
+
+1. 新增 ambiguity detector，只记录“X 怎么做 / 做法 / 步骤 / 教程”这类高歧义句式，不直接硬路由。
+2. 对高置信规则仍直接返回，例如 `.npz`、上传动作、显式搜索、明确菜谱。
+3. 对歧义样本先走 semantic examples；如果仍低置信，再触发 LLM classifier fallback。
+4. LLM classifier 只输出 JSON，不生成回答，字段沿用当前契约：`intent`、`confidence`、`reason`、`needs_clarification`。
+5. 对 `needs_clarification=true` 或低置信样本，优先 fallback 到 Chat 或生成澄清问题，不硬分流。
+6. 用绿色回归集防止已有行为退化，用 challenge set 观察“蛋炒饭怎么做”这类歧义样本是否被修正。
+
+#### Phase 3 要解决的核心问题
+
+Phase 1 和 Phase 2 已经把“高置信显式信号”和“低置信口语表达”覆盖到了一个可解释、可评测的水平，但 challenge set 里仍然有一类问题很难只靠规则或少量语义样例稳定处理：
+
+- 高歧义句式：例如 `X 怎么做`、`怎么安排`、`先讲原理再看动作`。
+- 多信号竞争：同一句里同时出现动作词、菜谱词、饮食目标或最新研究信号。
+- 顺序约束：例如 `先分析动作，再查最新纠正方法`。
+- 否定约束：例如 `不需要具体做法`，应该压制 `mcp` 信号。
+
+所以 Phase 3 不是“把 Router 交给 LLM 重做一遍”，而是只在前两层都不够确定时，让 LLM 作为一个受约束的裁判，专门处理这些歧义边界。
+
+#### Phase 3 的边界
+
+这一阶段故意不做下面几件事：
+
+- 不让 LLM 直接生成最终回答，只做 intent classification。
+- 不替换高置信规则路由，规则命中时仍然直接走确定性路径。
+- 不跳过 `semantic examples`，而是把 LLM 放在它后面作为最后一道低频 fallback。
+- 不在 Phase 3 里引入多子图串联执行；multi-intent route plan 仍属于 Phase 4。
+
+这样做的原因是：当前项目的主要价值在于可解释和可评测，Phase 3 需要先证明“有限引入 LLM”比“全量交给 LLM”更稳，而不是为了炫复杂度破坏现有确定性行为。
+
+#### Phase 3 的实际落地顺序
+
+本次已按下面顺序完成：
+
+1. 先扩充 challenge/eval 样本，重点覆盖高歧义句式、否定约束、顺序词和多信号竞争。
+2. 保持当前 `_build_llm_router_prompt()`、`_call_llm_router()`、`_llm_classifier_route()` 这套契约不变，用 mock/provider hook 验证 acceptance rule。
+3. 新增 ambiguity detector 或低置信触发条件，只把真正需要二次判断的样本送到 LLM classifier。
+4. 接入真实 LLM provider，但只允许它输出严格 JSON，不生成自然语言答案。
+5. 记录触发率、有效命中率、低置信率、解析失败率、平均延迟和额外成本。
+6. 用相同 challenge set 对比“无 LLM fallback”和“有 LLM fallback”的收益，再决定是否保留。
+
+#### Phase 3 的验收口径
+
+Phase 3 是否值得保留，不看“看起来更智能”，而看下面几项是否真的改善：
+
+- 绿色回归集不能退化，`router_eval.jsonl` 仍应保持稳定高准确率。
+- challenge set 中与歧义句式相关的样本应有可量化提升。
+- `llm_classifier` 的触发率应保持低频，说明它真的是 fallback 而不是主路由。
+- JSON 解析失败、非法 intent、低置信回退都必须可观测。
+- 平均延迟和成本要在可接受范围内，否则收益不值得。
+
+当前 A/B 没有显示准确率收益，平均延迟约 6 秒，因此采用上述降级结论：默认保持确定性 Router，真实 LLM 仅作为关闭状态的实验能力保留。
+
+#### Phase 3 和 Phase 4 的关系
+
+Phase 3 关注的是“单 intent 下的歧义裁决”，Phase 4 关注的是“一个请求里识别并记录多个 intent，再决定是否串联多个子图”。两者相关，但不要混在一起：
+
+- `蛋炒饭怎么做` 这类问题，优先属于 Phase 3 的歧义分类问题。
+- `先分析深蹲动作，再查最新纠正方法` 这类问题，最终会延伸到 Phase 4 的 multi-intent route plan。
+- Phase 3 可以先帮助我们更稳定地选出 `primary_intent`，为 Phase 4 打基础。
+
+#### 面试表达建议
+
+可以这样讲：
+
+> Router Phase 3 已经完成真实本地 Qwen A/B，不是停留在设计层。确定性 Router 在绿色集和 36 条 challenge 上都是 100%；开启 Qwen 后没有提高准确率，5 次调用只接管 1 次，平均约 6.22 秒，并且在没有置信度保护时出现过误覆盖。因此我默认关闭真实 LLM，只保留严格契约、feature flag、ambiguity signals 和观测指标。这个结论来自评测，而不是主观选择。
 
 ### 6.4 Phase 4: Multi-intent Routing
 
@@ -655,7 +746,7 @@ search:
 我想减脂，帮我查一下最近有什么有效饮食方法
 ```
 
-当前项目先保持单 intent 路由，多意图作为生产化方向。
+当前项目已完成 Phase 4 的受控多意图路由：保留单 intent 兼容语义，只对白名单中的四种两步组合执行多子图，并统一合成结果。任意组合和三步计划仍作为后续生产化方向。
 
 推荐落地顺序：
 

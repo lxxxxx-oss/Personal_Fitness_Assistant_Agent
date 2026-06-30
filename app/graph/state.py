@@ -1,5 +1,5 @@
 """LangGraph global state definition."""
-from typing import Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 
 class RouterState(TypedDict, total=False):
@@ -16,8 +16,20 @@ class RouterState(TypedDict, total=False):
     result: str
     error: Optional[str]
     _prompt: str  # Reserved for streaming endpoints; built by subgraphs.
+    _streaming: bool  # Build the final prompt without generating twice.
     _route_scores: Dict[str, float]
     _route_confidence: float
     _route_reason: str
     _route_source: str
     _route_matches: List[str]
+    _route_ambiguity_signals: List[str]
+    _primary_intent: str
+    _secondary_intents: List[str]
+    _route_plan: List[str]
+    _multi_intent_reason: str
+    _needs_clarification: bool
+    _route_execution_plan: List[str]
+    _route_execution_cursor: int
+    _active_intent: str
+    _route_results: List[Dict[str, Any]]
+    _route_execution_warnings: List[str]

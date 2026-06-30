@@ -1,12 +1,13 @@
 # Multi-intent Routing Design
 
-本文档记录 Router 后续从单 intent 路由演进到 multi-intent routing 的设计方案。
+本文档记录 Router 从单 intent 路由演进到受控 multi-intent routing 的设计与当前实现。
 
 当前状态：
 
-- 生产执行链路仍然是单 intent：`intent -> one subgraph -> finalize`。
+- Phase 4.1、4.2、4.3 已完成；简单请求仍走单子图，命中白名单的请求可走两个子图。
 - `data/eval/router_eval.jsonl` 是绿色回归集，当前 66/66。
-- `data/eval/router_challenge_eval.jsonl` 是困难/失败样本集，当前 20 条，11/20。
+- `data/eval/router_challenge_eval.jsonl` 已扩充到 36 条；Phase 3 确定性 Router 当前为 36/36。
+- 本地 Qwen classifier 已完成 A/B 但默认关闭；多意图识别使用确定性策略，不增加模型调用。
 - challenge set 已补充 `primary_intent`、`secondary_intents`、`route_plan`、`expected_failure_reason`。
 
 设计原则：
@@ -18,7 +19,7 @@
 
 ## 1. 为什么需要 Multi-intent Routing
 
-当前 Router 只能返回一个 intent：
+Router 对外仍返回一个兼容字段 `intent`，其值等于主意图：
 
 ```text
 chat | search | diet | motion | mcp
@@ -108,6 +109,8 @@ _needs_clarification: bool
 
 ### Phase 4.1：只识别和记录，不执行组合子图
 
+状态：已完成。
+
 目标：
 
 - 保持现有单 intent 执行逻辑不变。
@@ -123,6 +126,8 @@ _needs_clarification: bool
 - 仍能支撑面试讲解和后续评测。
 
 ### Phase 4.2：支持有限组合流程
+
+状态：已完成。
 
 只支持少量高价值组合：
 
@@ -154,6 +159,8 @@ route_plan = ["search", "diet"]
 
 ### Phase 4.3：组合结果合成
 
+状态：已完成。
+
 当多个子图都执行后，需要一个 final synthesis 节点：
 
 ```text
@@ -170,7 +177,7 @@ route_plan execution results
 - 多来源引用。
 - 子图之间状态边界。
 
-因此建议放到后期，不作为当前面试原型的必做项。
+当前实现只在多步计划中调用一次 final synthesis；单步计划不增加额外生成。流式接口收集各子图准备的上下文后，只执行一次最终流式生成。
 
 ## 5. Primary Intent Policy
 
@@ -219,18 +226,17 @@ route_plan execution results
 
 可以这样讲：
 
-> 当前项目执行链路仍然是单 intent，这是为了保持系统稳定。但我已经把 challenge set 标注成 multi-intent 结构，包括 primary intent、secondary intents 和 route plan。这样后续不是盲目改 Router，而是可以基于这些困难样本逐步评估：先识别多意图，再记录 route plan，最后再考虑串联执行多个子图。
+> 当前 Router 已完成受控 multi-intent 演进：先记录 primary intent、secondary intents 和 route plan，再只对白名单中的四种两步组合串联执行，最后统一合成结果。简单请求和非白名单组合仍保持单路由，因此新增能力不会把整个图变成不可控的任意工作流。
 
 如果面试官问“为什么现在不直接执行多个子图”：
 
-> 多子图串联会引入状态传递、结果合成、流式输出和错误回退等复杂度。当前作为面试原型，我先把多意图识别和评测基线做好，执行层仍保持单 intent。这样既能说明演进方向，也不会为了炫技把系统做得不稳定。
+> 我没有开放任意子图组合，而是只支持 `search -> diet`、`search -> chat`、`motion -> chat`、`motion -> diet`。每步结果单独记录，部分失败时保留成功结果，SSE/WebSocket 最终只生成一次。这样既解决真实的跨任务请求，也把状态传递和错误范围控制在可测试的边界内。
 
 ## 8. 后续实现建议
 
-推荐下一步：
+后续建议：
 
-1. 在 RouterState 中增加 multi-intent 调试字段。
-2. 修改 Router，让它在不改变 `intent` 的情况下写入 `_primary_intent`、`_secondary_intents`、`_route_plan`。
-3. 增加 challenge set 的 multi-intent 识别测试。
-4. 先用 mock LLM classifier 评估 challenge set 的理论修正收益。
-5. 再决定是否接真实 LLM classifier 或 embedding router。
+1. 记录真实流量中的 route plan 命中率、组合成功率和部分失败率。
+2. 为四种组合补充更大的端到端评测集，而不是只依赖 36 条 challenge set。
+3. 只有在样本证明有价值时才扩充白名单或考虑三步计划。
+4. 继续保持真实 LLM classifier 默认关闭，除非更强模型在 A/B 中带来净收益。

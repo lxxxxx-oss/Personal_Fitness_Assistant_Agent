@@ -1,6 +1,7 @@
 """MCPTool subgraph — MCP protocol tool invocation."""
 import json
 import logging
+from typing import Optional
 
 from langgraph.graph import StateGraph, END
 
@@ -10,15 +11,36 @@ from app.tools.mcp_client import MCPClient
 logger = logging.getLogger(__name__)
 
 _mcp_client: MCPClient = None
+_mcp_configured_command: Optional[str] = None
+_mcp_fallback_reason: Optional[str] = None
 
 
 def _get_client() -> MCPClient:
-    global _mcp_client
+    global _mcp_client, _mcp_configured_command, _mcp_fallback_reason
     if _mcp_client is None:
         from app.config import config
 
-        _mcp_client = MCPClient(server_command=config.mcp_server_command)
-        _mcp_client.connect()
+        configured_command = config.mcp_server_command
+        client = MCPClient(server_command=configured_command)
+        connect_result = client.connect()
+        _mcp_configured_command = configured_command
+        _mcp_fallback_reason = None
+
+        if connect_result.ok:
+            _mcp_client = client
+        elif configured_command != "mock":
+            _mcp_fallback_reason = (
+                connect_result.error_message or "MCP server connection failed"
+            )
+            logger.warning(
+                "MCP server '%s' unavailable, falling back to mock mode: %s",
+                configured_command,
+                _mcp_fallback_reason,
+            )
+            _mcp_client = MCPClient(server_command="mock")
+            _mcp_client.connect()
+        else:
+            _mcp_client = client
     return _mcp_client
 
 
@@ -27,6 +49,10 @@ def discover_tools_node(state: RouterState) -> RouterState:
     client = _get_client()
     result = client.list_tools()
     state["_mcp_tools"] = result.data if result.ok else []  # type: ignore
+    state["_mcp_mode"] = "mock" if client.server_command == "mock" else "server"  # type: ignore
+    state["_mcp_configured_command"] = _mcp_configured_command  # type: ignore
+    if _mcp_fallback_reason:
+        state["_mcp_fallback_reason"] = _mcp_fallback_reason  # type: ignore
     logger.info(f"MCP tools available: {[t['name'] for t in (result.data or [])]}")
     return state
 
@@ -35,6 +61,13 @@ def plan_tool_call_node(state: RouterState) -> RouterState:
     """LLM decides which MCP tool to call and with what parameters."""
     from app.config import config
     from app.llm.loader import LLMLoader
+
+    if config.llm_mock:
+        state["_tool_plan"] = json.dumps(  # type: ignore
+            _plan_tool_call_by_rules(state["user_input"]),
+            ensure_ascii=False,
+        )
+        return state
 
     tools = state.get("_mcp_tools", [])  # type: ignore
     tools_desc = "\n".join(
@@ -84,6 +117,55 @@ def plan_tool_call_node(state: RouterState) -> RouterState:
     plan_text = llm.generate(prompt)
     state["_tool_plan"] = plan_text  # type: ignore
     return state
+
+
+def _plan_tool_call_by_rules(user_input: str) -> dict:
+    """Deterministic MCP tool planning for demo mode."""
+    if any(word in user_input for word in ("一周", "膳食计划", "购物清单")):
+        return {
+            "tool": "mcp_howtocook_recommendMeals",
+            "arguments": {"peopleCount": _extract_people_count(user_input)},
+        }
+    if any(word in user_input for word in ("不知道吃什么", "吃什么", "推荐")) and "怎么做" not in user_input:
+        return {
+            "tool": "mcp_howtocook_whatToEat",
+            "arguments": {"peopleCount": _extract_people_count(user_input)},
+        }
+    for category in ("荤菜", "素菜", "汤", "主食", "早餐", "甜品", "饮品"):
+        if category in user_input:
+            return {
+                "tool": "mcp_howtocook_getRecipesByCategory",
+                "arguments": {"category": category},
+            }
+    return {
+        "tool": "mcp_howtocook_getRecipeById",
+        "arguments": {"query": _extract_recipe_query(user_input)},
+    }
+
+
+def _extract_people_count(user_input: str) -> int:
+    count_map = {
+        "一": 1,
+        "两": 2,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+    }
+    for digit in range(1, 11):
+        if f"{digit}人" in user_input or f"{digit}个人" in user_input:
+            return digit
+    for word, count in count_map.items():
+        if f"{word}人" in user_input or f"{word}个人" in user_input:
+            return count
+    return 2
+
+
+def _extract_recipe_query(user_input: str) -> str:
+    query = user_input.strip()
+    for suffix in ("怎么做", "要怎么做", "如何做", "做法", "步骤", "？", "?"):
+        query = query.replace(suffix, "")
+    return query.strip() or user_input.strip()
 
 
 def execute_tool_node(state: RouterState) -> RouterState:
@@ -144,12 +226,16 @@ def format_result_node(state: RouterState) -> RouterState:
 
 请格式化回复："""
 
+    state["_prompt"] = prompt  # type: ignore
+    if state.get("_streaming"):
+        state["result"] = ""
+        return state
+
     llm = LLMLoader(
         model_path=config.model_path,
         device=config.model_device,
         max_tokens=config.model_max_tokens,
     )
-    state["_prompt"] = prompt  # type: ignore
     answer = llm.generate(prompt)
     state["result"] = answer
     return state

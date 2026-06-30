@@ -199,12 +199,17 @@ def check_node(state: RouterState) -> RouterState:
 
 请给出分析报告："""
 
+    state["_prompt"] = prompt  # type: ignore
+    if state.get("_streaming"):
+        state["result"] = ""
+        state["_check_pass"] = True  # type: ignore
+        return state
+
     llm = LLMLoader(
         model_path=config.model_path,
         device=config.model_device,
         max_tokens=config.model_max_tokens,
     )
-    state["_prompt"] = prompt  # type: ignore
     answer = llm.generate(prompt)
     state["result"] = answer
     state["_check_pass"] = True  # type: ignore

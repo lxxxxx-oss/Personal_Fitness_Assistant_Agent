@@ -9,6 +9,7 @@ validated before being forwarded to the MCP server.
 import json
 import logging
 import subprocess
+import threading
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -37,8 +38,9 @@ class MCPClient:
     Demo mode: server_command="mock" uses preset recipe data.
     """
 
-    def __init__(self, server_command: str):
+    def __init__(self, server_command: str, request_timeout_seconds: float = 10.0):
         self.server_command = server_command
+        self.request_timeout_seconds = request_timeout_seconds
         self._process: Optional[subprocess.Popen] = None
         self._connected = False
 
@@ -371,13 +373,20 @@ class MCPClient:
     def _send_request(
         self, request: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        if not self._process or not self._process.stdin:
+        if not self._process or not self._process.stdin or not self._process.stdout:
             return None
         try:
             request_str = json.dumps(request) + "\n"
             self._process.stdin.write(request_str)
             self._process.stdin.flush()
-            response_line = self._process.stdout.readline()
+            response_line = self._readline_with_timeout()
+            if response_line is None:
+                logger.error(
+                    "MCP request timed out after %.1fs: %s",
+                    self.request_timeout_seconds,
+                    request.get("method"),
+                )
+                return None
             return json.loads(response_line)
         except json.JSONDecodeError as e:
             logger.error(f"MCP invalid JSON response: {e}")
@@ -385,6 +394,27 @@ class MCPClient:
         except Exception as e:
             logger.error(f"MCP request failed: {e}")
             return None
+
+    def _readline_with_timeout(self) -> Optional[str]:
+        """Read one response line without allowing an MCP server to hang forever."""
+        if not self._process or not self._process.stdout:
+            return None
+
+        result: List[Optional[str]] = [None]
+
+        def _reader() -> None:
+            try:
+                result[0] = self._process.stdout.readline()
+            except Exception:
+                result[0] = None
+
+        thread = threading.Thread(target=_reader, daemon=True)
+        thread.start()
+        thread.join(timeout=self.request_timeout_seconds)
+        if thread.is_alive():
+            self.disconnect()
+            return None
+        return result[0]
 
     def _extract_mcp_content(self, raw: Dict[str, Any]) -> Any:
         """Extract parsed data from MCP content blocks.

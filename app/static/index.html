@@ -18,7 +18,16 @@
         .msg { max-width: 80%; padding: 12px 16px; border-radius: 12px; line-height: 1.55; font-size: 0.92em; white-space: pre-wrap; word-wrap: break-word; }
         .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
         .msg.assistant { align-self: flex-start; background: #1e293b; border: 1px solid #334155; }
+        .msg.pending { color: #94a3b8; }
+        .msg.error { border-color: #ef4444; color: #fecaca; }
         .msg .intent-tag { font-size: 0.7em; color: #94a3b8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .pending-dots::after { content: ''; animation: dots 1.2s steps(4, end) infinite; }
+        @keyframes dots {
+            0% { content: ''; }
+            25% { content: '.'; }
+            50% { content: '..'; }
+            75%, 100% { content: '...'; }
+        }
         #input-area { padding: 16px 24px; border-top: 1px solid #334155; display: flex; gap: 12px; background: #0f172a; align-items: center; }
         #input-area input { flex:1; padding: 12px 16px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; font-size: 0.95em; outline: none; }
         #input-area input:focus { border-color: #38bdf8; }
@@ -80,6 +89,7 @@
 const API = window.location.origin;
 const userId = 'web_user_' + Math.random().toString(36).slice(2, 8);
 const statusEl = document.getElementById('status');
+const CHAT_TIMEOUT_MS = 90000;
 
 fetch(API + '/health').then(r => r.json()).then(d => {
     statusEl.textContent = 'Connected v' + d.version;
@@ -141,18 +151,25 @@ async function send() {
     btn.disabled = true;
     addMessage('user', msg);
 
-    // Create a streaming message bubble.
-    const streamDiv = addMessage('assistant', '', '');
+    // Create a visible placeholder immediately; graph/tool setup may take time.
+    const streamDiv = addMessage('assistant', '', 'chat');
+    streamDiv.classList.add('pending');
     const contentSpan = document.createElement('span');
+    contentSpan.className = 'pending-dots';
+    contentSpan.textContent = '正在分析问题并准备调用合适的工具';
     streamDiv.appendChild(contentSpan);
 
     try {
-        statusEl.textContent = 'Connected';
+        statusEl.textContent = 'Processing...';
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), CHAT_TIMEOUT_MS);
         const resp = await fetch(API + '/chat/stream', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({user_id: userId, message: msg})
+            body: JSON.stringify({user_id: userId, message: msg}),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
         if (!resp.ok || !resp.body) {
             throw new Error('stream unavailable');
         }
@@ -161,6 +178,7 @@ async function send() {
         const decoder = new TextDecoder();
         let buffer = '';
         let sawToken = false;
+        let currentEvent = 'message';
 
         while (true) {
             const {done, value} = await reader.read();
@@ -172,22 +190,42 @@ async function send() {
             buffer = lines.pop(); // incomplete line goes back to buffer
 
             for (const line of lines) {
-                if (line.startsWith('event: meta')) continue;
-                if (line.startsWith('event: done')) break;
+                if (line.startsWith('event: ')) {
+                    currentEvent = line.slice(7).trim() || 'message';
+                    continue;
+                }
+                if (currentEvent === 'done') break;
 
                 if (line.startsWith('data: ')) {
-                    let data;
+                    const raw = line.slice(6);
+                    if (currentEvent === 'meta') {
+                        try {
+                            const meta = JSON.parse(raw);
+                            if (meta.intent) {
+                                highlightBadge(meta.intent);
+                                const tag = streamDiv.querySelector('.intent-tag');
+                                if (tag) tag.textContent = meta.intent;
+                                contentSpan.textContent = '正在处理 ' + meta.intent + ' 请求';
+                            }
+                        } catch(e) {}
+                        currentEvent = 'message';
+                        continue;
+                    }
                     try {
-                        data = JSON.parse(line.slice(6));
-                        // This is the meta event data, skip
+                        JSON.parse(raw);
                         continue;
                     } catch(e) {
                         // Raw token text
-                        let token = line.slice(6);
+                        let token = raw;
                         // Strip Qwen3 thinking tags
                         token = token.replace(/<\/?think>/g, '');
                         if (token) {
                             sawToken = true;
+                            streamDiv.classList.remove('pending');
+                            contentSpan.className = '';
+                            if (contentSpan.textContent.startsWith('正在')) {
+                                contentSpan.textContent = '';
+                            }
                             contentSpan.textContent += token;
                         }
                 }
@@ -202,12 +240,14 @@ async function send() {
         let text = contentSpan.textContent || '';
         text = text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
         contentSpan.textContent = text;
-        if (!sawToken && !contentSpan.textContent) {
+        if (!sawToken || !contentSpan.textContent || contentSpan.textContent.startsWith('正在')) {
             throw new Error('empty stream');
         }
+        statusEl.textContent = 'Connected';
 
     } catch(e) {
         try {
+            statusEl.textContent = 'Retrying non-stream...';
             const fallback = await fetch(API + '/chat', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -218,12 +258,18 @@ async function send() {
             }
             const data = await fallback.json();
             highlightBadge(data.intent || 'chat');
+            streamDiv.classList.remove('pending');
+            contentSpan.className = '';
             contentSpan.textContent = data.reply || '(empty response)';
+            statusEl.textContent = 'Connected';
         } catch (fallbackError) {
             statusEl.textContent = 'Server offline';
+            streamDiv.classList.remove('pending');
+            streamDiv.classList.add('error');
+            contentSpan.className = '';
             contentSpan.textContent =
-                'Error: backend unreachable. 请确认后端正在运行，并访问 ' +
-                API + '/health 检查服务状态。';
+                '请求没有成功完成。请确认后端仍在运行，并查看启动终端日志；' +
+                '如果是 MCP 菜谱问题，真实 MCP 不可用时系统会自动降级到 mock。';
         }
     }
 

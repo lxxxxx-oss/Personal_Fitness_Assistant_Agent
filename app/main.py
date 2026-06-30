@@ -313,6 +313,7 @@ async def chat_stream(request: ChatRequest):
         "memory": memory.get_all(),
         "result": "",
         "error": None,
+        "_streaming": True,
     }
 
     async def event_stream():
@@ -405,6 +406,7 @@ async def chat_websocket(websocket: WebSocket):
             "memory": memory.get_all(),
             "result": "",
             "error": None,
+            "_streaming": True,
         }
 
         # Step 1: Run graph to build context + get prompt

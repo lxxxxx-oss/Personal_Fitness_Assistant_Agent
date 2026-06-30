@@ -1,0 +1,9 @@
+# Optional dependencies for Motion image pose estimation.
+#
+# Use this file when you need /motion/analyze-image to run real MediaPipe
+# inference. The base requirements.txt intentionally keeps MediaPipe out of
+# the core install because it is platform and Python-version sensitive.
+
+-r requirements.txt
+
+mediapipe>=0.10.14,<0.11.0

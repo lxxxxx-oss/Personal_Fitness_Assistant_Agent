@@ -63,9 +63,14 @@ def search_node(state: RouterState) -> RouterState:
     query = state.get("_search_query", state["user_input"])  # type: ignore
     tool = _get_tool()
     result = tool.search(query, max_results=5)
-    state["_search_results"] = result.data if result.ok else []  # type: ignore
+    search_results = result.data if result.ok and result.data else []
+    state["_search_results"] = search_results  # type: ignore
     state["_search_meta"] = result.meta  # type: ignore
-    logger.info(f"Search returned {len(result.data)} results for: {query}")
+    if not result.ok:
+        state["_route_execution_warnings"] = state.get(
+            "_route_execution_warnings", []
+        ) + [f"search_degraded:{result.error_code or 'unknown'}"]
+    logger.info(f"Search returned {len(search_results)} results for: {query}")
     return state
 
 
@@ -99,12 +104,17 @@ def synthesis_node(state: RouterState) -> RouterState:
 
 请回答："""
 
+    state["_prompt"] = prompt  # type: ignore
+    if state.get("_streaming"):
+        state["result"] = ""
+        state["_sources"] = sources  # type: ignore
+        return state
+
     llm = LLMLoader(
         model_path=config.model_path,
         device=config.model_device,
         max_tokens=config.model_max_tokens,
     )
-    state["_prompt"] = prompt  # type: ignore
     answer = llm.generate(prompt)
     state["result"] = answer
     state["_sources"] = sources  # type: ignore

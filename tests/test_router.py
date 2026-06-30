@@ -10,6 +10,9 @@ from app.graph.router import (
     classify_intent_with_scores,
     intent_classify_node,
     build_router_graph,
+    collect_route_result_node,
+    route_after_collection,
+    synthesize_route_results_node,
 )
 
 
@@ -89,6 +92,112 @@ class TestIntentClassification:
         assert decision["scores"]["diet"] > decision["scores"]["search"]
         assert decision["matches"]
 
+    @pytest.mark.parametrize(
+        ("text", "primary", "secondary", "route_plan"),
+        [
+            (
+                "先分析一下我的深蹲姿势，然后搜索最近的纠正方法",
+                "motion",
+                ["search"],
+                ["motion", "search"],
+            ),
+            (
+                "先分析 sample.npz，然后给我饮食建议",
+                "motion",
+                ["diet"],
+                ["motion", "diet"],
+            ),
+        ],
+    )
+    def test_multi_intent_observation(self, text, primary, secondary, route_plan):
+        decision = classify_intent_with_scores(text)
+
+        assert decision["intent"] == primary
+        assert decision["primary_intent"] == primary
+        assert decision["secondary_intents"] == secondary
+        assert decision["route_plan"] == route_plan
+
+    def test_cross_domain_plan_requests_clarification_without_composition(self):
+        decision = classify_intent_with_scores(
+            "能不能根据我最近训练状态安排一下吃和练"
+        )
+
+        assert decision["primary_intent"] == "chat"
+        assert decision["route_plan"] == ["chat"]
+        assert decision["needs_clarification"] is True
+
+    def test_only_supported_route_plan_is_executed(self):
+        supported: RouterState = {
+            "user_input": "先分析 sample.npz，然后给我饮食建议",
+            "user_id": "test",
+            "memory": [],
+        }
+        unsupported: RouterState = {
+            "user_input": "先给我减脂原则，然后推荐一道具体晚餐菜",
+            "user_id": "test",
+            "memory": [],
+        }
+
+        supported_result = intent_classify_node(supported)
+        unsupported_result = intent_classify_node(unsupported)
+
+        assert supported_result["_route_execution_plan"] == ["motion", "diet"]
+        assert unsupported_result["_route_plan"] == ["diet", "mcp"]
+        assert unsupported_result["_route_execution_plan"] == ["diet"]
+        assert "unsupported_route_plan" in unsupported_result[
+            "_route_execution_warnings"
+        ][0]
+
+    def test_collect_route_result_advances_and_preserves_records(self):
+        state: RouterState = {
+            "user_input": "combined request",
+            "intent": "motion",
+            "_primary_intent": "motion",
+            "_active_intent": "motion",
+            "_route_execution_plan": ["motion", "diet"],
+            "_route_execution_cursor": 0,
+            "_route_results": [],
+            "result": "motion result",
+            "error": None,
+        }
+
+        result = collect_route_result_node(state)
+
+        assert result["_route_results"][0]["intent"] == "motion"
+        assert result["_route_results"][0]["result"] == "motion result"
+        assert result["_active_intent"] == "diet"
+        assert route_after_collection(result) == "diet"
+
+    def test_multi_route_synthesis_keeps_partial_success(self):
+        state: RouterState = {
+            "user_input": "combined request",
+            "intent": "motion",
+            "_primary_intent": "motion",
+            "_route_results": [
+                {
+                    "intent": "motion",
+                    "result": "motion result",
+                    "error": None,
+                    "prompt": "",
+                    "sources": [],
+                },
+                {
+                    "intent": "diet",
+                    "result": "",
+                    "error": "diet unavailable",
+                    "prompt": "",
+                    "sources": [],
+                },
+            ],
+            "_route_execution_warnings": [],
+        }
+
+        result = synthesize_route_results_node(state)
+
+        assert result["result"] == "Mock LLM response"
+        assert result["error"] is None
+        assert "partial_route_failure:diet" in result["_route_execution_warnings"]
+
     def test_llm_classifier_contract_accepts_high_confidence(self, monkeypatch):
         def fake_call(prompt: str) -> str:
             assert "needs_clarification" in prompt
@@ -110,6 +219,93 @@ class TestIntentClassification:
         assert decision["source"] == "llm_classifier"
         assert decision["confidence"] == 0.82
         assert "llm_intent:diet" in decision["matches"]
+
+    def test_ambiguity_detector_can_request_llm_review(self, monkeypatch):
+        monkeypatch.setattr(
+            router_module,
+            "_call_llm_router",
+            lambda prompt: json.dumps(
+                {
+                    "intent": "chat",
+                    "confidence": 0.99,
+                    "reason": "cross-domain plan needs clarification",
+                    "needs_clarification": False,
+                }
+            ),
+        )
+
+        decision = classify_intent_with_scores(
+            "能不能根据我最近训练状态安排一下吃和练"
+        )
+
+        assert decision["intent"] == "chat"
+        assert decision["source"] == "llm_classifier"
+        assert "cross_domain_plan" in decision["ambiguity_signals"]
+
+    def test_ambiguity_llm_cannot_override_stronger_rule(self, monkeypatch):
+        monkeypatch.setattr(
+            router_module,
+            "_call_llm_router",
+            lambda prompt: json.dumps(
+                {
+                    "intent": "diet",
+                    "confidence": 0.85,
+                    "reason": "mixed food request",
+                    "needs_clarification": False,
+                }
+            ),
+        )
+
+        decision = classify_intent_with_scores("减脂晚餐具体怎么做")
+
+        assert decision["intent"] == "mcp"
+        assert decision["source"] == "weighted_rules"
+        assert "llm_rejected:not_higher_than_rule_confidence" in decision["matches"]
+
+    def test_deterministic_order_signal_does_not_call_llm(self, monkeypatch):
+        def fail_if_called(prompt: str) -> str:
+            raise AssertionError("ordered deterministic route should not call LLM")
+
+        monkeypatch.setattr(router_module, "_call_llm_router", fail_if_called)
+
+        decision = classify_intent_with_scores(
+            "先分析一下我的深蹲姿势，然后搜索最近的纠正方法"
+        )
+
+        assert decision["intent"] == "motion"
+        assert decision["source"] == "weighted_rules"
+        assert "ordered_multi_task" in decision["ambiguity_signals"]
+
+    def test_local_llm_provider_is_disabled_by_default(self, monkeypatch):
+        from app.config import config
+
+        monkeypatch.setattr(config, "llm_router_enabled", False)
+
+        assert router_module._call_llm_router("prompt") is None
+
+    def test_llm_router_metrics_track_and_reset_calls(self, monkeypatch):
+        router_module.get_llm_router_metrics(reset=True)
+        monkeypatch.setattr(
+            router_module,
+            "_call_llm_router",
+            lambda prompt: json.dumps(
+                {
+                    "intent": "diet",
+                    "confidence": 0.82,
+                    "reason": "nutrition planning",
+                    "needs_clarification": False,
+                }
+            ),
+        )
+
+        router_module._llm_classifier_route("ambiguous request")
+        metrics = router_module.get_llm_router_metrics()
+
+        assert metrics["calls"] == 1
+        assert metrics["outcomes"] == {"contract_accepted": 1}
+        reset_snapshot = router_module.get_llm_router_metrics(reset=True)
+        assert reset_snapshot["calls"] == 1
+        assert router_module.get_llm_router_metrics()["calls"] == 0
 
     def test_llm_classifier_rejects_invalid_json(self, monkeypatch):
         monkeypatch.setattr(
@@ -176,6 +372,11 @@ class TestIntentClassification:
         assert result["_route_confidence"] > 0
         assert result["_route_scores"]["diet"] > result["_route_scores"]["search"]
         assert result["_route_reason"]
+        assert isinstance(result["_route_ambiguity_signals"], list)
+        assert result["_primary_intent"] == result["intent"]
+        assert isinstance(result["_secondary_intents"], list)
+        assert result["_route_plan"][0] == result["_primary_intent"]
+        assert isinstance(result["_needs_clarification"], bool)
 
 
 class TestRouterGraph:
@@ -193,6 +394,48 @@ class TestRouterGraph:
         result = graph.invoke(state)
         assert "result" in result
         assert result["intent"] == "chat"
+
+    def test_supported_combination_executes_two_subgraphs(self, monkeypatch):
+        from langgraph.graph import END, StateGraph
+        import app.tools.retriever as retriever_module
+
+        def fake_builder(intent):
+            builder = StateGraph(RouterState)
+
+            def run(state):
+                state["result"] = f"{intent} result"
+                state["_prompt"] = f"{intent} prompt"
+                return state
+
+            builder.add_node("run", run)
+            builder.set_entry_point("run")
+            builder.add_edge("run", END)
+            return builder.compile()
+
+        for intent in ("search", "motion", "diet", "chat", "mcp"):
+            monkeypatch.setattr(
+                router_module,
+                f"build_{intent}_subgraph",
+                lambda current=intent: fake_builder(current),
+            )
+        monkeypatch.setattr(retriever_module, "load_shared_knowledge_base", lambda path: None)
+
+        graph = build_router_graph()
+        result = graph.invoke({
+            "user_input": "先分析 sample.npz，然后给我饮食建议",
+            "user_id": "test",
+            "memory": [],
+            "result": "",
+            "error": None,
+        })
+
+        assert result["intent"] == "motion"
+        assert result["_route_execution_plan"] == ["motion", "diet"]
+        assert [item["intent"] for item in result["_route_results"]] == [
+            "motion",
+            "diet",
+        ]
+        assert result["result"] == "Mock LLM response"
 
 
 class TestRouterEvalDataset:

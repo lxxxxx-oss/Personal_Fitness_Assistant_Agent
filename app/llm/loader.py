@@ -8,8 +8,11 @@ Its output may be inaccurate, outdated, or biased. It does NOT provide:
 Users should consult qualified professionals for health-related decisions.
 """
 
+import gc
 import logging
-from typing import Generator, Optional
+import os
+import threading
+from typing import Any, Dict, Generator, Optional, Tuple
 
 from app.tools.types import ToolResult, ErrorCode, check_str_nonempty, check_str_len
 
@@ -17,6 +20,13 @@ logger = logging.getLogger(__name__)
 
 # --- Constants ---
 MAX_PROMPT_CHARS = 8192  # ~4096 tokens in Chinese
+
+# A model is a process-level resource. Subgraph nodes may create lightweight
+# LLMLoader wrappers with different generation settings, but they must reuse
+# the same tokenizer/model objects instead of loading one copy per node.
+_MODEL_CACHE: Dict[Tuple[str, str, str], Tuple[Any, Any]] = {}
+_MODEL_LOAD_LOCK = threading.Lock()
+_MODEL_GENERATION_LOCK = threading.Lock()
 
 
 class LLMLoader:
@@ -61,7 +71,6 @@ class LLMLoader:
             return ToolResult.ok(mock=True)
         if self._model is not None:
             return ToolResult.ok()
-        import os
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -73,26 +82,57 @@ class LLMLoader:
                 meta={"model_path": self.model_path},
             )
 
-        logger.info(f"Loading model from {self.model_path} on {self.device}...")
-        try:
-            dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                self.model_path, trust_remote_code=True
-            )
-            self._model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                torch_dtype=dtype,
-                trust_remote_code=True,
-            ).to(self.device)
-            self._model.eval()
-            logger.info("Model loaded.")
-            return ToolResult.ok()
-        except Exception as e:
-            return ToolResult.fail(
-                ErrorCode.INTERNAL_ERROR,
-                f"Failed to load model from '{self.model_path}': {e}",
-                meta={"model_path": self.model_path},
-            )
+        dtype = torch.bfloat16 if self.device == "cuda" else torch.float32
+        cache_key = (
+            os.path.normcase(os.path.abspath(self.model_path)),
+            self.device,
+            str(dtype),
+        )
+
+        cached = _MODEL_CACHE.get(cache_key)
+        if cached is not None:
+            self._tokenizer, self._model = cached
+            return ToolResult.ok(shared=True)
+
+        # Double-checked locking prevents concurrent first requests from
+        # allocating multiple multi-gigabyte copies of the same model.
+        with _MODEL_LOAD_LOCK:
+            cached = _MODEL_CACHE.get(cache_key)
+            if cached is not None:
+                self._tokenizer, self._model = cached
+                return ToolResult.ok(shared=True)
+
+            logger.info("Loading shared model from %s on %s...", self.model_path, self.device)
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_path, trust_remote_code=True
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    dtype=dtype,
+                    trust_remote_code=True,
+                ).to(self.device)
+                model.eval()
+                _MODEL_CACHE[cache_key] = (tokenizer, model)
+                self._tokenizer = tokenizer
+                self._model = model
+                logger.info("Shared model loaded and cached.")
+                return ToolResult.ok(shared=False)
+            except Exception as e:
+                # Do not retain partially initialized objects after a failed or
+                # out-of-memory load. This keeps the next retry deterministic.
+                self._tokenizer = None
+                self._model = None
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                return ToolResult.fail(
+                    ErrorCode.INTERNAL_ERROR,
+                    f"Failed to load model from '{self.model_path}': {e}",
+                    model_path=self.model_path,
+                    device=self.device,
+                    shared_cache_entries=len(_MODEL_CACHE),
+                )
 
     def _prepare_inputs(self, prompt: str):
         """Validate prompt and convert to model input tensors.
@@ -140,23 +180,31 @@ class LLMLoader:
 
         import torch
 
-        tokens = max_new_tokens or self.max_tokens
-        temp = temperature or self.temperature
-        p = top_p or self.top_p
+        tokens = self.max_tokens if max_new_tokens is None else max_new_tokens
+        temp = self.temperature if temperature is None else temperature
+        p = self.top_p if top_p is None else top_p
 
         inputs, _ = self._prepare_inputs(prompt)
         if inputs is None:
             return "[Error: Model not loaded or prompt invalid]"
 
-        with torch.no_grad():
+        # The shared model is intentionally serialized. Concurrent generation
+        # would create multiple KV caches and can exhaust CPU/GPU memory.
+        generation_kwargs = {
+            "max_new_tokens": tokens,
+            "do_sample": temp > 0,
+            "pad_token_id": (
+                self._tokenizer.pad_token_id or self._tokenizer.eos_token_id
+            ),
+        }
+        if temp > 0:
+            generation_kwargs["temperature"] = temp
+            generation_kwargs["top_p"] = p
+
+        with _MODEL_GENERATION_LOCK, torch.no_grad():
             outputs = self._model.generate(
                 **inputs,
-                max_new_tokens=tokens,
-                temperature=temp,
-                top_p=p,
-                do_sample=True,
-                pad_token_id=self._tokenizer.pad_token_id
-                or self._tokenizer.eos_token_id,
+                **generation_kwargs,
             )
 
         generated = outputs[0][inputs["input_ids"].shape[1] :]
@@ -184,72 +232,73 @@ class LLMLoader:
 
         import torch
 
-        tokens = max_new_tokens or self.max_tokens
-        temp = temperature or self.temperature
-        p = top_p or self.top_p
+        tokens = self.max_tokens if max_new_tokens is None else max_new_tokens
+        temp = self.temperature if temperature is None else temperature
+        p = self.top_p if top_p is None else top_p
 
         inputs, _ = self._prepare_inputs(prompt)
         if inputs is None:
             yield "[Error: Model not loaded or prompt invalid]"
             return
-        input_len = inputs["input_ids"].shape[1]
-        past_key_values = None
-        current_ids = inputs["input_ids"]
+        with _MODEL_GENERATION_LOCK:
+            past_key_values = None
+            current_ids = inputs["input_ids"]
 
-        for _ in range(tokens):
-            with torch.no_grad():
-                outputs = self._model(
-                    input_ids=current_ids,
-                    past_key_values=past_key_values,
-                    use_cache=True,
+            for _ in range(tokens):
+                with torch.no_grad():
+                    outputs = self._model(
+                        input_ids=current_ids,
+                        past_key_values=past_key_values,
+                        use_cache=True,
+                    )
+                past_key_values = outputs.past_key_values
+                logits = outputs.logits[:, -1, :]
+
+                # 温度采样
+                if temp > 0:
+                    logits = logits / temp
+                    if p < 1.0:
+                        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+                        cum_probs = torch.cumsum(
+                            torch.softmax(sorted_logits, dim=-1), dim=-1
+                        )
+                        sorted_indices_to_remove = cum_probs > p
+                        sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[
+                            :, :-1
+                        ].clone()
+                        sorted_indices_to_remove[:, 0] = False
+                        indices_to_remove = sorted_indices_to_remove.scatter(
+                            1, sorted_indices, sorted_indices_to_remove
+                        )
+                        logits[indices_to_remove] = float("-inf")
+                    probs = torch.softmax(logits, dim=-1)
+                    next_token_id = torch.multinomial(probs, num_samples=1)
+                else:
+                    next_token_id = logits.argmax(dim=-1, keepdim=True)
+
+                token_id = next_token_id.item()
+
+                # 遇到 EOS 就停止
+                if token_id == self._tokenizer.eos_token_id:
+                    break
+
+                token_text = self._tokenizer.decode(
+                    [token_id], skip_special_tokens=True
                 )
-            past_key_values = outputs.past_key_values
-            logits = outputs.logits[:, -1, :]
+                if token_text:
+                    yield token_text
 
-            # 温度采样
-            if temp > 0:
-                logits = logits / temp
-                if p < 1.0:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    cum_probs = torch.cumsum(
-                        torch.softmax(sorted_logits, dim=-1), dim=-1
-                    )
-                    sorted_indices_to_remove = cum_probs > p
-                    sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[
-                        :, :-1
-                    ].clone()
-                    sorted_indices_to_remove[:, 0] = False
-                    indices_to_remove = sorted_indices_to_remove.scatter(
-                        1, sorted_indices, sorted_indices_to_remove
-                    )
-                    logits[indices_to_remove] = float("-inf")
-                probs = torch.softmax(logits, dim=-1)
-                next_token_id = torch.multinomial(probs, num_samples=1)
-            else:
-                next_token_id = logits.argmax(dim=-1, keepdim=True)
-
-            token_id = next_token_id.item()
-
-            # 遇到 EOS 就停止
-            if token_id == self._tokenizer.eos_token_id:
-                break
-
-            token_text = self._tokenizer.decode(
-                [token_id], skip_special_tokens=True
-            )
-            if token_text:
-                yield token_text
-
-            current_ids = next_token_id
+                current_ids = next_token_id
 
 
 def _mock_response(prompt: str) -> str:
     """Return a deterministic demo response when LLM_MOCK is enabled."""
-    if "番茄炒蛋" in prompt or "菜谱" in prompt or "配料" in prompt:
-        return (
-            "【Demo 模式】番茄炒蛋可以这样做：1. 番茄切块，鸡蛋打散；"
-            "2. 先炒鸡蛋盛出；3. 再炒番茄出汁；4. 倒回鸡蛋，加盐调味。"
-        )
+    if "工具返回数据" in prompt and (
+        "配料" in prompt or "ingredients" in prompt or "steps" in prompt
+    ):
+        recipe_reply = _mock_recipe_response(prompt)
+        if recipe_reply:
+            return recipe_reply
     if "减脂" in prompt or "饮食" in prompt or "营养" in prompt:
         return (
             "【Demo 模式】减脂期间建议保证蛋白质摄入，控制总热量，"
@@ -263,3 +312,67 @@ def _mock_response(prompt: str) -> str:
     if "搜索结果" in prompt or "联网搜索" in prompt:
         return "【Demo 模式】这里会基于 Tavily 或 mock 搜索结果合成摘要，并标注来源。"
     return "【Demo 模式】你好，我是健身智能助手。你可以问我健身知识、饮食建议、动作分析或菜谱做法。"
+
+
+def _mock_recipe_response(prompt: str) -> str:
+    """Format MCP recipe payloads in demo mode without hard-coding one dish."""
+    import json
+    import re
+
+    match = re.search(
+        r"# 工具返回数据\s*(.*?)\n\n# 用户问题",
+        prompt,
+        flags=re.S,
+    )
+    if not match:
+        return ""
+
+    raw_payload = match.group(1).strip()
+    try:
+        payload = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        return raw_payload if raw_payload else ""
+
+    if isinstance(payload, dict) and payload.get("error"):
+        return f"【Demo 模式】{payload.get('error')}。{payload.get('suggestion', '')}".strip()
+
+    if isinstance(payload, list):
+        names = [str(item.get("name", item)) for item in payload[:5]]
+        return "【Demo 模式】可以考虑这些菜：" + "、".join(names)
+
+    if not isinstance(payload, dict):
+        return ""
+
+    if "recommendations" in payload:
+        dishes = "、".join(map(str, payload.get("recommendations", [])))
+        return f"【Demo 模式】为 {payload.get('peopleCount', '你')} 人推荐：{dishes}。"
+
+    if "weeklyPlan" in payload:
+        days = "、".join(payload.get("weeklyPlan", {}).keys())
+        shopping = "、".join(map(str, payload.get("shoppingList", [])[:8]))
+        return f"【Demo 模式】已生成 {payload.get('peopleCount', '多')} 人膳食计划，覆盖 {days}。购物清单可先准备：{shopping}。"
+
+    name = payload.get("name")
+    if not name:
+        return ""
+
+    ingredients = payload.get("ingredients", [])
+    ingredient_text = []
+    for item in ingredients:
+        if isinstance(item, dict):
+            ingredient_text.append(str(item.get("text_quantity") or item.get("name") or item))
+        else:
+            ingredient_text.append(str(item))
+
+    steps = payload.get("steps", [])
+    step_text = "；".join(map(str, steps[:6]))
+    extra = payload.get("calories") or payload.get("description") or ""
+
+    parts = [f"【Demo 模式】{name}可以这样做"]
+    if ingredient_text:
+        parts.append("配料：" + "、".join(ingredient_text))
+    if step_text:
+        parts.append("步骤：" + step_text)
+    if extra:
+        parts.append("补充：" + str(extra))
+    return "。".join(parts) + "。"

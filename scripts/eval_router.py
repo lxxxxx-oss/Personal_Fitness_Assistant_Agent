@@ -12,7 +12,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from app.graph.router import classify_intent_with_scores
+from app.graph.router import classify_intent_with_scores, get_llm_router_metrics
 
 DEFAULT_DATASET = Path("data/eval/router_eval.jsonl")
 INTENTS = ["chat", "search", "diet", "motion", "mcp"]
@@ -40,6 +40,7 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
 
 
 def evaluate(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    get_llm_router_metrics(reset=True)
     cases = []
     labels = set(INTENTS)
     total = 0
@@ -50,6 +51,10 @@ def evaluate(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     source_counts = Counter()
     category_support = Counter()
     category_correct = Counter()
+    ambiguity_counts = Counter()
+    multi_intent_total = 0
+    secondary_exact = 0
+    route_plan_exact = 0
 
     for row in rows:
         expected = row["intent"]
@@ -67,6 +72,16 @@ def evaluate(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         category = row.get("category", "uncategorized")
         category_support[category] += 1
         category_correct[category] += int(is_correct)
+        ambiguity_signals = decision.get("ambiguity_signals", [])
+        ambiguity_counts.update(ambiguity_signals)
+        predicted_secondary = decision.get("secondary_intents", [])
+        predicted_route_plan = decision.get("route_plan", [predicted])
+        expected_secondary = row.get("secondary_intents")
+        expected_route_plan = row.get("route_plan")
+        if expected_secondary is not None and expected_route_plan is not None:
+            multi_intent_total += 1
+            secondary_exact += int(predicted_secondary == expected_secondary)
+            route_plan_exact += int(predicted_route_plan == expected_route_plan)
         cases.append({
             "text": row["text"],
             "expected": expected,
@@ -77,6 +92,21 @@ def evaluate(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "reason": decision["reason"],
             "category": category,
             "note": row.get("note", ""),
+            "ambiguity_signals": ambiguity_signals,
+            "primary_intent": decision.get("primary_intent", predicted),
+            "secondary_intents": predicted_secondary,
+            "route_plan": predicted_route_plan,
+            "needs_clarification": decision.get("needs_clarification", False),
+            "secondary_exact": (
+                predicted_secondary == expected_secondary
+                if expected_secondary is not None
+                else None
+            ),
+            "route_plan_exact": (
+                predicted_route_plan == expected_route_plan
+                if expected_route_plan is not None
+                else None
+            ),
         })
 
     per_intent = {}
@@ -120,6 +150,19 @@ def evaluate(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             for category in sorted(category_support)
         },
         "source_counts": dict(source_counts),
+        "ambiguity_counts": dict(ambiguity_counts),
+        "multi_intent_metrics": {
+            "annotated_cases": multi_intent_total,
+            "secondary_exact": secondary_exact,
+            "secondary_exact_accuracy": (
+                secondary_exact / multi_intent_total if multi_intent_total else 0.0
+            ),
+            "route_plan_exact": route_plan_exact,
+            "route_plan_exact_accuracy": (
+                route_plan_exact / multi_intent_total if multi_intent_total else 0.0
+            ),
+        },
+        "llm_router_metrics": get_llm_router_metrics(),
         "mismatches": [case for case in cases if not case["correct"]],
         "cases": cases,
     }
@@ -160,6 +203,37 @@ def print_text_report(result: Dict[str, Any], show_cases: bool) -> None:
     print("-" * 72)
     for source, count in sorted(result["source_counts"].items()):
         print(f"{source:<20} {count}")
+    print()
+    print("Ambiguity signals")
+    print("-" * 72)
+    if result["ambiguity_counts"]:
+        for signal, count in sorted(result["ambiguity_counts"].items()):
+            print(f"{signal:<28} {count}")
+    else:
+        print("none")
+    print()
+    print("Multi-intent metrics")
+    print("-" * 72)
+    multi_metrics = result["multi_intent_metrics"]
+    print(
+        f"annotated={multi_metrics['annotated_cases']} "
+        f"secondary_exact={multi_metrics['secondary_exact']} "
+        f"({_pct(multi_metrics['secondary_exact_accuracy'])}) "
+        f"route_plan_exact={multi_metrics['route_plan_exact']} "
+        f"({_pct(multi_metrics['route_plan_exact_accuracy'])})"
+    )
+    print()
+    print("LLM router metrics")
+    print("-" * 72)
+    metrics = result["llm_router_metrics"]
+    print(
+        f"calls={metrics['calls']} average_latency_ms={metrics['average_latency_ms']:.2f} "
+        f"max_latency_ms={metrics['max_latency_ms']:.2f}"
+    )
+    for outcome, count in sorted(metrics["outcomes"].items()):
+        print(f"{outcome:<20} {count}")
+    for outcome, count in sorted(metrics["selection_outcomes"].items()):
+        print(f"selection:{outcome:<30} {count}")
     print()
     print("Confusion matrix")
     print("-" * 72)
