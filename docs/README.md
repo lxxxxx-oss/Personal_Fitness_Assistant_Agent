@@ -306,9 +306,9 @@ python scripts/eval_router.py --dataset data/eval/router_challenge_eval.jsonl
 
 Current challenge set: 36 cases. Primary intent, secondary intent exact match, and route-plan exact match are all 36/36. The local Qwen classifier remains disabled by default because the earlier A/B preserved accuracy but added about 6.22 seconds per reviewed case. Phase 4 executes only `search -> diet`、`search -> chat`、`motion -> chat`、`motion -> diet`; unsupported combinations remain observable but safely fall back to the primary route.
 
-Multi-intent routing design: [interview/router/MULTI_INTENT_ROUTING_DESIGN.md](./interview/router/MULTI_INTENT_ROUTING_DESIGN.md).
+Multi-intent routing design: [technical/router/MULTI_INTENT_ROUTING_DESIGN.md](./technical/router/MULTI_INTENT_ROUTING_DESIGN.md).
 
-Phase 3 roadmap for router ambiguity handling: [interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md#63-phase-3-llm-classifier-fallback).
+Phase 3 roadmap for router ambiguity handling: [technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md](./technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md#63-phase-3-llm-classifier-fallback).
 
 Detailed test record: [tests/2026-06-25-router-eval-and-challenge-test.md](./tests/2026-06-25-router-eval-and-challenge-test.md).
 
@@ -406,7 +406,7 @@ Motion 图片姿态估计说明：
 
 ## 9. 下一步优先级
 
-1. 按 [Motion 优化路线](./interview/motion/MOTION_OPTIMIZATION_ROADMAP.md) 继续实现视频抽帧到 `PoseSequence` 的动作序列分析入口。
+1. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 继续实现视频抽帧到 `PoseSequence` 的动作序列分析入口。
 2. 准备 `data/motions/` 标准动作库。
 3. 完成微信小程序端到端联调。
 4. 验证 Docker 构建和启动。
@@ -424,7 +424,8 @@ Motion 图片姿态估计说明：
 
 历史阶段记录仍保留在子目录：
 
-- `interview/`：面向面试准备的项目讲解、代码理解、专题设计和问答材料。
+- `interview/`：面向面试准备的分级背诵材料，只保留可直接学习和回答面试的问题。
+- `technical/`：技术设计、路线图、历史长文档和专题状态记录，不作为直接背诵入口。
 - `progress/`：阶段开发记录；日常先看 [progress/README.md](./progress/README.md)，单篇日期记录作为证据保留。
 - `tests/`：手工测试记录和体验测试语句；日常先看 [tests/README.md](./tests/README.md)，单篇测试记录作为证据保留。
 - `miniprogram/`：小程序设计和实施记录。
@@ -469,6 +470,7 @@ AGENTS.md
 | 项目能力、模块进度、已知问题、处理方式、运行命令、部署方式 | `docs/README.md` |
 | 微信小程序页面、组件、API 封装、联调方式 | `docs/miniprogram/` |
 | 面试讲解材料、项目答辩稿、针对项目的问答库 | `docs/interview/` |
+| 技术设计、路线图、历史长文档、专题状态记录 | `docs/technical/` 或 `docs/progress/` |
 | 阶段性实现、重构、问题修复过程 | `docs/progress/`，并同步 `docs/progress/README.md` |
 | 手工测试、冒烟测试、分级验收 | `docs/tests/`，并同步 `docs/tests/README.md` |
 | 早期方案、规格设计 | `docs/superpowers/`，一般只保留或归档，不随意删除 |

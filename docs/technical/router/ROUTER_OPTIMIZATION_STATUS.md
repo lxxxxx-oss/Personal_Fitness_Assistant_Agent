@@ -2,7 +2,7 @@
 
 本文档用于快速回答：Router 现在优化到哪一步了，下一步应该先做什么。
 
-详细路线仍以 [../SUBGRAPH_OPTIMIZATION_GUIDE.md](../SUBGRAPH_OPTIMIZATION_GUIDE.md#6-router-和横切能力优化方向) 为准；多意图设计见 [MULTI_INTENT_ROUTING_DESIGN.md](./MULTI_INTENT_ROUTING_DESIGN.md)。
+详细路线仍以 [../interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md](../interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md#6-router-和横切能力优化方向) 为准；多意图设计见 [MULTI_INTENT_ROUTING_DESIGN.md](./MULTI_INTENT_ROUTING_DESIGN.md)。
 
 ## 1. 一句话结论
 

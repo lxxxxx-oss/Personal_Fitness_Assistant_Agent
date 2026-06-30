@@ -39,6 +39,8 @@
 | [2026-06-25-interview-docs-reorganization.md](./2026-06-25-interview-docs-reorganization.md) | `interview/` 目录重组和专题目录划分 |
 | [2026-06-26-docs-documentation-map.md](./2026-06-26-docs-documentation-map.md) | 新增 docs 文档地图 |
 | [2026-06-30-interview-preparation-audit.md](./2026-06-30-interview-preparation-audit.md) | AI Agent 面试资料审查、基础优先原则和后续优化清单 |
+| [2026-06-30-interview-study-material-reorganization.md](./2026-06-30-interview-study-material-reorganization.md) | `interview/` 收敛为 P0/P1/P2 分级背诵资料，原设计稿移动到 `technical/` |
+| [INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md](./INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md) | 面试准备优化计划和完成状态，作为维护台账保留，不作为直接背诵材料 |
 
 ### 4. Router 演进
 

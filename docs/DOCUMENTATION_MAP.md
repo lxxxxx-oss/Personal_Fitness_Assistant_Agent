@@ -10,10 +10,10 @@
 
 ```text
 一线入口
-  -> README.md / API.md / DOCUMENTATION_MAP.md / interview/PROJECT_INTERVIEW_GUIDE.md
+  -> README.md / API.md / DOCUMENTATION_MAP.md / interview/README.md
 
 二线专题
-  -> interview/ / miniprogram/
+  -> interview/ / technical/ / miniprogram/
 
 三线证据
   -> progress/ / tests/
@@ -26,7 +26,8 @@
 
 - `README.md` 回答“项目现在是什么状态，怎么运行”。
 - `API.md` 回答“接口怎么调，协议是什么”。
-- `interview/` 回答“面试时怎么讲，技术路线怎么解释”。
+- `interview/` 回答“面试时哪些内容要直接背”。
+- `technical/` 回答“技术路线、设计原稿和专题状态在哪里追溯”。
 - `progress/README.md` 回答“这个能力是怎么一步步做出来的”，单篇日期记录作为证据保留。
 - `tests/README.md` 回答“做完之后验证过什么，风险在哪里”，单篇测试记录作为证据保留。
 - `superpowers/` 保留早期方案，不作为当前真实状态的唯一依据。
@@ -41,19 +42,22 @@
 2. [interview/README.md](./interview/README.md)
    看面试材料的入口和专题分工，避免直接跳进长文档迷路。
 
-3. [interview/PROJECT_INTERVIEW_GUIDE.md](./interview/PROJECT_INTERVIEW_GUIDE.md)
-   作为主讲稿，重点读项目定位、三分钟讲法、五个子图、横切能力和高频问答。
+3. [interview/01_MUST_MASTER_PROJECT_STORY.md](./interview/01_MUST_MASTER_PROJECT_STORY.md)
+   先背 P0 项目主线：30 秒开场、3 分钟介绍、三大亮点、五个子图和高频防守问题。
 
-4. [interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md)
-   理解后续优化路线，尤其是 RAG、Search、Motion、MCP、Router 的边界和演进。
+4. [interview/02_SHOULD_MASTER_TECH_QA.md](./interview/02_SHOULD_MASTER_TECH_QA.md)
+   准备技术追问：Python、FastAPI、SSE、RAG、Agent、MCP、Router eval 和稳定性。
 
-5. [API.md](./API.md)
+5. [interview/03_GOOD_TO_KNOW_DEEP_DIVE.md](./interview/03_GOOD_TO_KNOW_DEEP_DIVE.md)
+   了解深挖兜底：代码调用链、Router Phase 1～4、Motion 路线、生产化升级和白板题。
+
+6. [API.md](./API.md)
    对照当前接口，确认 `/chat`、流式接口、历史记录、Motion 上传接口和路由规则。
 
-6. [tests/README.md](./tests/README.md)
+7. [tests/README.md](./tests/README.md)
    看验收矩阵，尤其是 Router eval、Motion 图片分析、Web UI 上传和 MCP fallback。
 
-7. [progress/README.md](./progress/README.md)
+8. [progress/README.md](./progress/README.md)
    需要追溯某个能力的来龙去脉时按主题查找，不建议直接翻日期文件。
 
 ## 3. 目录职责
@@ -65,21 +69,32 @@
 | [README.md](./README.md) | 项目当前状态总入口 | 能力范围、进度、运行命令、配置、问题处理、下一步 |
 | [API.md](./API.md) | 后端接口说明 | 请求/响应字段、流式协议、状态码、接口示例、路由规则 |
 | [DOCUMENTATION_MAP.md](./DOCUMENTATION_MAP.md) | 文档阅读地图 | 文档结构、阅读顺序、维护边界 |
+| [technical/README.md](./technical/README.md) | 技术资料索引 | 设计稿、路线图、历史长文档和专题状态记录 |
 
 ### `interview/`
 
-`interview/` 是面试展示文档，不是普通开发文档。它的重点是把工程取舍讲清楚，并且始终区分“当前已实现”和“后续规划”。
+`interview/` 是面试背诵目录，不是普通开发文档。这里现在只保留可以直接学习、背诵和应对面试的材料，并按重要级分类。
 
 | 文档 | 作用 |
 |---|---|
-| [interview/README.md](./interview/README.md) | 面试文档导航 |
-| [interview/PROJECT_INTERVIEW_GUIDE.md](./interview/PROJECT_INTERVIEW_GUIDE.md) | 面试主讲稿、高频问答、代码讲解、边界说明 |
-| [interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md](./interview/INTERVIEW_PREPARATION_OPTIMIZATION_PLAN.md) | 面试资料优化优先级、完成状态和验收标准 |
-| [interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md) | Chat、Search、Diet、Motion、MCP、Router 的优化总览 |
-| [interview/motion/MOTION_MEDIA_PIPELINE_DESIGN.md](./interview/motion/MOTION_MEDIA_PIPELINE_DESIGN.md) | Motion 从 `.npz` 扩展到图片/视频输入的设计 |
-| [interview/motion/MOTION_OPTIMIZATION_ROADMAP.md](./interview/motion/MOTION_OPTIMIZATION_ROADMAP.md) | Motion 分阶段路线和实际推进台账 |
-| [interview/router/ROUTER_OPTIMIZATION_STATUS.md](./interview/router/ROUTER_OPTIMIZATION_STATUS.md) | Router 当前优化进度、评测基线和下一步 |
-| [interview/router/MULTI_INTENT_ROUTING_DESIGN.md](./interview/router/MULTI_INTENT_ROUTING_DESIGN.md) | Router 从单 intent 演进到 multi-intent 的设计 |
+| [interview/README.md](./interview/README.md) | 面试背诵资料导航和 P0/P1/P2 阅读顺序 |
+| [interview/01_MUST_MASTER_PROJECT_STORY.md](./interview/01_MUST_MASTER_PROJECT_STORY.md) | P0 必须掌握：项目主线、三分钟讲法、三大亮点、五个子图和高频防守问题 |
+| [interview/02_SHOULD_MASTER_TECH_QA.md](./interview/02_SHOULD_MASTER_TECH_QA.md) | P1 最好掌握：Python、FastAPI、LLM/RAG、Agent、MCP、Router eval 和工程稳定性 |
+| [interview/03_GOOD_TO_KNOW_DEEP_DIVE.md](./interview/03_GOOD_TO_KNOW_DEEP_DIVE.md) | P2 了解即可：调用链、Router Phase 1～4、Motion 深挖、生产化升级和白板题 |
+
+### `technical/`
+
+`technical/` 保存技术设计、历史长文档、路线图和专题状态。这些内容是证据和参考，不作为面试前直接背诵入口。
+
+| 文档 | 作用 |
+|---|---|
+| [technical/README.md](./technical/README.md) | Technical 文档索引和使用原则 |
+| [technical/interview-archive/PROJECT_INTERVIEW_GUIDE_FULL.md](./technical/interview-archive/PROJECT_INTERVIEW_GUIDE_FULL.md) | 原完整长版面试手册，保留历史内容和细节证据 |
+| [technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md](./technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md) | 原子图优化总览和历史路线说明 |
+| [technical/router/ROUTER_OPTIMIZATION_STATUS.md](./technical/router/ROUTER_OPTIMIZATION_STATUS.md) | Router 当前优化进度、评测基线和下一步 |
+| [technical/router/MULTI_INTENT_ROUTING_DESIGN.md](./technical/router/MULTI_INTENT_ROUTING_DESIGN.md) | Router 从单 intent 演进到 multi-intent 的设计 |
+| [technical/motion/MOTION_MEDIA_PIPELINE_DESIGN.md](./technical/motion/MOTION_MEDIA_PIPELINE_DESIGN.md) | Motion 从 `.npz` 扩展到图片/视频输入的设计 |
+| [technical/motion/MOTION_OPTIMIZATION_ROADMAP.md](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) | Motion 分阶段路线和实际推进台账 |
 
 ### `miniprogram/`
 
@@ -180,10 +195,10 @@
 
 对应文档：
 
-- `interview/PROJECT_INTERVIEW_GUIDE.md`
-- `interview/SUBGRAPH_OPTIMIZATION_GUIDE.md`
-- `interview/motion/`
-- `interview/router/`
+- `interview/01_MUST_MASTER_PROJECT_STORY.md`
+- `interview/02_SHOULD_MASTER_TECH_QA.md`
+- `interview/03_GOOD_TO_KNOW_DEEP_DIVE.md`
+- `technical/` 中的设计和状态文档作为追溯证据
 
 ## 5. 文档维护准则
 
@@ -210,14 +225,14 @@
 |---|---|---|
 | 项目定位、模块完成度、已知问题、下一步计划变化 | [README.md](./README.md) | [DOCUMENTATION_MAP.md](./DOCUMENTATION_MAP.md) 如果影响阅读路径 |
 | 后端接口、请求/响应字段、状态码、SSE/WebSocket 协议、上传接口 | [API.md](./API.md) | `README.md` 的接口总览；相关 tests 记录 |
-| Router 规则、语义样例、LLM fallback、route metadata、eval/challenge set | [interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md) | [interview/router/](./interview/router/)、[progress/README.md](./progress/README.md)、[tests/README.md](./tests/README.md) |
-| Chat/Search/Diet/Motion/MCP 子图流程或工具行为 | [interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md) | `README.md` 当前状态、对应 progress/tests |
-| Motion 媒体输入、PoseSequence、姿态估计、标准动作库、动作评测 | [interview/motion/](./interview/motion/) | `API.md`、`README.md`、Motion progress/tests |
-| MCP server、mock/fallback、工具协议、进程生命周期 | `README.md`、[interview/SUBGRAPH_OPTIMIZATION_GUIDE.md](./interview/SUBGRAPH_OPTIMIZATION_GUIDE.md) | MCP progress/tests |
+| Router 规则、语义样例、LLM fallback、route metadata、eval/challenge set | [technical/router/](./technical/router/) | [interview/01_MUST_MASTER_PROJECT_STORY.md](./interview/01_MUST_MASTER_PROJECT_STORY.md)、[progress/README.md](./progress/README.md)、[tests/README.md](./tests/README.md) |
+| Chat/Search/Diet/Motion/MCP 子图流程或工具行为 | [technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md](./technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md) | `README.md` 当前状态、对应 progress/tests、面试背诵材料 |
+| Motion 媒体输入、PoseSequence、姿态估计、标准动作库、动作评测 | [technical/motion/](./technical/motion/) | `API.md`、`README.md`、Motion progress/tests、面试背诵材料 |
+| MCP server、mock/fallback、工具协议、进程生命周期 | `README.md`、[technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md](./technical/interview-archive/SUBGRAPH_OPTIMIZATION_GUIDE.md) | MCP progress/tests、面试背诵材料 |
 | Web UI 用户可见入口、上传体验、等待状态、错误展示 | `README.md` | Web UI progress/tests；必要时更新 API 使用说明 |
 | 微信小程序页面、组件、API 封装、SSE 解析、联调方式 | [miniprogram/](./miniprogram/) | `README.md` 当前进度 |
 | 运行命令、依赖、环境变量、模型路径、Docker、Conda | `README.md` | `progress/` 环境记录；必要时更新 `.codex/COMMANDS.md` |
-| 面试主线、项目亮点、高频问答、诚实边界 | [interview/PROJECT_INTERVIEW_GUIDE.md](./interview/PROJECT_INTERVIEW_GUIDE.md) | `interview/README.md` 或专题文档 |
+| 面试主线、项目亮点、高频问答、诚实边界 | [interview/](./interview/) | `technical/` 中的设计文档只作为证据，不直接放入背诵目录 |
 | 阶段性实现、重构、Bug 修复、文档结构调整 | [progress/](./progress/) 新增日期记录 | [progress/README.md](./progress/README.md) |
 | 自动化测试执行、手工验收、冒烟测试、遗留风险 | [tests/](./tests/) 新增日期记录 | [tests/README.md](./tests/README.md) |
 | 早期方案、旧计划、历史规格 | [superpowers/](./superpowers/) | 一般只保留，不作为当前状态事实源 |
@@ -226,8 +241,8 @@
 
 - `README.md` 是当前项目状态事实源：能力做到了哪里、怎么运行、还缺什么。
 - `API.md` 是接口事实源：接口、字段、状态码、协议示例以这里为准。
-- `PROJECT_INTERVIEW_GUIDE.md` 是面试表达事实源：怎么讲项目、怎么回答追问。
-- `SUBGRAPH_OPTIMIZATION_GUIDE.md` 和专题目录负责技术路线：为什么这么设计、后续怎么演进。
+- `interview/` 是面试表达事实源：怎么讲项目、怎么回答追问，且只保留可直接背诵材料。
+- `technical/` 负责技术路线和历史细节：为什么这么设计、后续怎么演进、原始长文档在哪里。
 - `progress/` 和 `tests/` 是证据库：记录过程和验收，不直接替代当前状态说明。
 
 如果这些文档之间出现冲突，优先修正为：

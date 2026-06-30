@@ -1,5 +1,7 @@
 # 子图优化方向汇总
 
+> 归档说明：本文是整理前的子图优化长文档，保留用于追溯历史路线和设计细节。当前面试复习请优先使用 `docs/interview/` 下的 P0/P1/P2 分级背诵材料；专题设计以 `docs/technical/router/`、`docs/technical/motion/` 和最新 progress/tests 为准。
+
 本文档用于集中记录各个 LangGraph 子图的后续优化方向，方便面试复盘、项目迭代和后续补充。
 
 原则：
