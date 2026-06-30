@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-06-30 | [Interview 简历口径修正](./2026-06-30-interview-resume-alignment-fix.md) | 移除默认看代码假设，按简历主线重写 P0/P1/P2 面试材料 |
 | 2026-06-30 | [简历口径优先规则](./2026-06-30-resume-first-interview-rule.md) | 忽略本地简历 JSON，interview 材料围绕简历项目描述组织 |
 | 2026-06-30 | [面试回答风格再梳理](./2026-06-30-interview-answer-style-refinement.md) | 从标准答案改为项目思路、技术取舍、问题解决和边界说明 |
 | 2026-06-30 | [Router Phase 4 实施](./2026-06-30-router-phase4-implementation.md) | 多意图识别、白名单组合执行、错误隔离和结果合成 |
@@ -22,7 +23,6 @@
 | 2026-06-30 | [面试准备审查](./2026-06-30-interview-preparation-audit.md) | 面试资料事实审查和优化清单 |
 | 2026-06-30 | [P0 面试主线可读性优化](./2026-06-30-interview-p0-readability-optimization.md) | 通俗比喻、口语化主线、分轮学习和自测标准 |
 | 2026-06-30 | [面试官视角审查与材料收紧](./2026-06-30-interview-interviewer-review-adjustment.md) | 个人贡献、证据边界、代码真实口径和高压追问 |
-| 2026-06-30 | [docs 目录收口整理](./2026-06-30-docs-directory-cleanup.md) | 顶层文档减负、链接修复和 progress 最近 10 条策略 |
 
 ## 维护方式
 

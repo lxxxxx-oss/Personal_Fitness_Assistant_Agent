@@ -1,93 +1,89 @@
 # 面试复习资料导航
 
-本目录以 `agent.json` 中的简历项目描述为主线，目标是回答两类问题：简历亮点怎样讲得有吸引力，以及面试官追到代码时怎样把当前实现、原型取舍和生产化路径讲圆。
+本目录只服务一件事：围绕简历里的“个人健身助手 Agent”项目，准备能打动面试官、也能扛住追问的回答。
 
-`agent.json` 包含个人信息，只在本地使用，已由 `.gitignore` 精确忽略，不上传 GitHub，也不在其他文档复制个人信息。
+默认面试场景是：面试官主要看到你的简历，看不到本地代码仓库。因此回答不要总说“当前代码如何”，而要先围绕简历项目经历讲清楚项目价值、技术选型、个人贡献和问题解决过程。
 
-## 1. 回答原则
+## 回答总原则
 
 ```text
-先讲项目价值与个人贡献
-  -> 再讲核心实现与选择原因
-  -> 追问代码时说明当前仓库事实
-  -> 最后给出生产化补齐路径
+先按简历主线讲项目价值
+  -> 再讲为什么这样选型
+  -> 再讲实现思路和遇到的问题
+  -> 最后在被追问时说明能力边界和生产化补齐
 ```
 
-允许适当强化：
+## 首次出现技术点的写法
 
-- 把零散实现组织成完整的“路由层 + 执行层”架构。
-- 用目标技术方案说明系统如何生产化。
-- 突出 Motion、MCP、RAG、Tavily、Memory 的组合价值。
+后续维护 `docs/interview/` 时，第一次提到某个技术点或知识点，必须先讲清楚五件事：
 
-不能制造低级矛盾：
+1. **它是什么**：用一句普通人能听懂的话解释概念。
+2. **它解决什么问题**：说明它在本项目里承担的职责。
+3. **它怎么用**：结合本项目讲输入、处理过程、输出或落地方式。
+4. **类似方案有什么**：至少说出 1-2 个替代方案。
+5. **为什么选它**：讲清楚取舍，避免只堆技术名词。
 
-- 当前仓库的 Retriever 是 NumPy 内存实现，不能说代码正在直接执行 Milvus IVF_FLAT。
-- MCP Client 和真实协议路径已实现，但默认 `MCP_SERVER_COMMAND=mock`，不能把 mock 说成真实 Server 联调结果。
-- Search 有来源数据、Prompt 引用和内部 `_sources`，但普通 `/chat` 还没有完整透传结构化 `sources`。
-- 图片只提供单帧静态姿态，不能包装成完整视频动作判断。
+面试表达要先让自己理解，再让面试官相信。不要只说“用了 LangGraph / Milvus / MCP”，而要说“为什么这个项目需要它，它替代了什么，它带来了什么收益，也有什么边界”。
 
-## 2. 简历主线
+不要一上来主动削弱自己：
 
-| 简历关键词 | 面试重点 | 当前边界 |
-|---|---|---|
-| LangGraph / StateGraph | 多任务路由、子图、统一状态、组合执行 | 是受控工作流，不是通用自主 Agent |
-| 3D Motion / FastDTW | 姿态归一化、关节角、时序对齐、多指标 | 主要输入为 `.npz` 时序；图片仅单帧 |
-| ReAct | `think -> parse -> tool -> check`、最大迭代 | 当前主路径通常一次工具执行后检查 |
-| MCP | stdio JSON-RPC、initialize、工具发现与调用 | 默认 mock 保证演示，真实 Server 需显式配置 |
-| Milvus / RAG | 分块、Embedding、COSINE、阈值、去重、排序 | 当前仓库存储层为 NumPy，Milvus 是简历目标方案口径 |
-| Tavily | query rewrite、搜索、来源约束合成 | 尚不是严格逐句 citation 系统 |
-| 6 轮 Memory | `deque`、`user_id` 隔离、跨任务上下文 | 进程内短期记忆，不是长期持久化记忆 |
+- 不要开场就说“其实代码里没有完全实现”。
+- 不要把面试官默认成会逐行看仓库。
+- 不要把所有亮点都解释成“只是原型”。
 
-## 3. 阅读顺序
+但也不能乱编：
 
-### P0：项目主线
+- 如果被问到 Milvus、MCP、Motion、Tavily、Memory 的实现细节，要能说清架构、数据流、核心实现思路和后续生产化。
+- 如果某个能力在本地演示版本里是轻量实现，要用“原型验证链路 + 生产化替换方案”的口径解释，而不是直接否定简历。
+
+## 简历主线
+
+| 简历关键词 | 面试重点 |
+|---|---|
+| LangGraph / StateGraph | 为什么用图编排做多任务 Agent，而不是一个 Prompt |
+| Router / 子工作流 | 如何把 Search、Motion、Chat、MCPTool 等能力调度起来 |
+| 3D Motion / FastDTW | 为什么动作分析不能只靠 LLM，如何用姿态序列和相似度指标 |
+| ReAct | Motion 子图如何体现 think -> parse -> tool -> check |
+| MCP | 为什么引入标准化工具协议，自己实现 Client 做了什么 |
+| Milvus / RAG | 健身知识如何分块、向量化、检索和增强生成 |
+| Tavily | 为什么联网搜索要做 query rewrite 和 answer synthesis |
+| Sliding Window Memory | 为什么只保留最近 6 轮，以及如何跨任务共享短期上下文 |
+| Docker | 如何说明项目具备部署意识，而不是只在本机脚本运行 |
+
+## 阅读顺序
+
+### P0-A：先看技术总表
+
+[00_RESUME_TECH_INDEX.md](./00_RESUME_TECH_INDEX.md)
+
+用于把简历上出现的技术点全部过一遍：是什么、解决什么、怎么用、类似方案、为什么选择。后续所有面试回答都围绕这张表展开。
+
+### P0-B：必须掌握
 
 [01_MUST_MASTER_PROJECT_STORY.md](./01_MUST_MASTER_PROJECT_STORY.md)
 
-必须掌握：
+用于准备 30 秒、3 分钟项目介绍，以及项目亮点、个人贡献和简历核心技术点。
 
-- 一句话、30 秒和 3 分钟介绍。
-- 四类业务能力与五条执行路径的关系。
-- 七项个人贡献与三个主打亮点。
-- Milvus、MCP mock、来源透传三个高压问题。
-
-### P1：技术问答
+### P1：最好掌握
 
 [02_SHOULD_MASTER_TECH_QA.md](./02_SHOULD_MASTER_TECH_QA.md)
 
-按简历逐项准备：
+用于准备面试官围绕简历逐项追问：LangGraph、Motion、RAG/Milvus、MCP、Tavily、Memory、Docker、测试和边界。
 
-- LangGraph、Router 与 multi-intent。
-- Motion、FastDTW、多指标与 ReAct。
-- RAG、Sentence-Transformers、Milvus 和 IVF_FLAT。
-- MCP Client、JSON-RPC、工具安全与 fallback。
-- Tavily、来源、Memory、流式和模型治理。
-
-### P2：代码深挖
+### P2：了解即可
 
 [03_GOOD_TO_KNOW_DEEP_DIVE.md](./03_GOOD_TO_KNOW_DEEP_DIVE.md)
 
-用于代码定位、调用链、白板题、测试边界、演示顺序和生产化路线。
+用于深挖时白板解释实现链路、数据结构、算法指标和生产化路线。它不是让你背代码路径，而是帮助你把实现讲清楚。
 
-## 4. 证据入口
+## 复习标准
 
-| 想核对什么 | 文档 |
-|---|---|
-| 项目当前事实 | [../README.md](../README.md) |
-| 接口与 Router 行为 | [../API.md](../API.md) |
-| 启动和演示命令 | [../RUNBOOK.md](../RUNBOOK.md) |
-| Router 设计 | [../technical/router/](../technical/router/) |
-| Motion 设计 | [../technical/motion/](../technical/motion/) |
-| 测试证据 | [../tests/README.md](../tests/README.md) |
+每个问题至少能回答五句话：
 
-历史长版材料位于 `docs/technical/interview-archive/`，只用于追溯，不作为当前面试口径。
+1. 这个技术点在项目里解决什么问题。
+2. 为什么选择这个方案，而不是另一个方案。
+3. 我具体做了哪些工作。
+4. 遇到过什么限制或问题，我怎么处理。
+5. 如果继续做成生产级，下一步怎么补齐。
 
-## 5. 复习标准
-
-不要逐字背答案。每个问题至少能说清：
-
-1. 面试官为什么问。
-2. 项目具体怎么做。
-3. 为什么这样选。
-4. 当前哪部分是原型或目标方案。
-5. 如果继续做，如何验证升级真的有效。
+`docs/interview/agent.json` 是本地简历源文件，包含个人信息，已被 `.gitignore` 忽略，不上传 GitHub。interview 文档围绕它的项目描述组织，但不复制个人隐私信息。
