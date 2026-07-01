@@ -8,7 +8,8 @@ Users should consult professionals for medical or training decisions.
 
 import logging
 import re
-from typing import Dict, List, Optional
+import hashlib
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -51,6 +52,7 @@ class MemoryRetriever:
         self.device = device
         self._encoder = None
         self._documents: List[str] = []
+        self._sources: List[str] = []
         self._embeddings: Optional[np.ndarray] = None
 
     def _ensure_encoder(self):
@@ -95,6 +97,7 @@ class MemoryRetriever:
                         "content": self._documents[idx],
                         "score": score,
                         "index": idx,
+                        "source": self._sources[idx] if idx < len(self._sources) else "",
                     })
 
         # 方法2: 子串匹配 + 字重叠（适用于中文等无空格语言）
@@ -122,6 +125,7 @@ class MemoryRetriever:
                             "content": self._documents[idx],
                             "score": substring_score,
                             "index": idx,
+                            "source": self._sources[idx] if idx < len(self._sources) else "",
                         })
 
         results.sort(key=lambda r: r["score"], reverse=True)
@@ -131,7 +135,7 @@ class MemoryRetriever:
     def document_count(self) -> int:
         return len(self._documents)
 
-    def add_documents(self, docs: List[str]) -> None:
+    def add_documents(self, docs: List[str], source: Optional[str] = None) -> None:
         """添加文档到检索库(自动分块后编码)."""
         self._ensure_encoder()
         chunks = []
@@ -140,6 +144,7 @@ class MemoryRetriever:
         if not chunks:
             return
         self._documents.extend(chunks)
+        self._sources.extend([source or ""] * len(chunks))
         if self._encoder is not None:
             new_embeddings = self._encoder.encode(chunks, normalize_embeddings=True)
             if self._embeddings is None:
@@ -227,6 +232,7 @@ class MemoryRetriever:
                 "content": content,
                 "score": float(scores[int(idx)]),
                 "index": int(idx),
+                "source": self._sources[int(idx)] if int(idx) < len(self._sources) else "",
             })
         return ToolResult.ok(
             data=results,
@@ -237,7 +243,322 @@ class MemoryRetriever:
     def clear(self) -> None:
         """清空全部文档和向量."""
         self._documents = []
+        self._sources = []
         self._embeddings = None
+
+
+class MilvusRetriever:
+    """Milvus-backed retriever with MemoryRetriever fallback.
+
+    The public contract intentionally matches MemoryRetriever so Chat/Diet
+    subgraphs do not need to know which vector store is active.
+    """
+
+    def __init__(
+        self,
+        embedding_model: str = "shibing624/text2vec-base-chinese",
+        device: str = "cpu",
+        uri: str = "http://localhost:19530",
+        token: str = "",
+        collection_name: str = "fitness_knowledge",
+        recreate_collection: bool = False,
+        index_type: str = "IVF_FLAT",
+        metric_type: str = "COSINE",
+        nlist: int = 128,
+        nprobe: int = 10,
+    ):
+        self.embedding_model_name = embedding_model
+        self.device = device
+        self.uri = uri
+        self.token = token
+        self.collection_name = collection_name
+        self.recreate_collection = recreate_collection
+        self.index_type = index_type
+        self.metric_type = metric_type
+        self.nlist = nlist
+        self.nprobe = nprobe
+        self._encoder = None
+        self._client = None
+        self._collection_ready = False
+        self._disabled_reason: Optional[str] = None
+        self._document_count = 0
+        self._fallback = MemoryRetriever(embedding_model=embedding_model, device=device)
+
+    @property
+    def document_count(self) -> int:
+        if self._disabled_reason:
+            return self._fallback.document_count
+        return self._document_count
+
+    def _ensure_encoder(self) -> bool:
+        if self._encoder is not None:
+            return True
+        try:
+            from sentence_transformers import SentenceTransformer
+
+            self._encoder = SentenceTransformer(
+                self.embedding_model_name, device=self.device
+            )
+            return True
+        except Exception as e:
+            self._disabled_reason = (
+                f"Cannot load embedding model '{self.embedding_model_name}': {e}"
+            )
+            logger.warning("%s. Falling back to MemoryRetriever.", self._disabled_reason)
+            return False
+
+    def _ensure_client(self) -> bool:
+        if self._client is not None:
+            return True
+        try:
+            from pymilvus import MilvusClient
+
+            kwargs = {"uri": self.uri}
+            if self.token:
+                kwargs["token"] = self.token
+            self._client = MilvusClient(**kwargs)
+            return True
+        except Exception as e:
+            self._disabled_reason = f"Cannot connect to Milvus at {self.uri}: {e}"
+            logger.warning("%s. Falling back to MemoryRetriever.", self._disabled_reason)
+            return False
+
+    def _has_collection(self) -> bool:
+        try:
+            return bool(self._client.has_collection(self.collection_name))
+        except Exception:
+            return False
+
+    def _ensure_collection(self, dim: Optional[int] = None) -> bool:
+        if not self._ensure_client():
+            return False
+        try:
+            from pymilvus import DataType
+
+            if self.recreate_collection and self._has_collection():
+                self._client.drop_collection(self.collection_name)
+                self._collection_ready = False
+                self._document_count = 0
+
+            if self._has_collection():
+                self._collection_ready = True
+                return True
+
+            if dim is None:
+                self._disabled_reason = "Milvus collection is missing and dim is unknown"
+                return False
+
+            schema = self._client.create_schema(
+                auto_id=False,
+                enable_dynamic_field=False,
+            )
+            schema.add_field(
+                field_name="id",
+                datatype=DataType.VARCHAR,
+                is_primary=True,
+                max_length=64,
+            )
+            schema.add_field(
+                field_name="content",
+                datatype=DataType.VARCHAR,
+                max_length=8192,
+            )
+            schema.add_field(
+                field_name="source",
+                datatype=DataType.VARCHAR,
+                max_length=512,
+            )
+            schema.add_field(
+                field_name="embedding",
+                datatype=DataType.FLOAT_VECTOR,
+                dim=dim,
+            )
+
+            index_params = self._client.prepare_index_params()
+            index_params.add_index(
+                field_name="embedding",
+                index_type=self.index_type,
+                metric_type=self.metric_type,
+                params={"nlist": self.nlist},
+            )
+            self._client.create_collection(
+                collection_name=self.collection_name,
+                schema=schema,
+                index_params=index_params,
+            )
+            self._collection_ready = True
+            logger.info("Created Milvus collection: %s", self.collection_name)
+            return True
+        except Exception as e:
+            self._disabled_reason = f"Cannot initialize Milvus collection: {e}"
+            logger.warning("%s. Falling back to MemoryRetriever.", self._disabled_reason)
+            return False
+
+    def _split_docs(
+        self, docs: List[str], source: Optional[str] = None
+    ) -> List[Tuple[str, str]]:
+        chunks: List[Tuple[str, str]] = []
+        for doc in docs:
+            for chunk in _chinese_sentence_split(doc):
+                chunks.append((chunk, source or ""))
+        return chunks
+
+    def _chunk_id(self, content: str, source: str) -> str:
+        raw = f"{source}\n{content}".encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def add_documents(self, docs: List[str], source: Optional[str] = None) -> None:
+        chunks = self._split_docs(docs, source=source)
+        if not chunks:
+            return
+
+        if not self._ensure_encoder():
+            self._fallback.add_documents(docs, source=source)
+            return
+
+        try:
+            texts = [content for content, _ in chunks]
+            embeddings = self._encoder.encode(texts, normalize_embeddings=True)
+            dim = int(embeddings.shape[1])
+            if not self._ensure_collection(dim=dim):
+                self._fallback.add_documents(docs, source=source)
+                return
+
+            rows = []
+            for (content, chunk_source), embedding in zip(chunks, embeddings):
+                rows.append(
+                    {
+                        "id": self._chunk_id(content, chunk_source),
+                        "content": content[:8192],
+                        "source": chunk_source[:512],
+                        "embedding": embedding.astype(float).tolist(),
+                    }
+                )
+
+            if hasattr(self._client, "upsert"):
+                self._client.upsert(collection_name=self.collection_name, data=rows)
+            else:
+                self._client.insert(collection_name=self.collection_name, data=rows)
+            if hasattr(self._client, "flush"):
+                self._client.flush(collection_name=self.collection_name)
+            if hasattr(self._client, "load_collection"):
+                self._client.load_collection(collection_name=self.collection_name)
+            self._document_count += len(rows)
+            logger.info(
+                "Added %s chunks to Milvus collection %s",
+                len(rows),
+                self.collection_name,
+            )
+        except Exception as e:
+            self._disabled_reason = f"Milvus insert failed: {e}"
+            logger.warning("%s. Falling back to MemoryRetriever.", self._disabled_reason)
+            self._fallback.add_documents(docs, source=source)
+
+    def _parse_hit(self, hit: Any) -> Dict[str, Any]:
+        if isinstance(hit, dict):
+            entity = hit.get("entity") or hit.get("fields") or {}
+            return {
+                "id": hit.get("id") or hit.get("pk") or entity.get("id"),
+                "score": hit.get("distance", hit.get("score", 0.0)),
+                "content": entity.get("content", hit.get("content", "")),
+                "source": entity.get("source", hit.get("source", "")),
+            }
+        entity = getattr(hit, "entity", {}) or {}
+        getter = entity.get if hasattr(entity, "get") else lambda key, default=None: default
+        return {
+            "id": getattr(hit, "id", None),
+            "score": getattr(hit, "distance", getattr(hit, "score", 0.0)),
+            "content": getter("content", ""),
+            "source": getter("source", ""),
+        }
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        threshold: float = 0.3,
+    ) -> ToolResult:
+        if self._disabled_reason:
+            result = self._fallback.search(query, top_k=top_k, threshold=threshold)
+            result.meta["backend"] = "milvus_fallback"
+            result.meta["fallback_reason"] = self._disabled_reason
+            return result
+        if not isinstance(query, str) or not query.strip():
+            return ToolResult.ok(
+                data=[],
+                mode="milvus",
+                total_docs=self.document_count,
+                note="Empty query",
+            )
+        err = check_int_range(top_k, "top_k", TOP_K_MIN, TOP_K_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
+        err = check_float_range(threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
+        if not self._ensure_encoder() or not self._ensure_collection():
+            result = self._fallback.search(query, top_k=top_k, threshold=threshold)
+            result.meta["backend"] = "milvus_fallback"
+            result.meta["fallback_reason"] = self._disabled_reason
+            return result
+
+        try:
+            query_vec = self._encoder.encode([query], normalize_embeddings=True)[0]
+            search_kwargs = {
+                "collection_name": self.collection_name,
+                "data": [query_vec.astype(float).tolist()],
+                "search_params": {
+                    "metric_type": self.metric_type,
+                    "params": {"nprobe": self.nprobe},
+                },
+                "limit": top_k,
+                "output_fields": ["content", "source"],
+            }
+            try:
+                raw = self._client.search(anns_field="embedding", **search_kwargs)
+            except TypeError:
+                raw = self._client.search(**search_kwargs)
+            hits = raw[0] if raw else []
+            results = []
+            seen = set()
+            for rank, hit in enumerate(hits):
+                parsed = self._parse_hit(hit)
+                score = float(parsed["score"] or 0.0)
+                content = parsed["content"] or ""
+                if score < threshold or not content:
+                    continue
+                normalized = content.strip()
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                results.append(
+                    {
+                        "content": content,
+                        "score": score,
+                        "index": parsed["id"] or rank,
+                        "source": parsed["source"] or "",
+                    }
+                )
+            return ToolResult.ok(
+                data=results,
+                mode="milvus",
+                total_docs=self.document_count,
+                collection=self.collection_name,
+            )
+        except Exception as e:
+            self._disabled_reason = f"Milvus search failed: {e}"
+            logger.warning("%s. Falling back to MemoryRetriever.", self._disabled_reason)
+            result = self._fallback.search(query, top_k=top_k, threshold=threshold)
+            result.meta["backend"] = "milvus_fallback"
+            result.meta["fallback_reason"] = self._disabled_reason
+            return result
+
+    def clear(self) -> None:
+        if self._client is not None and self._has_collection():
+            self._client.drop_collection(self.collection_name)
+        self._collection_ready = False
+        self._document_count = 0
+        self._fallback.clear()
 
 
 def _chinese_sentence_split(text: str, max_chunk_chars: int = 500) -> List[str]:
@@ -265,14 +586,15 @@ def _chinese_sentence_split(text: str, max_chunk_chars: int = 500) -> List[str]:
 
 
 # --- Shared Retriever Singleton ---
-# Chat and Diet subgraphs share a single MemoryRetriever instance
+# Chat and Diet subgraphs share a single retriever instance
 # to avoid loading the same knowledge base twice.
 
-_shared_retriever: Optional[MemoryRetriever] = None
+_shared_retriever: Optional[Any] = None
+_loaded_knowledge_dirs: set[str] = set()
 
 
-def get_shared_retriever() -> MemoryRetriever:
-    """Get or create the global shared MemoryRetriever singleton.
+def get_shared_retriever() -> Any:
+    """Get or create the global shared retriever singleton.
 
     Both Chat and Diet subgraphs use this same instance, so the
     knowledge base is only embedded once.
@@ -281,9 +603,24 @@ def get_shared_retriever() -> MemoryRetriever:
     if _shared_retriever is None:
         from app.config import config
 
-        _shared_retriever = MemoryRetriever(
-            embedding_model=config.embedding_model,
-        )
+        if config.retriever_backend == "milvus":
+            _shared_retriever = MilvusRetriever(
+                embedding_model=config.embedding_model,
+                uri=config.milvus_uri,
+                token=config.milvus_token,
+                collection_name=config.milvus_collection,
+                recreate_collection=config.milvus_recreate_collection,
+                index_type=config.milvus_index_type,
+                metric_type=config.milvus_metric_type,
+                nlist=config.milvus_nlist,
+                nprobe=config.milvus_nprobe,
+            )
+            logger.info("Using Milvus retriever backend: %s", config.milvus_uri)
+        else:
+            _shared_retriever = MemoryRetriever(
+                embedding_model=config.embedding_model,
+            )
+            logger.info("Using memory retriever backend")
     return _shared_retriever
 
 
@@ -296,6 +633,10 @@ def load_shared_knowledge_base(docs_dir: str = "data/knowledge") -> None:
     import os
 
     retriever = get_shared_retriever()
+    normalized_dir = os.path.abspath(docs_dir)
+    if normalized_dir in _loaded_knowledge_dirs:
+        logger.info("Knowledge directory already loaded: %s", docs_dir)
+        return
     if not os.path.isdir(docs_dir):
         logger.warning(f"Knowledge directory not found: {docs_dir}")
         return
@@ -305,9 +646,10 @@ def load_shared_knowledge_base(docs_dir: str = "data/knowledge") -> None:
             fpath = os.path.join(docs_dir, fname)
             with open(fpath, "r", encoding="utf-8") as f:
                 text = f.read()
-            retriever.add_documents([text])
+            retriever.add_documents([text], source=fname)
             loaded += 1
             logger.info(f"Loaded knowledge: {fname} ({len(text)} chars)")
     if loaded:
+        _loaded_knowledge_dirs.add(normalized_dir)
         logger.info(f"Shared knowledge base: {retriever.document_count} chunks "
                      f"from {loaded} files")

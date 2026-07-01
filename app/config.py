@@ -59,6 +59,9 @@ class Config:
     )
 
     # Retriever
+    retriever_backend: str = field(
+        default_factory=lambda: os.getenv("RETRIEVER_BACKEND", "memory").lower()
+    )
     retriever_top_k: int = field(
         default_factory=lambda: _get_int_env("RETRIEVER_TOP_K", 5)
     )
@@ -70,6 +73,29 @@ class Config:
             "EMBEDDING_MODEL",
             "shibing624/text2vec-base-chinese",
         )
+    )
+    milvus_uri: str = field(
+        default_factory=lambda: os.getenv("MILVUS_URI", "http://localhost:19530")
+    )
+    milvus_token: str = field(default_factory=lambda: os.getenv("MILVUS_TOKEN", ""))
+    milvus_collection: str = field(
+        default_factory=lambda: os.getenv("MILVUS_COLLECTION", "fitness_knowledge")
+    )
+    milvus_recreate_collection: bool = field(
+        default_factory=lambda: os.getenv("MILVUS_RECREATE_COLLECTION", "").lower()
+        in {"1", "true", "yes"}
+    )
+    milvus_index_type: str = field(
+        default_factory=lambda: os.getenv("MILVUS_INDEX_TYPE", "IVF_FLAT")
+    )
+    milvus_metric_type: str = field(
+        default_factory=lambda: os.getenv("MILVUS_METRIC_TYPE", "COSINE")
+    )
+    milvus_nlist: int = field(
+        default_factory=lambda: _get_int_env("MILVUS_NLIST", 128)
+    )
+    milvus_nprobe: int = field(
+        default_factory=lambda: _get_int_env("MILVUS_NPROBE", 10)
     )
 
     # Tavily Search

@@ -11,8 +11,14 @@ logger = logging.getLogger(__name__)
 
 def retrieve_node(state: RouterState) -> RouterState:
     """Retrieve relevant documents from the shared knowledge base."""
+    from app.config import config
+
     retriever = get_shared_retriever()
-    result = retriever.search(state["user_input"], top_k=5, threshold=0.3)
+    result = retriever.search(
+        state["user_input"],
+        top_k=config.retriever_top_k,
+        threshold=config.retriever_threshold,
+    )
     state["_retrieved"] = result.data if result.ok else []  # type: ignore
     state["_retrieval_meta"] = result.meta  # type: ignore
     logger.info(f"Retrieved {len(result.data)} chunks for: {state['user_input'][:50]}")
@@ -29,7 +35,8 @@ def generate_node(state: RouterState) -> RouterState:
     sources = []
     if retrieved:
         for i, r in enumerate(retrieved):
-            context_text += f"\n[Ref{i+1}] {r['content']}"
+            source = f" 来源: {r.get('source')}" if r.get("source") else ""
+            context_text += f"\n[Ref{i+1}{source}] {r['content']}"
             sources.append(r["content"][:80] + "...")
 
     memory = state.get("memory", [])

@@ -15,7 +15,7 @@
 | 饮食与菜谱建议 | Diet 负责用户画像、营养检索和饮食建议；MCPTool 负责外部菜谱工具发现与调用 |
 | 动作分析 | `.npz` 姿态序列分析，以及图片单帧静态姿态摘要 |
 
-项目面试展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、RAG/Search 数据增强，以及记忆、流式输出和失败降级。简历中的 Milvus 表述代表 RAG 的目标技术方案；当前仓库为降低本地部署成本，实际使用 Sentence-Transformers + NumPy 内存向量检索。
+项目面试展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、RAG/Search 数据增强，以及记忆、流式输出和失败降级。RAG 已支持 Memory/Milvus 双后端：默认使用 Sentence-Transformers + NumPy 内存向量检索保证轻量可运行；设置 `RETRIEVER_BACKEND=milvus` 后可使用 Milvus Collection、IVF_FLAT 和 COSINE 检索。
 
 ## 2. 系统架构
 
@@ -38,7 +38,7 @@
 | 后端 | FastAPI、Pydantic、uvicorn |
 | 图编排 | LangGraph、StateGraph、条件边、子图嵌套 |
 | LLM | Qwen3-0.6B、HuggingFace Transformers 本地加载 |
-| 检索 | Sentence-Transformers + NumPy COSINE 检索，失败时关键词降级；接口预留 Milvus 迁移 |
+| 检索 | Sentence-Transformers + Memory/Milvus 双后端；默认 NumPy COSINE 检索，Milvus 模式支持 Collection、IVF_FLAT、COSINE 和 fallback |
 | 姿态算法 | NumPy、SciPy、FastDTW、Pillow；MediaPipe 为图片姿态估计可选依赖 |
 | 工具协议 | subprocess + stdio JSON-RPC 2.0 MCP Client，支持真实 Server 与 mock fallback |
 | 前端 | Web UI、微信小程序原生 WXML/WXSS/JS |
@@ -49,7 +49,7 @@
 | 模块 | 当前状态 |
 |---|---|
 | Router | Phase 4 已完成：保留 Phase 3 hybrid classifier，增加多意图观测、四种白名单两步组合、错误隔离和结果合成；真实 Qwen classifier 因收益不足默认关闭 |
-| Chat RAG | 已完成共享知识库检索和记忆注入 |
+| Chat RAG | 已完成共享知识库检索、记忆注入和 Memory/Milvus 双后端切换 |
 | Search | 已完成 Tavily 接入和 mock 降级 |
 | Diet | 已完成画像提取、营养 RAG 和建议生成 |
 | Motion | 子图、算法、`PoseSequence`、姿态估计适配器、`.npz` 接口和图片静态接口已完成；标准动作库和视频时序入口待补 |
@@ -60,7 +60,7 @@
 | 微信小程序 | 代码基本完成，端到端联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `114 passed, 1 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `117 passed, 1 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -71,7 +71,7 @@
 | Embedding 首次加载依赖网络 | 加载失败时降级为关键词匹配 | 固化模型资产并建设向量服务 |
 | Tavily 未配置或调用失败 | 未配置 key 时返回 mock；真实调用失败时返回可处理错误并记录降级 warning | 增加超时、重试、熔断和可观测性 |
 | MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
-| 简历使用 Milvus 技术栈口径 | 当前仓库以 NumPy 内存向量保持轻量可运行，未直接创建 Milvus 索引 | 数据与并发增长后替换 Retriever 存储层，并以 Recall@K、延迟评测迁移收益 |
+| Milvus RAG 运行边界 | 已支持可选 Milvus 后端；默认仍用 Memory 保证轻量演示，Milvus 服务不可用时自动 fallback | 补真实 Milvus 集成验收、Recall@K、MRR、P95 延迟和来源覆盖率评测 |
 | Motion 缺标准动作库 | 支持 `.npz` 和图片静态分析，不伪造完整动作判断 | 补标准动作数据、视频抽帧和时序分析 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
 | 小程序 SSE 存在端侧差异 | `wx.request enableChunked`，可降级到非流式接口 | 完成真机和不同基础库版本验收 |
@@ -131,7 +131,7 @@ docs/superpowers/            早期方案与规格
 2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 实现视频抽帧到 `PoseSequence` 的时序分析入口，并扩充标准动作库。
 3. 完成真实 MCP Server 的稳定性、超时、Schema、进程生命周期和权限联调。
 4. 补全 Search 的结构化来源透传和 citation 校验。
-5. 数据规模与并发达到需要后，把 NumPy Retriever 迁移到 Milvus，并对比检索质量与延迟基线。
+5. 为 Milvus RAG 补真实服务集成测试，建立 Recall@K、MRR、来源覆盖率和 P95 延迟基线。
 6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。
 7. 积累真实多意图样本与组合成功率，再决定是否扩充 Router 白名单。
 

@@ -10,6 +10,7 @@
 - Router 绿色回归集与 challenge set。
 - Motion `PoseSequence`、姿态估计适配器、图片静态姿态分析。
 - MCP 默认 mock 和真实 server fallback。
+- Milvus RAG 可选后端、Memory fallback 和主链路回归。
 - Web UI 对话等待状态和 Motion 图片上传入口。
 - 面试/演示用手工体验语句。
 
@@ -32,6 +33,8 @@
 | LLM 内存安全 | [2026-06-27-llm-memory-oom-fix.md](./2026-06-27-llm-memory-oom-fix.md) | 共享模型缓存、并发首次加载、流式单次生成回归验证 |
 | Router Phase 3 A/B | [2026-06-27-router-phase3-ab-eval.md](./2026-06-27-router-phase3-ab-eval.md) | 36 条 challenge、真实 Qwen 接入、延迟和接管收益评测 |
 | Router Phase 4 | [2026-06-30-router-phase4-eval.md](./2026-06-30-router-phase4-eval.md) | 多意图字段、受控组合执行、结果合成与降级验证 |
+| Milvus RAG 后端 | [2026-07-01-milvus-rag-backend.md](./2026-07-01-milvus-rag-backend.md) | Memory/Milvus 双后端、fallback、主链路回归测试 |
+| Milvus 真实集成清单 | [2026-07-01-milvus-real-integration-checklist.md](./2026-07-01-milvus-real-integration-checklist.md) | 另一台电脑执行真实 Milvus 容器、Collection、写入、搜索和 API 验收 |
 
 ## 面试时怎么用
 

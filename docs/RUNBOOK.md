@@ -190,11 +190,32 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 docker compose up --build
 ```
 
+启用 Milvus RAG 服务：
+
+```powershell
+$env:RETRIEVER_BACKEND="milvus"
+docker compose --profile milvus up --build
+```
+
+更完整的真实 Milvus 集成测试步骤、预期日志和常见错误见：
+
+[tests/2026-07-01-milvus-real-integration-checklist.md](./tests/2026-07-01-milvus-real-integration-checklist.md)
+
+本机不使用 Docker 后端、只启动 Milvus 依赖时：
+
+```powershell
+docker compose --profile milvus up -d milvus
+$env:RETRIEVER_BACKEND="milvus"
+$env:MILVUS_URI="http://localhost:19530"
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
 当前边界：
 
 - `docker-compose.yml` 挂载了 Windows 本地模型路径，换机器时需要调整。
 - `app/config.py` 支持 `MODEL_PATH`、`MODEL_DEVICE` 等环境变量覆盖。
-- Docker 文件已经提供，但完整构建和启动仍待验证。
+- Milvus、etcd、MinIO 放在 `milvus` profile 下，默认 `docker compose up` 不会启动重依赖服务。
+- Docker 文件已经提供，但完整跨机器构建和启动仍待验证。
 
 ## 8. 配置速查
 
@@ -208,6 +229,13 @@ docker compose up --build
 | `llm_router_enabled` | 是否启用本地 Qwen Router A/B，默认 `false` |
 | `llm_router_max_tokens` | Router classifier 最大输出 token，默认 128 |
 | `embedding_model` | Sentence-Transformer 模型名 |
+| `retriever_backend` | `memory` 或 `milvus`，默认 `memory` |
+| `milvus_uri` | Milvus 服务地址，默认 `http://localhost:19530` |
+| `milvus_collection` | Milvus Collection 名称 |
+| `milvus_recreate_collection` | 是否启动时重建 Collection，默认 `false` |
+| `milvus_index_type` | Milvus 索引类型，默认 `IVF_FLAT` |
+| `milvus_metric_type` | Milvus 向量度量，默认 `COSINE` |
+| `milvus_nlist` / `milvus_nprobe` | IVF_FLAT 建索引和检索参数 |
 | `tavily_api_key` | Tavily API Key，默认读取环境变量 |
 | `motion_library_dir` | 标准动作库目录 |
 | `react_max_iterations` | Motion ReAct 最大迭代次数 |
@@ -226,6 +254,15 @@ docker compose up --build
 - `MEMORY_MAX_TURNS`
 - `RETRIEVER_TOP_K`
 - `RETRIEVER_THRESHOLD`
+- `RETRIEVER_BACKEND`
+- `MILVUS_URI`
+- `MILVUS_TOKEN`
+- `MILVUS_COLLECTION`
+- `MILVUS_RECREATE_COLLECTION`
+- `MILVUS_INDEX_TYPE`
+- `MILVUS_METRIC_TYPE`
+- `MILVUS_NLIST`
+- `MILVUS_NPROBE`
 - `EMBEDDING_MODEL`
 - `MOTION_LIBRARY_DIR`
 - `REACT_MAX_ITERATIONS`
@@ -236,7 +273,8 @@ docker compose up --build
 
 ## 9. 常见运行边界
 
-- Sentence-Transformer 首次加载可能需要联网；失败时检索器降级为关键词匹配。
+- Sentence-Transformer 首次加载可能需要联网；Memory 检索器失败时降级为关键词匹配。
+- `RETRIEVER_BACKEND=milvus` 时，Milvus 连接、建表、写入或搜索失败会自动 fallback 到 MemoryRetriever，保证演示不断链。
 - Tavily API Key 缺失时 SearchTool 使用 mock 搜索结果。
 - `MCP_SERVER_COMMAND` 默认为 `mock`；显式使用真实 MCP Server 时，连接失败会自动降级。
 - Motion 图片入口只做单帧静态姿态摘要，不能判断完整节奏、轨迹或发力顺序。

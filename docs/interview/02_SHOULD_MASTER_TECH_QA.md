@@ -125,11 +125,11 @@
 
 **推荐回答**
 
-> 我会从生产化 RAG 方案讲 Milvus：把 chunk 文本、embedding、source、topic 等元数据写入 Collection，使用 COSINE 度量，索引可以从 IVF_FLAT 开始，根据 nlist、nprobe 平衡召回和延迟。上层 Chat/Diet 不应该感知底层数据库，只依赖 Retriever 的 search 结果。这样即使原型阶段用轻量向量存储，迁移 Milvus 也主要替换底层检索实现。
+> 我把 RAG 做成 Memory/Milvus 双后端。默认 MemoryRetriever 用 NumPy 内存向量保证轻量可运行；启用 `RETRIEVER_BACKEND=milvus` 后，系统会把 chunk 文本、embedding、source 写入 Milvus Collection，使用 COSINE 度量和 IVF_FLAT 索引，并通过 nlist、nprobe 平衡召回和延迟。上层 Chat/Diet 不直接依赖 Milvus，只依赖 Retriever 的 search 结果，所以底层切换不会影响 Agent 子图。
 
 **如果被问“你真的接了吗”**
 
-> 我会把重点放在“我知道 Milvus 在 RAG 架构里替换哪一层，知道如何设计 Collection、索引和评测”。如果对方追问到当前演示版本，我会说明原型可以先用轻量实现验证链路，生产化再切 Milvus。不要硬编不存在的服务部署细节。
+> 可以说已经实现了可选 MilvusRetriever，并在 docker-compose 里提供 Milvus/etcd/MinIO profile。为了保证面试演示稳定，默认仍走 Memory；如果 Milvus 连接、建表或搜索失败，会 fallback 到 MemoryRetriever。当前还缺的是大规模知识库下的真实 Recall@K、MRR 和延迟评测，这部分不能乱报数字。
 
 ### Q13：为什么选择 COSINE？
 

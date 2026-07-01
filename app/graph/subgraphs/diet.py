@@ -50,9 +50,15 @@ def extract_profile_node(state: RouterState) -> RouterState:
 
 def retrieve_nutrition_node(state: RouterState) -> RouterState:
     """RAG retrieval: search shared nutrition knowledge base."""
+    from app.config import config
+
     retriever = get_shared_retriever()
     query = f"{state['user_input']} {state.get('_user_profile', '')}"
-    result = retriever.search(query, top_k=5, threshold=0.3)
+    result = retriever.search(
+        query,
+        top_k=config.retriever_top_k,
+        threshold=config.retriever_threshold,
+    )
     state["_retrieved"] = result.data if result.ok else []  # type: ignore
     return state
 
@@ -64,7 +70,12 @@ def recommend_node(state: RouterState) -> RouterState:
 
     profile = state.get("_user_profile", "")
     retrieved = state.get("_retrieved", [])  # type: ignore
-    context_text = "\n".join([r["content"] for r in retrieved]) if retrieved else ""
+    context_text = "\n".join(
+        [
+            f"[来源: {r.get('source', 'unknown')}] {r['content']}"
+            for r in retrieved
+        ]
+    ) if retrieved else ""
 
     prompt = f"""# 角色
 你是一位注册运动营养师，专长于减脂饮食规划和增肌营养方案。

@@ -1,6 +1,7 @@
 from app.tools.types import ToolResult, ErrorCode
 from app.tools.retriever import (
     MemoryRetriever,
+    MilvusRetriever,
     get_shared_retriever,
     load_shared_knowledge_base,
 )
@@ -29,6 +30,7 @@ __all__ = [
     "ToolResult",
     "ErrorCode",
     "MemoryRetriever",
+    "MilvusRetriever",
     "get_shared_retriever",
     "load_shared_knowledge_base",
     "TavilySearchTool",

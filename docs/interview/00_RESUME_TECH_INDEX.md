@@ -23,7 +23,7 @@
 | Sentence-Transformers | 把文本编码成向量的语义模型库。 | 把健身知识 chunk 和用户问题转成 embedding。 | 文档和 query 都编码为向量，用 COSINE 做语义相似度检索。 | OpenAI Embeddings、bge、e5、Jina Embeddings。 | 本地可运行、成本低、适合原型；生产化可替换更强 embedding 模型。 |
 | sentence-aware 分块 | 尽量按句子边界切分文本，而不是粗暴按字符截断。 | 让 RAG chunk 更完整，避免把一句话或一个知识点切碎。 | 先按句子/段落切，再控制 chunk 长度和 overlap。 | 固定长度切分、Markdown 结构切分、语义分块。 | 比固定字符切分更适合中文知识文档，原型成本低。 |
 | embedding | 文本或数据的向量表示。 | 让“减脂晚餐怎么吃”和相关知识片段能通过语义相似度匹配。 | 文档入库时生成 embedding，查询时也生成 embedding，再做近邻搜索。 | 关键词倒排索引、人工标签。 | embedding 能处理同义表达，但要通过评测验证召回质量。 |
-| Milvus | 向量数据库，负责存储向量并做近似最近邻检索。 | 简历中的生产化 RAG 向量库方案。 | chunk + embedding + metadata 写入 Collection，通过 COSINE 和索引检索 Top-K。 | FAISS、Chroma、Qdrant、Elasticsearch/OpenSearch。 | Milvus 更适合讲生产化向量检索、索引参数、召回和延迟权衡。 |
+| Milvus | 向量数据库，负责存储向量并做近似最近邻检索。 | 项目已支持可选 Milvus RAG 后端，默认 Memory 保持轻量可运行。 | chunk + embedding + source 写入 Collection，通过 IVF_FLAT + COSINE 检索 Top-K；服务不可用时 fallback 到 MemoryRetriever。 | FAISS、Chroma、Qdrant、Elasticsearch/OpenSearch。 | Milvus 更适合讲生产化向量检索、索引参数、召回和延迟权衡；保留 Memory fallback 体现演示稳定性。 |
 | IVF_FLAT / ANN | IVF_FLAT 是一种近似最近邻索引；ANN 指近似最近邻搜索。 | 在 Milvus 方案中提升大规模向量检索效率。 | nlist 控制分桶，nprobe 控制查询多少桶，在召回和延迟间取舍。 | HNSW、FLAT、DiskANN。 | IVF_FLAT 好解释、适合面试讲清参数含义；不是回答质量的充分条件。 |
 | COSINE 相似度 | 衡量两个向量方向是否相近的指标。 | 用于 query 与知识 chunk 的语义匹配。 | 对 embedding 归一化后计算余弦相似度，选 Top-K。 | L2 距离、内积 IP。 | 文本语义更关注方向，COSINE 是常用选择；最终要用 Recall@K 验证。 |
 | 阈值过滤 / 去重 / 排序 | RAG 检索后的后处理链路。 | 减少无关片段、重复片段进入 Prompt。 | 低于相似度阈值丢弃，相同来源或高度重复内容去重，再按分数排序。 | reranker、规则过滤、人工标签。 | 原型阶段性价比高；生产化可引入 reranker 提升精度。 |
