@@ -10,3 +10,5 @@ tmp/
 data/models/
 *.task
 docs/interview/agent.json
+volumes/
+*.db

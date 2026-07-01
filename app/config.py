@@ -19,10 +19,23 @@ def _get_float_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value == "":
         return default
+
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    """Read a boolean environment variable with a safe fallback."""
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
     try:
         return float(value)
     except ValueError:
         return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 @dataclass
@@ -70,6 +83,40 @@ class Config:
             "EMBEDDING_MODEL",
             "shibing624/text2vec-base-chinese",
         )
+    )
+    retriever_backend: str = field(
+        default_factory=lambda: os.getenv("RETRIEVER_BACKEND", "milvus").lower()
+    )
+    retriever_fallback_to_memory: bool = field(
+        default_factory=lambda: _get_bool_env(
+            "RETRIEVER_FALLBACK_TO_MEMORY", True
+        )
+    )
+    milvus_uri: str = field(
+        default_factory=lambda: os.getenv(
+            "MILVUS_URI", "http://127.0.0.1:19530"
+        )
+    )
+    milvus_token: str = field(
+        default_factory=lambda: os.getenv("MILVUS_TOKEN", ""),
+        repr=False,
+    )
+    milvus_collection_name: str = field(
+        default_factory=lambda: os.getenv(
+            "MILVUS_COLLECTION_NAME", "fitness_knowledge"
+        )
+    )
+    milvus_index_type: str = field(
+        default_factory=lambda: os.getenv("MILVUS_INDEX_TYPE", "IVF_FLAT").upper()
+    )
+    milvus_nlist: int = field(
+        default_factory=lambda: _get_int_env("MILVUS_NLIST", 128)
+    )
+    milvus_nprobe: int = field(
+        default_factory=lambda: _get_int_env("MILVUS_NPROBE", 16)
+    )
+    milvus_timeout_seconds: float = field(
+        default_factory=lambda: _get_float_env("MILVUS_TIMEOUT_SECONDS", 3.0)
     )
 
     # Tavily Search

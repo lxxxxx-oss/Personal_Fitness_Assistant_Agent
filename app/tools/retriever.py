@@ -6,9 +6,10 @@ external data sources. Retrieved content may be outdated or incomplete.
 Users should consult professionals for medical or training decisions.
 """
 
+import hashlib
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -51,6 +52,7 @@ class MemoryRetriever:
         self.device = device
         self._encoder = None
         self._documents: List[str] = []
+        self._sources: List[str] = []
         self._embeddings: Optional[np.ndarray] = None
 
     def _ensure_encoder(self):
@@ -95,6 +97,7 @@ class MemoryRetriever:
                         "content": self._documents[idx],
                         "score": score,
                         "index": idx,
+                        "source": self._sources[idx],
                     })
 
         # 方法2: 子串匹配 + 字重叠（适用于中文等无空格语言）
@@ -122,6 +125,7 @@ class MemoryRetriever:
                             "content": self._documents[idx],
                             "score": substring_score,
                             "index": idx,
+                            "source": self._sources[idx],
                         })
 
         results.sort(key=lambda r: r["score"], reverse=True)
@@ -131,15 +135,25 @@ class MemoryRetriever:
     def document_count(self) -> int:
         return len(self._documents)
 
-    def add_documents(self, docs: List[str]) -> None:
-        """添加文档到检索库(自动分块后编码)."""
+    def add_documents(
+        self,
+        docs: List[str],
+        sources: Optional[Sequence[str]] = None,
+    ) -> ToolResult:
+        """Add documents to the in-memory store after sentence-aware chunking."""
         self._ensure_encoder()
         chunks = []
-        for doc in docs:
-            chunks.extend(_chinese_sentence_split(doc))
+        chunk_sources = []
+        normalized_sources = list(sources or [])
+        for index, doc in enumerate(docs):
+            doc_chunks = _chinese_sentence_split(doc)
+            chunks.extend(doc_chunks)
+            source = normalized_sources[index] if index < len(normalized_sources) else ""
+            chunk_sources.extend([source] * len(doc_chunks))
         if not chunks:
-            return
+            return ToolResult.ok(data={"upserted": 0}, backend="memory")
         self._documents.extend(chunks)
+        self._sources.extend(chunk_sources)
         if self._encoder is not None:
             new_embeddings = self._encoder.encode(chunks, normalize_embeddings=True)
             if self._embeddings is None:
@@ -147,6 +161,11 @@ class MemoryRetriever:
             else:
                 self._embeddings = np.vstack([self._embeddings, new_embeddings])
         logger.info(f"Added {len(chunks)} chunks, total: {len(self._documents)}")
+        return ToolResult.ok(
+            data={"upserted": len(chunks)},
+            backend="memory",
+            total_docs=len(self._documents),
+        )
 
     def search(
         self,
@@ -227,6 +246,7 @@ class MemoryRetriever:
                 "content": content,
                 "score": float(scores[int(idx)]),
                 "index": int(idx),
+                "source": self._sources[int(idx)],
             })
         return ToolResult.ok(
             data=results,
@@ -234,10 +254,12 @@ class MemoryRetriever:
             total_docs=len(self._documents),
         )
 
-    def clear(self) -> None:
+    def clear(self) -> ToolResult:
         """清空全部文档和向量."""
         self._documents = []
+        self._sources = []
         self._embeddings = None
+        return ToolResult.ok(data={"cleared": True}, backend="memory")
 
 
 def _chinese_sentence_split(text: str, max_chunk_chars: int = 500) -> List[str]:
@@ -264,27 +286,561 @@ def _chinese_sentence_split(text: str, max_chunk_chars: int = 500) -> List[str]:
     return chunks or [text]
 
 
-# --- Shared Retriever Singleton ---
-# Chat and Diet subgraphs share a single MemoryRetriever instance
-# to avoid loading the same knowledge base twice.
+def _stable_chunk_id(content: str) -> int:
+    """Build a deterministic positive INT64 primary key for a text chunk."""
+    digest = hashlib.blake2b(content.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 63) - 1)
 
-_shared_retriever: Optional[MemoryRetriever] = None
+
+def _milvus_error_code(exc: Exception) -> str:
+    """Classify Milvus SDK failures into the shared tool error taxonomy."""
+    if isinstance(exc, (ModuleNotFoundError, ImportError)):
+        return ErrorCode.CONFIG_MISSING
+    message = str(exc).lower()
+    network_markers = (
+        "connection",
+        "refused",
+        "unavailable",
+        "timeout",
+        "timed out",
+        "grpc",
+        "failed to connect",
+    )
+    if any(marker in message for marker in network_markers):
+        return ErrorCode.NETWORK_ERROR
+    return ErrorCode.INTERNAL_ERROR
 
 
-def get_shared_retriever() -> MemoryRetriever:
-    """Get or create the global shared MemoryRetriever singleton.
+class MilvusRetriever:
+    """Persistent vector retriever backed by a configured Milvus collection.
 
-    Both Chat and Diet subgraphs use this same instance, so the
-    knowledge base is only embedded once.
+    Responsibility:
+        Store sentence-aware chunks and normalized embeddings in exactly one
+        configured collection, then return thresholded COSINE matches.
+
+    Permission boundary:
+        The retriever can create, upsert, search, load, flush, and drop only
+        ``collection_name`` on ``uri``. It never executes user-provided SQL,
+        shell commands, or arbitrary collection operations.
+
+    Public contract:
+        ``add_documents`` and ``search`` return ``ToolResult``. Search results
+        keep the existing shape: content, score, index, and source.
     """
+
+    _COLLECTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
+    _SUPPORTED_INDEX_TYPES = {"IVF_FLAT", "FLAT"}
+    _SUPPORTED_METRICS = {"COSINE"}
+
+    def __init__(
+        self,
+        uri: str,
+        collection_name: str = "fitness_knowledge",
+        token: str = "",
+        embedding_model: str = "shibing624/text2vec-base-chinese",
+        device: str = "cpu",
+        index_type: str = "IVF_FLAT",
+        metric_type: str = "COSINE",
+        nlist: int = 128,
+        nprobe: int = 16,
+        timeout_seconds: float = 3.0,
+    ):
+        if not isinstance(uri, str) or not uri.strip():
+            raise ValueError("uri must be a non-empty string")
+        if not self._COLLECTION_NAME_RE.fullmatch(collection_name):
+            raise ValueError(
+                "collection_name must start with a letter or underscore and "
+                "contain only letters, digits, or underscores"
+            )
+        normalized_index = index_type.upper()
+        normalized_metric = metric_type.upper()
+        if normalized_index not in self._SUPPORTED_INDEX_TYPES:
+            raise ValueError(
+                f"Unsupported Milvus index_type: {normalized_index}"
+            )
+        if normalized_metric not in self._SUPPORTED_METRICS:
+            raise ValueError(
+                f"Unsupported Milvus metric_type: {normalized_metric}"
+            )
+        if nlist < 1 or nprobe < 1:
+            raise ValueError("nlist and nprobe must be positive integers")
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+
+        self.uri = uri.strip()
+        self.collection_name = collection_name
+        self.token = token
+        self.embedding_model_name = embedding_model
+        self.device = device
+        self.index_type = normalized_index
+        self.metric_type = normalized_metric
+        self.nlist = nlist
+        self.nprobe = nprobe
+        self.timeout_seconds = timeout_seconds
+        self._encoder = None
+        self._client = None
+        self._milvus_client_type = None
+        self._data_type = None
+        self._dimension: Optional[int] = None
+
+    def _ensure_encoder(self):
+        if self._encoder is not None:
+            return
+        from sentence_transformers import SentenceTransformer
+
+        self._encoder = SentenceTransformer(
+            self.embedding_model_name,
+            device=self.device,
+        )
+
+    def _ensure_client(self):
+        if self._client is not None:
+            return self._client
+        from pymilvus import DataType, MilvusClient
+
+        kwargs: Dict[str, Any] = {
+            "uri": self.uri,
+            "timeout": self.timeout_seconds,
+        }
+        if self.token:
+            kwargs["token"] = self.token
+        self._client = MilvusClient(**kwargs)
+        self._milvus_client_type = MilvusClient
+        self._data_type = DataType
+        return self._client
+
+    @staticmethod
+    def _vector_dimension(description: Dict[str, Any]) -> Optional[int]:
+        for field in description.get("fields", []):
+            if field.get("name") != "vector":
+                continue
+            params = field.get("params", {})
+            dimension = params.get("dim")
+            return int(dimension) if dimension is not None else None
+        return None
+
+    def _ensure_collection(self, dimension: int) -> None:
+        client = self._ensure_client()
+        if client.has_collection(collection_name=self.collection_name):
+            description = client.describe_collection(
+                collection_name=self.collection_name
+            )
+            existing_dimension = self._vector_dimension(description)
+            if existing_dimension is not None and existing_dimension != dimension:
+                raise ValueError(
+                    f"Milvus collection '{self.collection_name}' has vector "
+                    f"dimension {existing_dimension}, expected {dimension}"
+                )
+            self._dimension = dimension
+            client.load_collection(collection_name=self.collection_name)
+            return
+
+        schema = self._milvus_client_type.create_schema(
+            auto_id=False,
+            enable_dynamic_field=False,
+        )
+        schema.add_field(
+            field_name="id",
+            datatype=self._data_type.INT64,
+            is_primary=True,
+        )
+        schema.add_field(
+            field_name="vector",
+            datatype=self._data_type.FLOAT_VECTOR,
+            dim=dimension,
+        )
+        schema.add_field(
+            field_name="content",
+            datatype=self._data_type.VARCHAR,
+            max_length=65535,
+        )
+        schema.add_field(
+            field_name="source",
+            datatype=self._data_type.VARCHAR,
+            max_length=1024,
+        )
+        client.create_collection(
+            collection_name=self.collection_name,
+            schema=schema,
+            consistency_level="Strong",
+        )
+
+        index_params = self._milvus_client_type.prepare_index_params()
+        index_kwargs: Dict[str, Any] = {
+            "field_name": "vector",
+            "index_name": "vector_index",
+            "index_type": self.index_type,
+            "metric_type": self.metric_type,
+        }
+        if self.index_type == "IVF_FLAT":
+            index_kwargs["params"] = {"nlist": self.nlist}
+        index_params.add_index(**index_kwargs)
+        client.create_index(
+            collection_name=self.collection_name,
+            index_params=index_params,
+        )
+        client.load_collection(collection_name=self.collection_name)
+        self._dimension = dimension
+
+    @property
+    def document_count(self) -> int:
+        try:
+            client = self._ensure_client()
+            if not client.has_collection(collection_name=self.collection_name):
+                return 0
+            stats = client.get_collection_stats(
+                collection_name=self.collection_name
+            )
+            return int(stats.get("row_count", 0))
+        except Exception:
+            return 0
+
+    def add_documents(
+        self,
+        docs: List[str],
+        sources: Optional[Sequence[str]] = None,
+    ) -> ToolResult:
+        """Chunk, encode, and idempotently upsert documents into Milvus."""
+        if not isinstance(docs, list) or any(not isinstance(doc, str) for doc in docs):
+            return ToolResult.fail(
+                ErrorCode.INVALID_PARAM,
+                "docs must be a list of strings",
+            )
+        normalized_sources = list(sources or [])
+        chunks: List[str] = []
+        chunk_sources: List[str] = []
+        for index, doc in enumerate(docs):
+            doc_chunks = [
+                chunk for chunk in _chinese_sentence_split(doc) if chunk.strip()
+            ]
+            chunks.extend(doc_chunks)
+            source = normalized_sources[index] if index < len(normalized_sources) else ""
+            chunk_sources.extend([str(source)[:1024]] * len(doc_chunks))
+        if not chunks:
+            return ToolResult.ok(
+                data={"upserted": 0},
+                backend="milvus",
+                collection=self.collection_name,
+            )
+
+        try:
+            self._ensure_encoder()
+            embeddings = np.asarray(
+                self._encoder.encode(chunks, normalize_embeddings=True),
+                dtype=np.float32,
+            )
+            if embeddings.ndim != 2 or embeddings.shape[0] != len(chunks):
+                raise ValueError(
+                    "Embedding model returned an invalid matrix shape: "
+                    f"{embeddings.shape}"
+                )
+            self._ensure_collection(int(embeddings.shape[1]))
+            rows = [
+                {
+                    "id": _stable_chunk_id(content),
+                    "vector": embeddings[index].tolist(),
+                    "content": content,
+                    "source": chunk_sources[index],
+                }
+                for index, content in enumerate(chunks)
+            ]
+            result = self._client.upsert(
+                collection_name=self.collection_name,
+                data=rows,
+            )
+            self._client.flush(collection_name=self.collection_name)
+            return ToolResult.ok(
+                data={
+                    "upserted": len(rows),
+                    "primary_keys": result.get("primary_keys", []),
+                },
+                backend="milvus",
+                collection=self.collection_name,
+                dimension=int(embeddings.shape[1]),
+            )
+        except ValueError as exc:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, str(exc))
+        except Exception as exc:
+            logger.warning("Milvus document upsert failed: %s", exc)
+            return ToolResult.fail(
+                _milvus_error_code(exc),
+                f"Milvus document upsert failed: {exc}",
+                collection=self.collection_name,
+            )
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        threshold: float = 0.3,
+    ) -> ToolResult:
+        """Search the configured Milvus collection using vector similarity."""
+        if not isinstance(query, str) or not query.strip():
+            return ToolResult.ok(
+                data=[],
+                backend="milvus",
+                collection=self.collection_name,
+                note="Empty query",
+            )
+        err = check_int_range(top_k, "top_k", TOP_K_MIN, TOP_K_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
+        err = check_float_range(threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
+
+        try:
+            self._ensure_encoder()
+            client = self._ensure_client()
+            if not client.has_collection(collection_name=self.collection_name):
+                return ToolResult.ok(
+                    data=[],
+                    backend="milvus",
+                    collection=self.collection_name,
+                    total_docs=0,
+                    note="Milvus collection is empty",
+                )
+            query_vector = np.asarray(
+                self._encoder.encode([query], normalize_embeddings=True),
+                dtype=np.float32,
+            )
+            raw = client.search(
+                collection_name=self.collection_name,
+                data=[query_vector[0].tolist()],
+                anns_field="vector",
+                search_params={
+                    "metric_type": self.metric_type,
+                    "params": {"nprobe": self.nprobe},
+                },
+                limit=top_k,
+                output_fields=["content", "source"],
+                consistency_level="Strong",
+            )
+            hits = raw[0] if raw else []
+            seen = set()
+            results = []
+            for hit in hits:
+                score = float(hit.get("distance", hit.get("score", 0.0)))
+                if score < threshold:
+                    continue
+                entity = hit.get("entity", {}) or {}
+                content = entity.get("content", "")
+                if not content or content in seen:
+                    continue
+                seen.add(content)
+                results.append(
+                    {
+                        "content": content,
+                        "score": score,
+                        "index": int(hit.get("id", _stable_chunk_id(content))),
+                        "source": entity.get("source", ""),
+                    }
+                )
+            return ToolResult.ok(
+                data=results,
+                backend="milvus",
+                collection=self.collection_name,
+                total_docs=self.document_count,
+                metric_type=self.metric_type,
+                index_type=self.index_type,
+            )
+        except Exception as exc:
+            logger.warning("Milvus search failed: %s", exc)
+            return ToolResult.fail(
+                _milvus_error_code(exc),
+                f"Milvus search failed: {exc}",
+                collection=self.collection_name,
+            )
+
+    def clear(self) -> ToolResult:
+        """Drop only the configured collection and reset local state."""
+        try:
+            client = self._ensure_client()
+            if client.has_collection(collection_name=self.collection_name):
+                client.drop_collection(collection_name=self.collection_name)
+            self._dimension = None
+            return ToolResult.ok(
+                data={"cleared": True},
+                backend="milvus",
+                collection=self.collection_name,
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                _milvus_error_code(exc),
+                f"Milvus clear failed: {exc}",
+                collection=self.collection_name,
+            )
+
+    def close(self) -> None:
+        if self._client is not None and hasattr(self._client, "close"):
+            self._client.close()
+        self._client = None
+
+
+class ResilientRetriever:
+    """Prefer Milvus and hydrate an in-memory fallback after a Milvus failure."""
+
+    def __init__(
+        self,
+        primary: MilvusRetriever,
+        fallback: MemoryRetriever,
+        fallback_enabled: bool = True,
+    ):
+        self.primary = primary
+        self.fallback = fallback
+        self.fallback_enabled = fallback_enabled
+        self._active_backend = "milvus"
+        self._documents: List[str] = []
+        self._sources: List[str] = []
+        self._fallback_hydrated = False
+        self._fallback_reason = ""
+
+    def _activate_fallback(self, failed: ToolResult) -> ToolResult:
+        if not self.fallback_enabled:
+            return failed
+        self._active_backend = "memory"
+        self._fallback_reason = failed.error_message or failed.error_code or "unknown"
+        if not self._fallback_hydrated:
+            hydrated = self.fallback.add_documents(
+                self._documents,
+                self._sources,
+            )
+            if not hydrated.ok:
+                return hydrated
+            self._fallback_hydrated = True
+        return ToolResult.ok(
+            data={"fallback_activated": True},
+            backend="memory",
+            fallback_from="milvus",
+            fallback_reason=self._fallback_reason,
+        )
+
+    def _decorate(self, result: ToolResult) -> ToolResult:
+        result.meta.update(
+            {
+                "backend": "memory",
+                "fallback_from": "milvus",
+                "fallback_reason": self._fallback_reason,
+            }
+        )
+        return result
+
+    @property
+    def document_count(self) -> int:
+        if self._active_backend == "memory":
+            return self.fallback.document_count
+        return self.primary.document_count
+
+    def add_documents(
+        self,
+        docs: List[str],
+        sources: Optional[Sequence[str]] = None,
+    ) -> ToolResult:
+        normalized_sources = list(sources or [])
+        self._documents.extend(docs)
+        self._sources.extend(
+            normalized_sources[index] if index < len(normalized_sources) else ""
+            for index in range(len(docs))
+        )
+        if self._active_backend == "memory":
+            result = self.fallback.add_documents(docs, normalized_sources)
+            return self._decorate(result)
+        result = self.primary.add_documents(docs, normalized_sources)
+        if result.ok:
+            return result
+        activated = self._activate_fallback(result)
+        if activated.ok:
+            return activated
+        return result
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        threshold: float = 0.3,
+    ) -> ToolResult:
+        if self._active_backend == "memory":
+            return self._decorate(self.fallback.search(query, top_k, threshold))
+        result = self.primary.search(query, top_k, threshold)
+        if result.ok or not self.fallback_enabled:
+            return result
+        activated = self._activate_fallback(result)
+        if not activated.ok:
+            return result
+        return self._decorate(self.fallback.search(query, top_k, threshold))
+
+    def clear(self) -> ToolResult:
+        primary_result = self.primary.clear()
+        fallback_result = self.fallback.clear()
+        self._documents = []
+        self._sources = []
+        self._fallback_hydrated = False
+        self._active_backend = "milvus"
+        self._fallback_reason = ""
+        if primary_result.ok and fallback_result.ok:
+            return ToolResult.ok(data={"cleared": True}, backend="milvus+memory")
+        return primary_result if not primary_result.ok else fallback_result
+
+    def close(self) -> None:
+        self.primary.close()
+
+
+# --- Shared Retriever Singleton ---
+# Chat and Diet share one configurable retriever so documents are indexed once.
+
+_shared_retriever: Optional[Any] = None
+_loaded_knowledge_dirs = set()
+
+
+def get_shared_retriever():
+    """Get the shared Milvus-backed retriever or the configured memory backend."""
     global _shared_retriever
     if _shared_retriever is None:
         from app.config import config
 
-        _shared_retriever = MemoryRetriever(
-            embedding_model=config.embedding_model,
-        )
+        if config.retriever_backend == "milvus":
+            primary = MilvusRetriever(
+                uri=config.milvus_uri,
+                collection_name=config.milvus_collection_name,
+                token=config.milvus_token,
+                embedding_model=config.embedding_model,
+                index_type=config.milvus_index_type,
+                nlist=config.milvus_nlist,
+                nprobe=config.milvus_nprobe,
+                timeout_seconds=config.milvus_timeout_seconds,
+            )
+            if config.retriever_fallback_to_memory:
+                _shared_retriever = ResilientRetriever(
+                    primary=primary,
+                    fallback=MemoryRetriever(
+                        embedding_model=config.embedding_model,
+                    ),
+                    fallback_enabled=True,
+                )
+            else:
+                _shared_retriever = primary
+        elif config.retriever_backend == "memory":
+            _shared_retriever = MemoryRetriever(
+                embedding_model=config.embedding_model,
+            )
+        else:
+            logger.warning(
+                "Unknown RETRIEVER_BACKEND '%s'; using memory backend",
+                config.retriever_backend,
+            )
+            _shared_retriever = MemoryRetriever(
+                embedding_model=config.embedding_model,
+            )
     return _shared_retriever
+
+
+def reset_shared_retriever() -> None:
+    """Close and clear the shared retriever; intended for tests and reconfiguration."""
+    global _shared_retriever
+    if _shared_retriever is not None and hasattr(_shared_retriever, "close"):
+        _shared_retriever.close()
+    _shared_retriever = None
+    _loaded_knowledge_dirs.clear()
 
 
 def load_shared_knowledge_base(docs_dir: str = "data/knowledge") -> None:
@@ -295,6 +851,9 @@ def load_shared_knowledge_base(docs_dir: str = "data/knowledge") -> None:
     """
     import os
 
+    normalized_dir = os.path.abspath(docs_dir)
+    if normalized_dir in _loaded_knowledge_dirs:
+        return
     retriever = get_shared_retriever()
     if not os.path.isdir(docs_dir):
         logger.warning(f"Knowledge directory not found: {docs_dir}")
@@ -305,9 +864,22 @@ def load_shared_knowledge_base(docs_dir: str = "data/knowledge") -> None:
             fpath = os.path.join(docs_dir, fname)
             with open(fpath, "r", encoding="utf-8") as f:
                 text = f.read()
-            retriever.add_documents([text])
-            loaded += 1
-            logger.info(f"Loaded knowledge: {fname} ({len(text)} chars)")
+            result = retriever.add_documents([text], sources=[fname])
+            if result.ok:
+                loaded += 1
+                logger.info(
+                    "Loaded knowledge: %s (%s chars, backend=%s)",
+                    fname,
+                    len(text),
+                    result.meta.get("backend", "unknown"),
+                )
+            else:
+                logger.error(
+                    "Failed to index knowledge %s: %s",
+                    fname,
+                    result.error_message,
+                )
     if loaded:
+        _loaded_knowledge_dirs.add(normalized_dir)
         logger.info(f"Shared knowledge base: {retriever.document_count} chunks "
                      f"from {loaded} files")

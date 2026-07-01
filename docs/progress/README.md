@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-01 | [Milvus RAG 接入（WIP）](./2026-07-01-milvus-rag-wip.md) | Milvus Retriever、IVF_FLAT/COSINE、内存降级和 Compose 已加入；真实服务联调与全量回归待完成 |
 | 2026-06-30 | [Interview 简历口径修正](./2026-06-30-interview-resume-alignment-fix.md) | 移除默认看代码假设，按简历主线重写 P0/P1/P2 面试材料 |
 | 2026-06-30 | [简历口径优先规则](./2026-06-30-resume-first-interview-rule.md) | 忽略本地简历 JSON，interview 材料围绕简历项目描述组织 |
 | 2026-06-30 | [面试回答风格再梳理](./2026-06-30-interview-answer-style-refinement.md) | 从标准答案改为项目思路、技术取舍、问题解决和边界说明 |
@@ -22,7 +23,6 @@
 | 2026-06-30 | [面试与运行边界](./2026-06-30-interview-runtime-boundary.md) | 明确已实现、当前边界和后续规划的表达原则 |
 | 2026-06-30 | [面试准备审查](./2026-06-30-interview-preparation-audit.md) | 面试资料事实审查和优化清单 |
 | 2026-06-30 | [P0 面试主线可读性优化](./2026-06-30-interview-p0-readability-optimization.md) | 通俗比喻、口语化主线、分轮学习和自测标准 |
-| 2026-06-30 | [面试官视角审查与材料收紧](./2026-06-30-interview-interviewer-review-adjustment.md) | 个人贡献、证据边界、代码真实口径和高压追问 |
 
 ## 维护方式
 

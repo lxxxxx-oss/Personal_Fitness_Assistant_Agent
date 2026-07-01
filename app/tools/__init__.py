@@ -1,8 +1,11 @@
 from app.tools.types import ToolResult, ErrorCode
 from app.tools.retriever import (
     MemoryRetriever,
+    MilvusRetriever,
+    ResilientRetriever,
     get_shared_retriever,
     load_shared_knowledge_base,
+    reset_shared_retriever,
 )
 from app.tools.search_tool import TavilySearchTool
 from app.tools.pose_sequence import (
@@ -29,8 +32,11 @@ __all__ = [
     "ToolResult",
     "ErrorCode",
     "MemoryRetriever",
+    "MilvusRetriever",
+    "ResilientRetriever",
     "get_shared_retriever",
     "load_shared_knowledge_base",
+    "reset_shared_retriever",
     "TavilySearchTool",
     "PoseSequence",
     "pose_sequence_from_npz",
