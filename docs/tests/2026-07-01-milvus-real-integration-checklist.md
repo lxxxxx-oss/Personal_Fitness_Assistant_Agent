@@ -63,7 +63,7 @@ docker compose version
 ### 1. 启动 Milvus 服务
 
 ```powershell
-docker compose --profile milvus up -d milvus
+docker compose --profile milvus up -d milvus-standalone
 ```
 
 等待 20-60 秒后检查容器状态：
@@ -89,7 +89,7 @@ minio
 ```powershell
 $env:RETRIEVER_BACKEND="milvus"
 $env:MILVUS_URI="http://localhost:19530"
-$env:MILVUS_COLLECTION="fitness_knowledge_test"
+$env:MILVUS_COLLECTION_NAME="fitness_knowledge_test"
 $env:MILVUS_RECREATE_COLLECTION="1"
 python -c "from app.tools.retriever import MilvusRetriever; r=MilvusRetriever(uri='http://localhost:19530', collection_name='fitness_knowledge_test', recreate_collection=True); r.add_documents(['减脂期间应保证蛋白质摄入，控制总热量，并优先选择全谷物和蔬菜。'], source='manual_test.txt'); result=r.search('减脂期间蛋白质怎么吃', top_k=3, threshold=0.1); print(result.ok); print(result.meta); print(result.data)"
 ```
@@ -118,7 +118,7 @@ True
 ### 1. 启动 Milvus
 
 ```powershell
-docker compose --profile milvus up -d milvus
+docker compose --profile milvus up -d milvus-standalone
 docker compose ps
 ```
 
@@ -127,7 +127,7 @@ docker compose ps
 ```powershell
 $env:RETRIEVER_BACKEND="milvus"
 $env:MILVUS_URI="http://localhost:19530"
-$env:MILVUS_COLLECTION="fitness_knowledge"
+$env:MILVUS_COLLECTION_NAME="fitness_knowledge"
 $env:MILVUS_RECREATE_COLLECTION="1"
 $env:LLM_MOCK="1"
 $env:MCP_SERVER_COMMAND="mock"
@@ -180,7 +180,7 @@ curl.exe -X POST http://127.0.0.1:8000/chat `
 停止 Milvus：
 
 ```powershell
-docker compose --profile milvus stop milvus
+docker compose --profile milvus stop milvus-standalone
 ```
 
 重新启动后端或继续调用检索。如果 Milvus 不可用，预期：

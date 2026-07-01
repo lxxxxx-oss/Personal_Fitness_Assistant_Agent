@@ -204,7 +204,7 @@ docker compose --profile milvus up --build
 本机不使用 Docker 后端、只启动 Milvus 依赖时：
 
 ```powershell
-docker compose --profile milvus up -d milvus
+docker compose --profile milvus up -d milvus-standalone
 $env:RETRIEVER_BACKEND="milvus"
 $env:MILVUS_URI="http://localhost:19530"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -231,7 +231,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 | `embedding_model` | Sentence-Transformer 模型名 |
 | `retriever_backend` | `memory` 或 `milvus`，默认 `memory` |
 | `milvus_uri` | Milvus 服务地址，默认 `http://localhost:19530` |
-| `milvus_collection` | Milvus Collection 名称 |
+| `milvus_collection_name` | Milvus Collection 名称 |
 | `milvus_recreate_collection` | 是否启动时重建 Collection，默认 `false` |
 | `milvus_index_type` | Milvus 索引类型，默认 `IVF_FLAT` |
 | `milvus_metric_type` | Milvus 向量度量，默认 `COSINE` |
@@ -257,7 +257,8 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `RETRIEVER_BACKEND`
 - `MILVUS_URI`
 - `MILVUS_TOKEN`
-- `MILVUS_COLLECTION`
+- `MILVUS_COLLECTION_NAME`
+- `MILVUS_COLLECTION`（兼容旧变量）
 - `MILVUS_RECREATE_COLLECTION`
 - `MILVUS_INDEX_TYPE`
 - `MILVUS_METRIC_TYPE`

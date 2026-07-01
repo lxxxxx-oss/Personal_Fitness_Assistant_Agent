@@ -8,7 +8,7 @@
 
 - 新增 `MilvusRetriever`，与 `MemoryRetriever` 保持相同调用接口：`add_documents`、`search`、`clear`、`document_count`。
 - 新增 `RETRIEVER_BACKEND=memory|milvus` 配置切换。
-- 新增 Milvus 配置：`MILVUS_URI`、`MILVUS_COLLECTION`、`MILVUS_RECREATE_COLLECTION`、`MILVUS_INDEX_TYPE`、`MILVUS_METRIC_TYPE`、`MILVUS_NLIST`、`MILVUS_NPROBE`。
+- 新增 Milvus 配置：`MILVUS_URI`、`MILVUS_COLLECTION_NAME`、`MILVUS_INDEX_TYPE`、`MILVUS_NLIST`、`MILVUS_NPROBE`、`MILVUS_TIMEOUT_SECONDS`。
 - `Chat` 和 `Diet` 子图改为读取 `RETRIEVER_TOP_K` 和 `RETRIEVER_THRESHOLD`，不再写死检索参数。
 - 知识库加载时传入 source 文件名，RAG Prompt 可以展示来源。
 - `docker-compose.yml` 增加 Milvus、etcd、MinIO，放入 `milvus` profile，默认不启动重依赖服务。
@@ -29,6 +29,7 @@
 ```powershell
 pytest tests\test_retriever.py -q
 pytest tests\test_retriever.py tests\test_api.py tests\test_router.py -q
+pytest tests -q
 ```
 
 结果：
@@ -36,6 +37,7 @@ pytest tests\test_retriever.py tests\test_api.py tests\test_router.py -q
 ```text
 11 passed
 56 passed, 1 warning
+120 passed, 2 skipped, 1 warning
 ```
 
 warning 来自 FastAPI/Starlette TestClient 兼容层，不影响本次 RAG 行为。

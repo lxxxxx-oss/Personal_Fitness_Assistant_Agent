@@ -33,6 +33,18 @@ pytest tests\test_retriever.py tests\test_api.py tests\test_router.py -q
 56 passed, 1 warning
 ```
 
+合并远端 Milvus WIP 与真实验证脚本后，重新执行全量测试：
+
+```powershell
+pytest tests -q
+```
+
+结果：
+
+```text
+120 passed, 2 skipped, 1 warning
+```
+
 ## 测试说明
 
 - Milvus 单元测试使用 fake `pymilvus.MilvusClient`，不要求本机启动真实 Milvus。
@@ -41,6 +53,6 @@ pytest tests\test_retriever.py tests\test_api.py tests\test_router.py -q
 
 ## 遗留风险
 
-- 尚未执行真实 Milvus 服务集成测试。
+- 尚未在当前电脑执行真实 Milvus 服务集成测试；远端新增的真实集成测试默认在未设置 `MILVUS_TEST_URI` 时 skip。
 - 尚未建立 RAG 标准问答集，因此不能报告真实 Recall@K、MRR 或线上准确率。
 - 尚未验证 Docker profile 在另一台机器上的完整构建和启动。
