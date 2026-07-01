@@ -89,3 +89,66 @@ git diff --check
 4. 修复真实 SDK 差异后运行全量 pytest 与 Router eval。
 5. 增加真实 Milvus 集成测试或脚本，并记录未安装 Docker 时的跳过策略。
 6. 完成 `README`、`RUNBOOK`、面试文档和测试记录同步后，再把功能状态改为“已完成”。
+
+## 本轮暂停快照（2026-07-01）
+
+本轮继续补齐了真实 Milvus 联调前的工程准备，但因本机 Docker Engine 尚未可用，按用户要求在此暂停。当前仍属于 **WIP（未完成）**，不能表述为“真实 Milvus RAG 已完成验收”。
+
+### 本轮新增与调整
+
+- `app/tools/retriever.py`：为已存在的 Collection 增加索引存在性检查；缺少向量索引时自动创建 `vector_index`，避免只处理“首次建库”场景。
+- `tests/test_milvus_retriever.py`：Fake Milvus Client 补充 `list_indexes()`，覆盖既有 Collection 的索引检查逻辑。
+- `scripts/smoke_milvus.py`：新增真实 Milvus 冒烟脚本，使用确定性本地编码器完成建库、写入、检索、来源字段、行数、索引与度量类型校验；默认测试结束后清理 Collection，可用 `--keep` 保留。
+- `tests/test_milvus_integration.py`：新增可选真实服务集成测试；仅在设置 `MILVUS_TEST_URI` 时执行，默认跳过，避免没有 Milvus 的开发环境误报失败。
+- `pytest.ini`：登记 `integration` 测试标记。
+- `fitness-agent` 环境已安装并确认可导入 `pymilvus 2.5.18`，原记录中的“SDK 尚未安装”已不再成立。
+
+### 本轮验证结果
+
+```text
+Python 语法检查
+通过
+
+Retriever 定向测试
+14 passed, 1 skipped
+
+全量 pytest
+120 passed, 1 skipped, 1 warning
+
+Router 常规评测
+66/66，100%
+
+Router 困难评测
+36/36；主意图、次意图与路由计划均为 36/36
+
+Docker Compose 配置解析
+配置结构可正常渲染；读取本机 Docker 用户配置时出现权限警告
+```
+
+全量测试中的 1 条 warning 来自 Starlette `TestClient` 与 httpx 的兼容性提示，与本轮 Milvus 改动无关。
+
+### 当前阻塞与边界
+
+- Docker Desktop 后台进程已经启动，但 Docker Engine CLI 调用持续无响应；访问命名管道时遇到权限限制。
+- 尝试启动 `com.docker.service` 时因当前会话缺少服务管理权限而失败。
+- 因此 etcd、MinIO、Milvus Standalone 容器尚未真正启动，本轮没有完成真实服务上的冒烟脚本和集成测试。
+- `docs/README.md`、`docs/RUNBOOK.md`、面试材料等全局事实文档尚未同步，功能状态必须继续保持 WIP。
+
+### 当前未提交文件
+
+```text
+M  app/tools/retriever.py
+M  tests/test_milvus_retriever.py
+?? pytest.ini
+?? scripts/smoke_milvus.py
+?? tests/test_milvus_integration.py
+M  docs/progress/2026-07-01-milvus-rag-wip.md
+```
+
+### 下次从这里继续
+
+1. 使用具备足够权限的 Docker Desktop 会话确认 Docker Engine 可响应。
+2. 启动 `docker-compose.yml` 中的 etcd、MinIO 和 Milvus Standalone，并检查容器健康状态。
+3. 运行 `python scripts/smoke_milvus.py`，核对真实 Schema、索引、upsert、flush、search、来源字段与 row count。
+4. 设置 `MILVUS_TEST_URI` 后运行真实集成测试，处理可能存在的 PyMilvus SDK 行为差异。
+5. 真实链路通过后，再同步 `docs/README.md`、`docs/RUNBOOK.md`、面试材料和测试记录，并决定是否将状态改为“已完成”。

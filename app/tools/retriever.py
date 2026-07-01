@@ -432,6 +432,7 @@ class MilvusRetriever:
                     f"dimension {existing_dimension}, expected {dimension}"
                 )
             self._dimension = dimension
+            self._ensure_index()
             client.load_collection(collection_name=self.collection_name)
             return
 
@@ -465,6 +466,21 @@ class MilvusRetriever:
             consistency_level="Strong",
         )
 
+        self._ensure_index()
+        client.load_collection(collection_name=self.collection_name)
+        self._dimension = dimension
+
+    def _ensure_index(self) -> None:
+        """Create the configured vector index when the collection lacks it."""
+        client = self._ensure_client()
+        existing = client.list_indexes(collection_name=self.collection_name)
+        existing_names = {
+            item if isinstance(item, str) else item.get("index_name", "")
+            for item in (existing or [])
+        }
+        if "vector_index" in existing_names:
+            return
+
         index_params = self._milvus_client_type.prepare_index_params()
         index_kwargs: Dict[str, Any] = {
             "field_name": "vector",
@@ -479,8 +495,6 @@ class MilvusRetriever:
             collection_name=self.collection_name,
             index_params=index_params,
         )
-        client.load_collection(collection_name=self.collection_name)
-        self._dimension = dimension
 
     @property
     def document_count(self) -> int:

@@ -81,6 +81,9 @@ class FakeMilvusClient:
     def create_index(self, collection_name, index_params):
         self.index_params = index_params
 
+    def list_indexes(self, collection_name):
+        return ["vector_index"] if self.index_params is not None else []
+
     def load_collection(self, collection_name):
         self.loaded = True
 
