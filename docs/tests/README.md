@@ -19,6 +19,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| 小程序回答元数据 | [2026-07-02-miniprogram-result-contract.md](./2026-07-02-miniprogram-result-contract.md) | sources/warnings 在 HTTP、SSE、WebSocket 与小程序消息卡片间完成闭环 |
 | 全端点冒烟 | [2026-06-10-level-1-smoke-test.md](./2026-06-10-level-1-smoke-test.md) | 早期全端点冒烟，记录 Motion 和 SSE 初期问题 |
 | 核心链路 | [2026-06-10-level-2-core-link.md](./2026-06-10-level-2-core-link.md) | 路由、SSE、WebSocket 核心链路验证 |
 | 手工体验语句 | [2026-06-23-manual-test-prompts.md](./2026-06-23-manual-test-prompts.md) | 面试/演示前可用的接口、对话、Motion 上传和异常测试语句 |

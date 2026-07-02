@@ -33,6 +33,19 @@ _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
 
 
+def _result_metadata(result_state: RouterState) -> tuple[List[str], List[str]]:
+    """Return stable, deduplicated client metadata from graph state."""
+    sources = list(dict.fromkeys(
+        str(item) for item in result_state.get("_sources", []) if item
+    ))
+    warnings = list(dict.fromkeys(
+        str(item)
+        for item in result_state.get("_route_execution_warnings", [])
+        if item
+    ))
+    return sources, warnings
+
+
 def _get_router_graph():
     global _router_graph
     if _router_graph is None:
@@ -59,7 +72,8 @@ class ChatResponse(BaseModel):
     user_id: str
     intent: str
     reply: str
-    sources: List[str] = []
+    sources: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
 
 
 class HistoryResponse(BaseModel):
@@ -135,6 +149,7 @@ async def chat(request: ChatRequest):
 
         reply = result_state.get("result", "")
         intent = result_state.get("intent", "chat")
+        sources, warnings = _result_metadata(result_state)
 
         memory.add_turn(request.message, reply)
 
@@ -142,6 +157,8 @@ async def chat(request: ChatRequest):
             user_id=request.user_id,
             intent=intent,
             reply=reply,
+            sources=sources,
+            warnings=warnings,
         )
     except Exception as e:
         logger.exception(f"Error processing chat: {e}")
@@ -421,9 +438,11 @@ async def chat_stream(request: ChatRequest):
         result_state = graph.invoke(state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
+        sources, warnings = _result_metadata(result_state)
 
         # Send metadata first
-        yield f"event: meta\ndata: {__import__('json').dumps({'intent': intent})}\n\n"
+        meta = {"intent": intent, "sources": sources, "warnings": warnings}
+        yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
         if not prompt:
             # No prompt stored — graph couldn't prepare context
@@ -513,9 +532,15 @@ async def chat_websocket(websocket: WebSocket):
         result_state = graph.invoke(state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
+        sources, warnings = _result_metadata(result_state)
 
         # Send metadata
-        await websocket.send_json({"type": "meta", "intent": intent})
+        await websocket.send_json({
+            "type": "meta",
+            "intent": intent,
+            "sources": sources,
+            "warnings": warnings,
+        })
 
         if not prompt:
             # No prompt — graph couldn't prepare context, send result directly

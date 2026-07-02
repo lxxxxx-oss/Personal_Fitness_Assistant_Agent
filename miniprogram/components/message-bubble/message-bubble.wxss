@@ -82,3 +82,37 @@
   font-size: 22rpx;
   color: #64748b;
 }
+
+.metadata-card {
+  margin-top: 12rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 16rpx;
+  border: 1px solid #334155;
+  background: #111827;
+}
+
+.metadata-title {
+  margin-bottom: 8rpx;
+  color: #cbd5e1;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.metadata-item {
+  display: block;
+  padding: 4rpx 0;
+  color: #94a3b8;
+  font-size: 23rpx;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.warning-card {
+  border-color: #92400e;
+  background: #451a03;
+}
+
+.source-card {
+  border-color: #1e40af;
+  background: #172554;
+}

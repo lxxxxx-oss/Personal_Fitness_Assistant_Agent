@@ -95,20 +95,24 @@ Page({
     var pendingContent = '';
     var throttleTimer = null;
     var intent = '';
+    var sources = [];
+    var warnings = [];
     var self = this;
 
     function updateUI() {
       fullContent += pendingContent;
       pendingContent = '';
       throttleTimer = null;
-      self._updateMessage(assistantId, fullContent, intent, true);
+      self._updateMessage(assistantId, fullContent, intent, true, false, sources, warnings);
     }
 
     this.socketTask = api.wsChat(this.userId, msg, {
       onMeta: function (meta) {
         intent = meta.intent || 'chat';
+        sources = meta.sources || [];
+        warnings = meta.warnings || [];
         self.setData({ currentIntent: intent });
-        self._updateMessage(assistantId, fullContent, intent, true);
+        self._updateMessage(assistantId, fullContent, intent, true, false, sources, warnings);
       },
 
       onToken: function (token) {
@@ -125,7 +129,7 @@ Page({
         }
         // Final cleanup: strip any remaining think tags
         var cleaned = fullContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        self._updateMessage(assistantId, cleaned, intent, false);
+        self._updateMessage(assistantId, cleaned, intent, false, false, sources, warnings);
         self.setData({ isSending: false });
         self.socketTask = null;
         self._scrollToBottom();
@@ -139,7 +143,15 @@ Page({
         }
         // If we got some content, show it + error; otherwise fallback to HTTP
         if (fullContent) {
-          self._updateMessage(assistantId, fullContent + '\n\n⚠️ 连接中断', intent || 'chat', false, true);
+          self._updateMessage(
+            assistantId,
+            fullContent + '\n\n⚠️ 连接中断',
+            intent || 'chat',
+            false,
+            true,
+            sources,
+            warnings
+          );
           self.setData({ isSending: false, showRetry: true });
         } else {
           // No content received — fallback to HTTP
@@ -161,7 +173,15 @@ Page({
     var self = this;
 
     api.chat(this.userId, msg).then(function (result) {
-      self._updateMessage(assistantId, result.reply, result.intent, false);
+      self._updateMessage(
+        assistantId,
+        result.reply,
+        result.intent,
+        false,
+        false,
+        result.sources || [],
+        result.warnings || []
+      );
       self.setData({ currentIntent: result.intent });
     }).catch(function (err) {
       self._updateMessage(assistantId, '❌ ' + err.message, 'chat', false, true);
@@ -181,9 +201,11 @@ Page({
     this.setData({ showRetry: false });
   },
 
-  _addMessage: function (role, content, intent, isStreaming) {
+  _addMessage: function (role, content, intent, isStreaming, sources, warnings) {
     intent = intent || '';
     isStreaming = isStreaming || false;
+    sources = sources || [];
+    warnings = warnings || [];
     var id = 'msg_' + (this.msgCounter++);
     var msg = {
       id: id,
@@ -192,6 +214,8 @@ Page({
       intent: intent,
       isStreaming: isStreaming,
       isError: false,
+      sources: sources,
+      warnings: warnings,
       timestamp: Date.now(),
     };
     var messages = this.data.messages.concat([msg]);
@@ -202,7 +226,7 @@ Page({
     return id;
   },
 
-  _updateMessage: function (id, content, intent, isStreaming, isError) {
+  _updateMessage: function (id, content, intent, isStreaming, isError, sources, warnings) {
     intent = intent || '';
     isStreaming = isStreaming || false;
     isError = isError || false;
@@ -215,6 +239,8 @@ Page({
           intent: intent,
           isStreaming: isStreaming,
           isError: isError,
+          sources: sources || m.sources || [],
+          warnings: warnings || m.warnings || [],
           timestamp: Date.now(),
         };
       }

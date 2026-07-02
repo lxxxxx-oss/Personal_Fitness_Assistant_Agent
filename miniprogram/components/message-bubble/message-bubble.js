@@ -30,6 +30,14 @@ Component({
       type: Boolean,
       value: false,
     },
+    sources: {
+      type: Array,
+      value: [],
+    },
+    warnings: {
+      type: Array,
+      value: [],
+    },
     msgId: {
       type: String,
       value: '',

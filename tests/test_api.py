@@ -29,6 +29,55 @@ class TestChatEndpoint:
         assert "intent" in data
         assert isinstance(data["reply"], str)
         assert len(data["reply"]) > 0
+        assert isinstance(data["sources"], list)
+        assert isinstance(data["warnings"], list)
+
+    def test_chat_returns_deduplicated_sources_and_warnings(self, monkeypatch):
+        import app.main as main_module
+
+        class FakeGraph:
+            def invoke(self, state):
+                return {
+                    "intent": "search",
+                    "result": "grounded answer",
+                    "_sources": ["https://example.com/a", "https://example.com/a"],
+                    "_route_execution_warnings": ["search_degraded", "search_degraded"],
+                }
+
+        monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
+        response = client.post(
+            "/chat",
+            json={"user_id": "metadata_user", "message": "搜索最新资料"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["sources"] == ["https://example.com/a"]
+        assert response.json()["warnings"] == ["search_degraded"]
+
+    def test_websocket_meta_returns_sources_and_warnings(self, monkeypatch):
+        import app.main as main_module
+
+        class FakeGraph:
+            def invoke(self, state):
+                return {
+                    "intent": "search",
+                    "result": "fallback answer",
+                    "_sources": ["https://example.com/ws"],
+                    "_route_execution_warnings": ["partial_route_failure:diet"],
+                }
+
+        monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
+        with client.websocket_connect("/chat/ws") as websocket:
+            websocket.send_json({"user_id": "ws_metadata_user", "message": "测试来源"})
+            meta = websocket.receive_json()
+            assert meta == {
+                "type": "meta",
+                "intent": "search",
+                "sources": ["https://example.com/ws"],
+                "warnings": ["partial_route_failure:diet"],
+            }
+            assert websocket.receive_json()["type"] == "token"
+            assert websocket.receive_json()["type"] == "done"
 
     def test_chat_with_empty_message(self):
         response = client.post("/chat", json={"user_id": "test_user", "message": ""})
@@ -66,6 +115,8 @@ class TestChatEndpoint:
 
         assert response.status_code == 200
         assert "streamed" in response.text
+        assert '"sources": []' in response.text
+        assert '"warnings": []' in response.text
         assert calls == {"generate": 0, "generate_stream": 1}
 
 

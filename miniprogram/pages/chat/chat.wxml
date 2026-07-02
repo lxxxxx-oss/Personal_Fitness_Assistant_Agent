@@ -32,6 +32,8 @@
         content="{{item.content}}"
         isStreaming="{{item.isStreaming}}"
         isError="{{item.isError}}"
+        sources="{{item.sources}}"
+        warnings="{{item.warnings}}"
         timestamp="{{item.timestamp}}"
         msgId="{{item.id}}"
       />

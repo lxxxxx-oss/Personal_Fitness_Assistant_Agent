@@ -21,6 +21,7 @@ http://127.0.0.1:8000
 | GET | `/ui` | Web UI 静态页面 | 已实现 |
 | POST | `/motion/analyze` | 上传 `.npz` 做独立动作分析，可选标准动作对比 | 已实现 |
 | POST | `/motion/analyze-image` | 上传图片做单帧静态姿态提取和摘要 | 已实现 |
+| POST | `/motion/analyze-video` | 上传短视频并生成多帧姿态序列摘要 | 已实现 |
 
 ## 2. 健康检查
 
@@ -73,11 +74,12 @@ Content-Type: application/json
   "user_id": "u1",
   "intent": "motion",
   "reply": "...",
-  "sources": []
+  "sources": [],
+  "warnings": []
 }
 ```
 
-`sources` 字段已保留在响应模型中，但当前 `/chat` 构造响应时尚未把 RouterState 的内部 `_sources` 回填，因此现版本通常返回空列表。Search 子图已收集 Tavily URL，并在回答 Prompt 中要求来源编号；“结构化来源公开透传”和逐条 citation 校验仍是后续项。
+`sources` 返回执行链路收集并去重后的来源 URL，主要由 Search 子图产生；没有外部来源时为空列表。`warnings` 返回组合执行、工具调用或降级过程中产生的非致命提示，客户端可在不打断主回答的情况下单独展示。逐条 citation 与正文引用关系校验仍是后续项。
 
 命令：
 
@@ -101,7 +103,7 @@ Accept: text/event-stream
 
 ```text
 event: meta
-data: {"intent":"diet"}
+data: {"intent":"diet","sources":[],"warnings":[]}
 
 data: 减脂
 
@@ -115,7 +117,7 @@ data: {}
 
 | 事件 | 说明 |
 |---|---|
-| `meta` | 首个事件，返回识别到的 intent |
+| `meta` | 首个事件，返回 intent、去重后的 sources 和非致命 warnings |
 | 默认 `data` | LLM token 文本 |
 | `done` | 生成结束 |
 
@@ -145,7 +147,7 @@ ws://127.0.0.1:8000/chat/ws
 服务端返回：
 
 ```json
-{"type":"meta","intent":"mcp"}
+{"type":"meta","intent":"mcp","sources":[],"warnings":[]}
 {"type":"token","text":"番茄炒蛋"}
 {"type":"token","text":"..."}
 {"type":"done"}

@@ -57,10 +57,10 @@
 | Memory | 已完成滑动窗口记忆，默认保留 6 轮并按 `user_id` 隔离 |
 | 流式接口 | SSE 和 WebSocket 已完成 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
-| 微信小程序 | 代码基本完成，端到端联调未完成 |
+| 微信小程序 | Chat 主链路、WebSocket/HTTP 降级及来源/运行提示展示已完成；媒体上传和端到端联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `122 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `124 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -74,7 +74,7 @@
 | Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入和容器配置已完成 | 补真实冒烟、Recall@K、MRR 与 P95 延迟基线 |
 | Motion 缺标准动作库 | 支持 `.npz`、图片和视频姿态序列提取，不伪造完整动作判断 | 补标准动作数据、关键点平滑、周期切分和专项规则 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
-| 小程序 SSE 存在端侧差异 | `wx.request enableChunked`，可降级到非流式接口 | 完成真机和不同基础库版本验收 |
+| 小程序 WebSocket 存在端侧与网络差异 | 建连或执行失败时降级到非流式接口 | 完成真机、弱网和不同基础库版本验收 |
 | Docker 模型路径跨机器 | 配置支持环境变量覆盖 | 使用平台无关镜像和模型服务 |
 
 ## 5. 对外接口
@@ -131,7 +131,7 @@ docs/superpowers/            早期方案与规格
 1. 为 RAG 建立标准问答与检索评测集，补 Recall@K、MRR 和来源覆盖率。
 2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 为视频姿态序列补关键点平滑、动作周期切分和标准动作库。
 3. 完成真实 MCP Server 的稳定性、超时、Schema、进程生命周期和权限联调。
-4. 补全 Search 的结构化来源透传和 citation 校验。
+4. 补全 Search 的逐条 citation 与正文引用关系校验。
 5. 完成 Milvus 真实服务冒烟，并建立检索质量与延迟基线。
 6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。
 7. 积累真实多意图样本与组合成功率，再决定是否扩充 Router 白名单。

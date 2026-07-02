@@ -16,6 +16,16 @@
     </text>
   </view>
 
+  <view class="metadata-card warning-card" wx:if="{{role === 'assistant' && warnings.length}}">
+    <view class="metadata-title">⚠️ 运行提示</view>
+    <text class="metadata-item" wx:for="{{warnings}}" wx:key="*this" selectable>{{item}}</text>
+  </view>
+
+  <view class="metadata-card source-card" wx:if="{{role === 'assistant' && sources.length}}">
+    <view class="metadata-title">📚 参考来源</view>
+    <text class="metadata-item" wx:for="{{sources}}" wx:key="*this" selectable>{{index + 1}}. {{item}}</text>
+  </view>
+
   <!-- 时间戳 -->
   <view class="timestamp" wx:if="{{formattedTime && !isStreaming}}">
     <text>{{formattedTime}}</text>
