@@ -17,6 +17,7 @@ from app.tools.pose_sequence import (
 from app.tools.pose_estimator import (
     decode_image_bytes_to_rgb,
     estimate_pose_from_image,
+    estimate_pose_from_video_path,
     validate_image_array,
 )
 from app.tools.motion_tool import (
@@ -44,6 +45,7 @@ __all__ = [
     "validate_pose_sequence",
     "decode_image_bytes_to_rgb",
     "estimate_pose_from_image",
+    "estimate_pose_from_video_path",
     "validate_image_array",
     "normalize_pose",
     "compute_joint_angles",

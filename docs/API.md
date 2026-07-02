@@ -225,12 +225,13 @@ http://127.0.0.1:8000/ui
 
 ## 9. 动作上传分析
 
-当前对外开放的动作分析接口包括两个入口：
+当前对外开放的动作分析接口包括三个入口：
 
 - `/motion/analyze`：上传 `.npz` 姿态序列，支持可选标准动作库对比。
 - `/motion/analyze-image`：上传图片，提取单帧人体姿态并返回静态姿态摘要。
+- `/motion/analyze-video`：上传短视频，受控抽帧并生成多帧 `PoseSequence` 摘要。
 
-注意：图片接口只能分析单帧静态姿态，不能判断完整动作节奏、轨迹、发力顺序或多次重复稳定性；视频上传接口尚未开放。
+注意：图片接口只能分析单帧静态姿态；视频接口当前只验证视频到姿态序列，不包含动作周期切分、关键点平滑、标准动作评分或专项纠错。
 
 ```http
 POST /motion/analyze
@@ -351,7 +352,61 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 | 422 | 文件为空、格式不支持、图片无法解码、未检测到人体姿态 |
 | 503 | Pillow、MediaPipe 或 `pose_landmarker.task` 模型文件缺失 |
 
-## 11. 意图路由规则
+## 11. 视频姿态序列提取
+
+```http
+POST /motion/analyze-video
+Content-Type: multipart/form-data
+```
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file` | file | 是 | 最大 30 MB 的 `.mp4`、`.mov` 或 `.avi` 短视频 |
+
+当前处理流程：
+
+```text
+视频上传
+  -> 临时文件（请求结束后删除）
+  -> OpenCV 解码并按约 10 FPS 抽帧
+  -> MediaPipe VIDEO 模式
+  -> 最多处理 300 个采样帧
+  -> PoseSequence(T=N, J=33, C=3)
+  -> 返回有效帧率和置信度摘要
+```
+
+响应示例：
+
+```json
+{
+  "filename": "squat.mp4",
+  "source_type": "video",
+  "frames": 15,
+  "joints": 33,
+  "fps": 7.5,
+  "pose_model": "mediapipe_pose",
+  "joint_schema": "mediapipe_33",
+  "sampled_frames": 15,
+  "valid_frame_ratio": 1.0,
+  "confidence_summary": {"mean": 0.9926, "min": 0.9579, "max": 1.0},
+  "warnings": [
+    "当前仅验证视频到多帧 PoseSequence，不包含动作周期切分或标准动作评分。"
+  ],
+  "message": "视频已转换为多帧 PoseSequence。"
+}
+```
+
+错误：
+
+| 状态码 | 场景 |
+|---|---|
+| 413 | 视频超过 30 MB |
+| 422 | 后缀不支持、无法解码或采样帧中未检测到人体 |
+| 503 | OpenCV、MediaPipe 或 `pose_landmarker.task` 缺失 |
+
+## 12. 意图路由规则
 
 当前 Router 使用“加权规则 + 确定性歧义处理 + 语义样例 fallback + 可选本地 LLM classifier”。系统会扫描所有 intent 的短语和组合规则，识别顺序词、否定约束、跨域计划、plan-vs-motion、diet-vs-recipe 等 ambiguity signals；低置信或指定 review signal 才允许尝试 LLM。真实 Qwen provider 已接入，但 `LLM_ROUTER_ENABLED` 默认关闭。即使开启，LLM 也必须通过严格 JSON、合法 intent、非澄清、最低置信度，并且置信度高于当前规则才允许覆盖。
 
@@ -369,15 +424,16 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 
 Phase 4 的执行层只允许四种两步组合：`search -> diet`、`search -> chat`、`motion -> chat`、`motion -> diet`。其他 route plan、需要澄清的请求仍只执行主意图。多步结果由 final synthesis 合并；部分子图失败时保留成功结果，全部失败时返回错误文本。SSE 和 WebSocket 对多步请求仍只进行一次最终流式生成，公开协议没有新增字段。
 
-## 12. 状态码
+## 13. 状态码
 
 | 状态码 | 说明 |
 |---|---|
 | 200 | 成功 |
 | 422 | 请求参数校验失败，例如 `user_id` 或 `message` 为空/超长 |
+| 413 | 上传视频超过大小限制 |
 | 500 | 服务内部错误，例如模型加载失败、子图执行异常 |
 
-## 13. 快速启动
+## 14. 快速启动
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000

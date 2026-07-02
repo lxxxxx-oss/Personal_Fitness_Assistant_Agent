@@ -1,11 +1,11 @@
 # Progress 最近记录
 
-`docs/progress/` 只保留最近 10 条日期化记录，用于快速追溯近期实现、修复和文档调整。当前项目状态仍以 [../README.md](../README.md) 为准，测试证据看 [../tests/README.md](../tests/README.md)。
+`docs/progress/` 保存日期化实现、修复和文档调整记录。本页只索引最近 10 条，避免导航继续膨胀；未列出的旧文件作为历史证据保留。当前项目状态仍以 [../README.md](../README.md) 为准，测试证据看 [../tests/README.md](../tests/README.md)。
 
 保留规则：
 
-- 按文件名中的日期倒序保留最近 10 条；同一天按文件名倒序确定顺序。
-- 新增第 11 条记录时，删除最旧一条，并同步更新本页。
+- 索引按日期倒序展示最近 10 条；同一天按文件名倒序确定顺序。
+- 新增记录时从索引移除最旧条目，但不要求删除历史文件。
 - 长期有效的设计结论沉淀到 `technical/`，接口和运行事实沉淀到 `API.md`、`README.md` 或 `RUNBOOK.md`。
 - progress 是近期过程记录，不承担长期档案库职责。
 
@@ -13,7 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
-| 2026-07-01 | [Milvus RAG 接入（WIP）](./2026-07-01-milvus-rag-wip.md) | Milvus Retriever、IVF_FLAT/COSINE、内存降级和 Compose 已加入；真实服务联调与全量回归待完成 |
+| 2026-07-01/02 | [Milvus RAG 接入与验证记录](./2026-07-01-milvus-rag-wip.md) | Retriever、索引、内存降级和 Compose 已加入；SDK 与容器健康已确认，真实 CRUD 冒烟仍待完成 |
 | 2026-06-30 | [Interview 简历口径修正](./2026-06-30-interview-resume-alignment-fix.md) | 移除默认看代码假设，按简历主线重写 P0/P1/P2 面试材料 |
 | 2026-06-30 | [简历口径优先规则](./2026-06-30-resume-first-interview-rule.md) | 忽略本地简历 JSON，interview 材料围绕简历项目描述组织 |
 | 2026-06-30 | [面试回答风格再梳理](./2026-06-30-interview-answer-style-refinement.md) | 从标准答案改为项目思路、技术取舍、问题解决和边界说明 |

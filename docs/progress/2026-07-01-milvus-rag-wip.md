@@ -152,3 +152,37 @@ M  docs/progress/2026-07-01-milvus-rag-wip.md
 3. 运行 `python scripts/smoke_milvus.py`，核对真实 Schema、索引、upsert、flush、search、来源字段与 row count。
 4. 设置 `MILVUS_TEST_URI` 后运行真实集成测试，处理可能存在的 PyMilvus SDK 行为差异。
 5. 真实链路通过后，再同步 `docs/README.md`、`docs/RUNBOOK.md`、面试材料和测试记录，并决定是否将状态改为“已完成”。
+
+## 2026-07-02 真实环境验证记录
+
+本轮按“连续两次失败即中断”的约束验证真实 Milvus 链路，没有修改业务代码，也没有进行第三次尝试。
+
+### 第 1 次尝试
+
+- Docker Engine 可正常响应，Server 版本为 `29.5.2`。
+- 执行 `docker compose up -d etcd minio milvus-standalone` 后，命令持续 3 分钟没有输出或结束，因此终止该命令并记为第一次失败。
+- 后续状态检查表明 Compose 实际已在后台创建并启动容器，第一次失败更接近 Compose 客户端未及时返回，而不是服务启动失败。
+
+### 第 2 次尝试
+
+- 容器状态检查结果：
+  - `fitness-milvus-standalone`：运行中且健康。
+  - `fitness-milvus-minio`：运行中，健康检查尚在启动阶段。
+  - `fitness-milvus-etcd`：运行中，健康检查尚在启动阶段。
+- 执行真实冒烟脚本 `python scripts/smoke_milvus.py` 失败：
+
+```text
+ModuleNotFoundError: No module named 'app'
+```
+
+- 根因是以文件路径直接启动脚本时，Python 将 `scripts/` 而非项目根目录作为首个模块搜索路径，导致脚本无法导入 `app.tools.retriever`。
+- 失败发生在连接 Milvus 之前，因此本轮仍未验证真实 Collection 创建、索引创建、upsert、flush 和 search。
+- 按约束在第二次失败后立即中断；未修改脚本，未再次执行验证。
+
+### 当前接续点
+
+1. 修正冒烟脚本的项目导入方式，或使用能够把项目根目录加入 `PYTHONPATH` 的模块化启动方式。
+2. 确认 etcd、MinIO 和 Milvus 三个容器均达到健康状态。
+3. 仅在下一轮获得继续指令后，重新执行真实冒烟与集成测试。
+
+本轮结束时 Milvus 相关容器仍保持运行，未执行 `docker compose down`。

@@ -160,3 +160,51 @@ class TestMotionAnalyzeImageEndpoint:
         )
 
         assert response.status_code == 422
+
+
+class TestMotionAnalyzeVideoEndpoint:
+    def test_motion_analyze_video_returns_pose_sequence_summary(self, monkeypatch):
+        from app.tools import pose_estimator
+
+        def fake_estimate_pose_from_video_path(path, source_name=None, **kwargs):
+            sequence = PoseSequence(
+                keypoints=np.zeros((12, 33, 3), dtype=np.float32),
+                fps=10.0,
+                source_type="video",
+                pose_model="mediapipe_pose",
+                joint_schema="mediapipe_33",
+                confidence=np.ones((12, 33), dtype=np.float32) * 0.9,
+                metadata={
+                    "sampled_frames": 15,
+                    "valid_frames": 12,
+                    "valid_frame_ratio": 0.8,
+                },
+            )
+            return ToolResult.ok(data=sequence)
+
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            fake_estimate_pose_from_video_path,
+        )
+        response = client.post(
+            "/motion/analyze-video",
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["source_type"] == "video"
+        assert data["frames"] == 12
+        assert data["joints"] == 33
+        assert data["fps"] == 10.0
+        assert data["sampled_frames"] == 15
+        assert data["valid_frame_ratio"] == 0.8
+        assert data["confidence_summary"]["mean"] == 0.9
+
+    def test_motion_analyze_video_rejects_unsupported_suffix(self):
+        response = client.post(
+            "/motion/analyze-video",
+            files={"file": ("squat.txt", io.BytesIO(b"bad"), "text/plain")},
+        )
+        assert response.status_code == 422

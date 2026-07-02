@@ -93,6 +93,21 @@ class MotionAnalyzeImageResponse(BaseModel):
     message: str
 
 
+class MotionAnalyzeVideoResponse(BaseModel):
+    filename: str
+    source_type: str
+    frames: int
+    joints: int
+    fps: float
+    pose_model: str
+    joint_schema: str
+    sampled_frames: int
+    valid_frame_ratio: float
+    confidence_summary: dict | None = None
+    warnings: List[str] = []
+    message: str
+
+
 # --- API Endpoints ---
 
 @app.get("/health")
@@ -299,6 +314,90 @@ async def analyze_motion_image(file: UploadFile = File(...)):
         )
     finally:
         await file.close()
+
+
+@app.post("/motion/analyze-video", response_model=MotionAnalyzeVideoResponse)
+async def analyze_motion_video(file: UploadFile = File(...)):
+    """Extract a bounded multi-frame pose sequence from an uploaded video."""
+    from app.tools.pose_estimator import (
+        MAX_VIDEO_BYTES,
+        SUPPORTED_VIDEO_SUFFIXES,
+        estimate_pose_from_video_path,
+    )
+    from app.tools.types import ErrorCode
+
+    if not file.filename:
+        raise HTTPException(status_code=422, detail="Video filename is required")
+    suffix = os.path.splitext(file.filename)[1].lower()
+    if suffix not in SUPPORTED_VIDEO_SUFFIXES:
+        raise HTTPException(
+            status_code=422,
+            detail="Only .mp4, .mov, and .avi videos are supported",
+        )
+
+    tmp_path = None
+    total_bytes = 0
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_VIDEO_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Video file is too large, max {MAX_VIDEO_BYTES} bytes",
+                    )
+                tmp.write(chunk)
+
+        pose_result = estimate_pose_from_video_path(
+            tmp_path,
+            source_name=file.filename,
+        )
+        if not pose_result.ok:
+            status_code = 503 if pose_result.error_code == ErrorCode.CONFIG_MISSING else 422
+            raise HTTPException(
+                status_code=status_code,
+                detail=pose_result.error_message or "Video pose estimation failed",
+            )
+
+        sequence = pose_result.data
+        metadata = sequence.metadata
+        confidence_summary = None
+        if sequence.confidence is not None:
+            confidence = sequence.confidence.astype(float)
+            confidence_summary = {
+                "mean": round(float(confidence.mean()), 4),
+                "min": round(float(confidence.min()), 4),
+                "max": round(float(confidence.max()), 4),
+            }
+        valid_frame_ratio = float(metadata.get("valid_frame_ratio", 0.0))
+        warnings = [
+            "当前仅验证视频到多帧 PoseSequence，不包含动作周期切分或标准动作评分。"
+        ]
+        if valid_frame_ratio < 0.8:
+            warnings.append("有效姿态帧比例较低，建议使用单人、无遮挡、固定机位视频。")
+
+        return MotionAnalyzeVideoResponse(
+            filename=file.filename,
+            source_type=sequence.source_type,
+            frames=sequence.frames,
+            joints=sequence.joints,
+            fps=round(float(sequence.fps or 0.0), 4),
+            pose_model=sequence.pose_model,
+            joint_schema=sequence.joint_schema,
+            sampled_frames=int(metadata.get("sampled_frames", sequence.frames)),
+            valid_frame_ratio=round(valid_frame_ratio, 4),
+            confidence_summary=confidence_summary,
+            warnings=warnings,
+            message="视频已转换为多帧 PoseSequence。",
+        )
+    finally:
+        await file.close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 @app.post("/chat/stream")

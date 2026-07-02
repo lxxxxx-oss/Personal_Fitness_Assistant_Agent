@@ -18,8 +18,8 @@
 | 姿态归一化与相似度 | 已实现 | `normalize_pose`、FastDTW、cosine similarity、shape difference |
 | PoseSequence 中间格式 | 已实现 | `app/tools/pose_sequence.py`，兼容 `.npz` metadata |
 | 姿态估计适配器 | 已实现 | `app/tools/pose_estimator.py`，MediaPipe 可选依赖 |
-| 图片静态姿态分析 | 已实现 | `/motion/analyze-image`，单帧图片 -> PoseSequence 摘要 |
-| 视频姿态估计 | 未实现 | 计划在图片链路稳定后实现 |
+| 图片静态姿态分析 | 已验证 | `/motion/analyze-image`，已使用真实 MediaPipe 模型完成单帧图片 -> PoseSequence 验收 |
+| 视频姿态估计 | 最小链路已验证 | 短视频上传、OpenCV 抽帧、MediaPipe VIDEO 模式和多帧 PoseSequence 已打通 |
 | 标准动作库 | 未实现 | 计划由标准动作视频离线生成 `.npz` |
 | 动作专项规则 | 未实现 | 计划先从深蹲、硬拉、卧推等高频动作做 |
 | Motion 评测集 | 未实现 | 计划覆盖姿态提取、相似度、低质量媒体降级 |
@@ -133,7 +133,7 @@ metadata
 - 输出静态姿态、关键关节角度、置信度提醒。
 - 明确边界：图片不能判断动作节奏、完整轨迹和发力顺序。
 
-当前状态：已实现图片上传入口，已通过局部测试。
+当前状态：已实现图片上传入口，并已通过真实 MediaPipe 模型与 HTTP 接口验收。
 
 实际做法记录：
 
@@ -152,6 +152,7 @@ metadata
 - 预设目标中提到“关节角度”。本次先完成图片上传、解码、姿态提取和置信度摘要，没有加入具体动作的关节角度规则。原因是关节角度需要按动作类型定义关键关节映射，属于 Step 6“动作专项质量规则”的一部分；当前先保证媒体入口和 PoseSequence 链路稳定。
 - 当前图片接口依赖 MediaPipe 可用性；项目仍没有把 `mediapipe` 写成强依赖，所以未安装时会返回 `503 CONFIG_MISSING` 对应的错误说明。
 - 2026-06-26 手工上传图片时发现本机 `mediapipe==0.10.35` 不再暴露旧版 `mp.solutions` API。已将适配器改为：显式 import `mediapipe.solutions.pose` / `mediapipe.python.solutions.pose`，只有旧版模块可导入时才走旧 API；否则走 MediaPipe Tasks API，避免直接访问 `mp.solutions` 属性。Tasks API 需要本地 `pose_landmarker.task` 模型文件，可通过 `MEDIAPIPE_POSE_MODEL_PATH` 配置，默认路径为 `data/models/pose_landmarker.task`。
+- 2026-07-02 下载 Google 官方 `pose_landmarker_full/float16` 模型到本地忽略目录 `data/models/pose_landmarker.task`，使用官方人体样例图完成真实推理：输出 `PoseSequence(T=1, J=33, C=3)`，平均 visibility 为 `0.9922`；随后通过 `/motion/analyze-image` 完成 HTTP 200 验收。模型文件和测试图片均由 `.gitignore` 排除，不提交到仓库。
 
 ### Step 4：视频动作序列分析
 
@@ -176,15 +177,19 @@ normalize_pose
   -> 动作评价
 ```
 
-当前状态：未实现。
+当前状态：最小链路已实现并通过真实视频上传验收；关键点平滑、缺失帧插值、动作周期切分和标准动作评分尚未实现。
 
 实际做法记录：
 
-- 暂无。
+- 新增 `estimate_pose_from_video_path()`，使用 OpenCV 读取视频，并通过 MediaPipe `VIDEO` 模式按时间戳提取关键点。
+- 默认目标采样率约 10 FPS，最多处理 300 个采样帧；上传限制为 30 MB。
+- 未检测到人体的帧会跳过，输出记录 `sampled_frames`、`valid_frames` 和 `valid_frame_ratio`。
+- 新增 `/motion/analyze-video`，支持 `.mp4`、`.mov`、`.avi`，请求结束后删除临时文件。
+- 使用真实 MediaPipe 模型和短 MP4 完成 HTTP 200 验收，生成 `PoseSequence(T=15, J=33, C=3)`，有效帧率为 100%。
 
 偏差说明：
 
-- 暂无。
+- 本轮只验证媒体到姿态序列，不提前实现平滑、动作周期和标准动作比较；接口会显式返回该边界，避免把姿态提取包装成完整动作评分。
 
 ### Step 5：建设标准动作库
 
@@ -320,8 +325,8 @@ normalize_pose
 
 ## 5. 当前下一步
 
-Step 1、Step 2 和 Step 3 已完成，当前建议进入 Step 4：
+Step 1、Step 2、Step 3 和 Step 4 最小链路已完成，当前建议继续完善 Step 4 并进入 Step 5：
 
-1. 设计短视频上传和抽帧策略。
-2. 将多帧图片序列转换为 `PoseSequence(T=N)`。
-3. 对关键点做基础平滑和缺失帧处理，再接入现有相似度算法。
+1. 对视频关键点做基础平滑和缺失帧处理。
+2. 增加单次深蹲动作周期切分。
+3. 建立与当前 `mediapipe_33` schema 一致的标准动作样本，再接入现有相似度算法。

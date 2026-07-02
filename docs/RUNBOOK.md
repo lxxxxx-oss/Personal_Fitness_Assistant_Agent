@@ -44,7 +44,7 @@ logs/uvicorn.err.log
 pip install -r requirements.txt
 ```
 
-体验 `/motion/analyze-image` 或 Web UI 图片上传时，还要安装 MediaPipe：
+体验 `/motion/analyze-image`、`/motion/analyze-video` 或 Web UI 图片上传时，还要安装 MediaPipe 与 OpenCV：
 
 ```powershell
 pip install -r requirements-motion.txt
@@ -58,7 +58,7 @@ curl.exe -L -o data\models\pose_landmarker.task https://storage.googleapis.com/m
 - 默认模型路径为 `data/models/pose_landmarker.task`。
 - 可通过 `MEDIAPIPE_POSE_MODEL_PATH` 覆盖模型路径。
 - `data/models/` 和 `*.task` 被 `.gitignore` 忽略，两台电脑需要分别准备。
-- 缺少模型文件时，`/motion/analyze-image` 返回 503 和明确的缺失提示。
+- 缺少模型文件时，图片和视频姿态接口返回 503 和明确的缺失提示。
 
 ## 3. 服务检查
 
