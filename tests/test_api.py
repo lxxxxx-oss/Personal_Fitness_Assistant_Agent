@@ -1,5 +1,7 @@
 """FastAPI integration tests."""
+import asyncio
 import io
+import threading
 
 import numpy as np
 import pytest
@@ -152,6 +154,45 @@ class TestChatEndpoint:
         assert '"warnings": []' in response.text
         assert '"execution":' in response.text
         assert calls == {"generate": 0, "generate_stream": 1}
+
+    def test_websocket_forwards_first_token_before_generation_finishes(self):
+        from app.main import _stream_llm_to_websocket
+
+        release_second_token = threading.Event()
+
+        class SlowLLM:
+            def generate_stream(self, prompt):
+                yield "first"
+                release_second_token.wait(timeout=2)
+                yield "second"
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.messages = []
+                self.first_token_sent = asyncio.Event()
+
+            async def send_json(self, message):
+                self.messages.append(message)
+                if message.get("text") == "first":
+                    self.first_token_sent.set()
+
+        async def scenario():
+            websocket = FakeWebSocket()
+            stream_task = asyncio.create_task(
+                _stream_llm_to_websocket(websocket, SlowLLM(), "prompt")
+            )
+            try:
+                await asyncio.wait_for(websocket.first_token_sent.wait(), timeout=1)
+                assert not stream_task.done()
+                assert websocket.messages == [{"type": "token", "text": "first"}]
+                release_second_token.set()
+                reply = await asyncio.wait_for(stream_task, timeout=1)
+            finally:
+                release_second_token.set()
+            assert reply == "firstsecond"
+            assert websocket.messages[-1] == {"type": "token", "text": "second"}
+
+        asyncio.run(scenario())
 
 
 class TestHistoryEndpoint:

@@ -1,10 +1,13 @@
 """FastAPI application entry point — Fitness Assistant API."""
 import logging
-from typing import Dict, List
+from typing import Any, Dict, List
 
+import asyncio
+from contextlib import suppress
 import json
 import os
 import tempfile
+import threading
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,6 +34,58 @@ app.add_middleware(
 
 _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
+
+
+async def _stream_llm_to_websocket(
+    websocket: WebSocket,
+    llm: Any,
+    prompt: str,
+) -> str:
+    """Bridge a synchronous token generator to WebSocket without buffering."""
+    queue: asyncio.Queue = asyncio.Queue()
+    stop_requested = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def publish(kind: str, payload: Any = None) -> None:
+        if loop.is_closed():
+            return
+        with suppress(RuntimeError):
+            asyncio.run_coroutine_threadsafe(queue.put((kind, payload)), loop)
+
+    def produce() -> None:
+        try:
+            for token in llm.generate_stream(prompt):
+                if stop_requested.is_set():
+                    break
+                publish("token", token)
+        except Exception as exc:
+            publish("error", exc)
+        finally:
+            publish("done")
+
+    producer_task = asyncio.create_task(asyncio.to_thread(produce))
+    reply_parts: List[str] = []
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "done":
+                break
+            if kind == "error":
+                if isinstance(payload, BaseException):
+                    raise payload
+                raise RuntimeError(str(payload))
+            token = str(payload)
+            reply_parts.append(token)
+            await websocket.send_json({"type": "token", "text": token})
+    finally:
+        stop_requested.set()
+        if producer_task.done():
+            await producer_task
+        else:
+            producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await producer_task
+    return "".join(reply_parts)
 
 
 class ExecutionTraceItem(BaseModel):
@@ -605,9 +660,8 @@ async def chat_websocket(websocket: WebSocket):
             return
 
         # Step 2: Stream LLM tokens via WebSocket
-        # Run sync generation in a thread to avoid blocking the event loop
-        # (which would cause WebSocket keepalive ping timeouts).
-        import asyncio as aio
+        # Bridge sync generation through an async queue so each token is sent
+        # as soon as it is produced without blocking the event loop.
         from app.llm.loader import LLMLoader
 
         llm = LLMLoader(
@@ -618,11 +672,7 @@ async def chat_websocket(websocket: WebSocket):
             top_p=config.model_top_p,
         )
 
-        tokens = await aio.to_thread(lambda: list(llm.generate_stream(prompt)))
-        full_reply = ""
-        for token in tokens:
-            full_reply += token
-            await websocket.send_json({"type": "token", "text": token})
+        full_reply = await _stream_llm_to_websocket(websocket, llm, prompt)
 
         # Signal completion
         await websocket.send_json({"type": "done"})

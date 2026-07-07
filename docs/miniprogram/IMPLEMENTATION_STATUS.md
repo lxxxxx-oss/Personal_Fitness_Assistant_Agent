@@ -4,13 +4,13 @@
 
 ## 结论
 
-小程序聊天端和 Motion 图片/视频上传闭环已经完成。用户通过统一媒体入口选择相册或相机，图片返回单帧姿态摘要；视频展示本地播放器、上传进度、多帧 PoseSequence 指标和真实执行标签。当前主要缺口是开发者工具/真机端到端联调、真正的 WebSocket 首 token 流式和体验优化。
+小程序聊天端和 Motion 图片/视频上传闭环已经完成。用户通过统一媒体入口选择相册或相机，图片返回单帧姿态摘要；视频展示本地播放器、上传进度、多帧 PoseSequence 指标和真实执行标签。后端 WebSocket 已改为生成一个 token 就发送一个 token。当前主要缺口是微信开发者工具/真机端到端联调和体验优化。
 
 | 模块 | 状态 | 说明 |
 |---|---|---|
 | 项目脚手架 | 已完成 | 原生小程序结构、配置、主题和本地存储 |
 | API 封装 | 已完成 | health、chat、WebSocket、history、clear、Motion 图片/视频上传 |
-| 流式接收 | 已完成 | WebSocket meta/token/done 协议、token 增量更新、HTTP 降级 |
+| 流式接收 | 已完成 | WebSocket meta/token/done、后端真实逐 token 转发、端侧增量更新和 HTTP 降级 |
 | Chat 页面 | 已完成 | 消息列表、意图展示、等待态、错误提示 |
 | 回答元数据 | 已完成 | 展示后端透传的来源 URL 和非致命 warning，空数组时不占界面 |
 | 执行模式可见性 | 已完成 | 展示 LLM、RAG、Search、MCP、Motion 的实际 mode；绿色为真实路径，黄色为 mock/fallback |
