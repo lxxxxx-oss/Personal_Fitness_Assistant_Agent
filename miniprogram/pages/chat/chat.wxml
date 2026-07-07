@@ -34,6 +34,7 @@
         isError="{{item.isError}}"
         sources="{{item.sources}}"
         warnings="{{item.warnings}}"
+        execution="{{item.execution}}"
         timestamp="{{item.timestamp}}"
         msgId="{{item.id}}"
       />

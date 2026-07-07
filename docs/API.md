@@ -75,11 +75,24 @@ Content-Type: application/json
   "intent": "motion",
   "reply": "...",
   "sources": [],
-  "warnings": []
+  "warnings": [],
+  "execution": [
+    {"component": "motion", "mode": "guidance_only", "degraded": true, "detail": "No uploaded pose data was available"},
+    {"component": "llm", "mode": "local_qwen", "degraded": false, "detail": ""}
+  ]
 }
 ```
 
-`sources` 返回执行链路收集并去重后的来源 URL，主要由 Search 子图产生；没有外部来源时为空列表。`warnings` 返回组合执行、工具调用或降级过程中产生的非致命提示，客户端可在不打断主回答的情况下单独展示。逐条 citation 与正文引用关系校验仍是后续项。
+`sources` 返回执行链路收集并去重后的来源 URL，主要由 Search 子图产生；没有外部来源时为空列表。`warnings` 返回组合执行、工具调用或降级过程中产生的非致命提示。`execution` 公开本次请求实际使用的依赖与模式，客户端据此区分真实执行和 mock/fallback；该字段不会包含 Token、服务命令、文件路径或原始异常。逐条 citation 与正文引用关系校验仍是后续项。
+
+`execution` 元素结构：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `component` | string | `llm`、`rag`、`search`、`mcp` 或 `motion` |
+| `mode` | string | 实际模式，例如 `local_qwen`、`milvus`、`memory_fallback`、`tavily`、`mock` |
+| `degraded` | boolean | 是否使用 mock、fallback 或低能力降级路径 |
+| `detail` | string | 对外安全的简短原因，无补充时为空字符串 |
 
 命令：
 
@@ -103,7 +116,7 @@ Accept: text/event-stream
 
 ```text
 event: meta
-data: {"intent":"diet","sources":[],"warnings":[]}
+data: {"intent":"diet","sources":[],"warnings":[],"execution":[{"component":"rag","mode":"milvus","degraded":false,"detail":""},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
 
 data: 减脂
 
@@ -117,7 +130,7 @@ data: {}
 
 | 事件 | 说明 |
 |---|---|
-| `meta` | 首个事件，返回 intent、去重后的 sources 和非致命 warnings |
+| `meta` | 首个事件，返回 intent、sources、warnings 和 execution 执行轨迹 |
 | 默认 `data` | LLM token 文本 |
 | `done` | 生成结束 |
 
@@ -147,7 +160,7 @@ ws://127.0.0.1:8000/chat/ws
 服务端返回：
 
 ```json
-{"type":"meta","intent":"mcp","sources":[],"warnings":[]}
+{"type":"meta","intent":"mcp","sources":[],"warnings":[],"execution":[{"component":"mcp","mode":"mock","degraded":true,"detail":"MCP demo mode configured"},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
 {"type":"token","text":"番茄炒蛋"}
 {"type":"token","text":"..."}
 {"type":"done"}

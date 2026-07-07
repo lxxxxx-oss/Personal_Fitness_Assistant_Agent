@@ -3,7 +3,7 @@ import logging
 
 from langgraph.graph import StateGraph, END
 
-from app.graph.state import RouterState
+from app.graph.state import RouterState, record_execution
 from app.tools.search_tool import TavilySearchTool
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,18 @@ def search_node(state: RouterState) -> RouterState:
     search_results = result.data if result.ok and result.data else []
     state["_search_results"] = search_results  # type: ignore
     state["_search_meta"] = result.meta  # type: ignore
+    is_mock = bool(result.meta.get("is_mock"))
+    record_execution(
+        state,
+        "search",
+        "mock" if is_mock else "tavily",
+        degraded=is_mock or not result.ok,
+        detail=(
+            "Tavily API key not configured; using demo search data"
+            if is_mock
+            else ("Tavily request failed" if not result.ok else "")
+        ),
+    )
     if not result.ok:
         state["_route_execution_warnings"] = state.get(
             "_route_execution_warnings", []

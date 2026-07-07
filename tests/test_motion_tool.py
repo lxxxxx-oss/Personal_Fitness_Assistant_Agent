@@ -72,3 +72,29 @@ class TestSimilarity:
         assert not result.ok
         assert result.error_code == "INTERNAL_ERROR"
         assert "all zeros" in result.error_message.lower() or "all zeros" in result.error_message
+
+
+def test_motion_guidance_without_pose_data_is_visible_as_degraded(monkeypatch, tmp_path):
+    from app.config import config
+    from app.graph.subgraphs.motion import parse_node
+
+    monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+    state = {
+        "user_input": "帮我分析深蹲姿势",
+        "user_id": "u1",
+        "intent": "motion",
+        "memory": [],
+        "result": "",
+        "error": None,
+    }
+
+    result_state = parse_node(state)
+
+    assert result_state["_execution"] == [
+        {
+            "component": "motion",
+            "mode": "guidance_only",
+            "degraded": True,
+            "detail": "No uploaded pose data was available",
+        }
+    ]

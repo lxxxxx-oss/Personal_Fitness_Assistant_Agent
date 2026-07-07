@@ -19,6 +19,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| 执行模式可见性 | [2026-07-07-execution-mode-visibility.md](./2026-07-07-execution-mode-visibility.md) | 三种协议公开真实/mock/fallback 轨迹，小程序显示执行标签，配置解析回归已覆盖 |
 | 小程序回答元数据 | [2026-07-02-miniprogram-result-contract.md](./2026-07-02-miniprogram-result-contract.md) | sources/warnings 在 HTTP、SSE、WebSocket 与小程序消息卡片间完成闭环 |
 | 全端点冒烟 | [2026-06-10-level-1-smoke-test.md](./2026-06-10-level-1-smoke-test.md) | 早期全端点冒烟，记录 Motion 和 SSE 初期问题 |
 | 核心链路 | [2026-06-10-level-2-core-link.md](./2026-06-10-level-2-core-link.md) | 路由、SSE、WebSocket 核心链路验证 |

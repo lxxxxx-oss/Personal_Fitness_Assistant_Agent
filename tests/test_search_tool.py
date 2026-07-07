@@ -36,3 +36,32 @@ class TestTavilySearchTool:
         result = tool.search("fitness", max_results=999)
         assert not result.ok
         assert result.error_code == "INVALID_PARAM"
+
+    def test_search_subgraph_records_mock_execution(self, monkeypatch):
+        from app.graph.subgraphs import search as search_subgraph
+
+        monkeypatch.setattr(
+            search_subgraph,
+            "_search_tool",
+            TavilySearchTool(api_key=""),
+        )
+        state = {
+            "user_input": "最新深蹲研究",
+            "user_id": "u1",
+            "intent": "search",
+            "memory": [],
+            "result": "",
+            "error": None,
+            "_search_query": "深蹲 研究",
+        }
+
+        result_state = search_subgraph.search_node(state)
+
+        assert result_state["_execution"] == [
+            {
+                "component": "search",
+                "mode": "mock",
+                "degraded": True,
+                "detail": "Tavily API key not configured; using demo search data",
+            }
+        ]

@@ -83,6 +83,32 @@
   color: #64748b;
 }
 
+.execution-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8rpx;
+  margin-top: 10rpx;
+}
+
+.execution-chip {
+  padding: 4rpx 12rpx;
+  border-radius: 999rpx;
+  font-size: 20rpx;
+  border: 1px solid;
+}
+
+.execution-chip.real {
+  color: #86efac;
+  border-color: #166534;
+  background: #052e16;
+}
+
+.execution-chip.degraded {
+  color: #fcd34d;
+  border-color: #92400e;
+  background: #451a03;
+}
+
 .metadata-card {
   margin-top: 12rpx;
   padding: 16rpx 20rpx;

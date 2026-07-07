@@ -97,13 +97,14 @@ Page({
     var intent = '';
     var sources = [];
     var warnings = [];
+    var execution = [];
     var self = this;
 
     function updateUI() {
       fullContent += pendingContent;
       pendingContent = '';
       throttleTimer = null;
-      self._updateMessage(assistantId, fullContent, intent, true, false, sources, warnings);
+      self._updateMessage(assistantId, fullContent, intent, true, false, sources, warnings, execution);
     }
 
     this.socketTask = api.wsChat(this.userId, msg, {
@@ -111,8 +112,9 @@ Page({
         intent = meta.intent || 'chat';
         sources = meta.sources || [];
         warnings = meta.warnings || [];
+        execution = meta.execution || [];
         self.setData({ currentIntent: intent });
-        self._updateMessage(assistantId, fullContent, intent, true, false, sources, warnings);
+        self._updateMessage(assistantId, fullContent, intent, true, false, sources, warnings, execution);
       },
 
       onToken: function (token) {
@@ -129,7 +131,7 @@ Page({
         }
         // Final cleanup: strip any remaining think tags
         var cleaned = fullContent.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-        self._updateMessage(assistantId, cleaned, intent, false, false, sources, warnings);
+        self._updateMessage(assistantId, cleaned, intent, false, false, sources, warnings, execution);
         self.setData({ isSending: false });
         self.socketTask = null;
         self._scrollToBottom();
@@ -150,7 +152,8 @@ Page({
             false,
             true,
             sources,
-            warnings
+            warnings,
+            execution
           );
           self.setData({ isSending: false, showRetry: true });
         } else {
@@ -180,7 +183,8 @@ Page({
         false,
         false,
         result.sources || [],
-        result.warnings || []
+        result.warnings || [],
+        result.execution || []
       );
       self.setData({ currentIntent: result.intent });
     }).catch(function (err) {
@@ -201,11 +205,12 @@ Page({
     this.setData({ showRetry: false });
   },
 
-  _addMessage: function (role, content, intent, isStreaming, sources, warnings) {
+  _addMessage: function (role, content, intent, isStreaming, sources, warnings, execution) {
     intent = intent || '';
     isStreaming = isStreaming || false;
     sources = sources || [];
     warnings = warnings || [];
+    execution = execution || [];
     var id = 'msg_' + (this.msgCounter++);
     var msg = {
       id: id,
@@ -216,6 +221,7 @@ Page({
       isError: false,
       sources: sources,
       warnings: warnings,
+      execution: execution,
       timestamp: Date.now(),
     };
     var messages = this.data.messages.concat([msg]);
@@ -226,7 +232,7 @@ Page({
     return id;
   },
 
-  _updateMessage: function (id, content, intent, isStreaming, isError, sources, warnings) {
+  _updateMessage: function (id, content, intent, isStreaming, isError, sources, warnings, execution) {
     intent = intent || '';
     isStreaming = isStreaming || false;
     isError = isError || false;
@@ -241,6 +247,7 @@ Page({
           isError: isError,
           sources: sources || m.sources || [],
           warnings: warnings || m.warnings || [],
+          execution: execution || m.execution || [],
           timestamp: Date.now(),
         };
       }

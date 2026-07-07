@@ -3,7 +3,7 @@ import logging
 
 from langgraph.graph import StateGraph, END
 
-from app.graph.state import RouterState
+from app.graph.state import RouterState, record_execution
 from app.tools.retriever import get_shared_retriever
 
 logger = logging.getLogger(__name__)
@@ -15,6 +15,29 @@ def retrieve_node(state: RouterState) -> RouterState:
     result = retriever.search(state["user_input"], top_k=5, threshold=0.3)
     state["_retrieved"] = result.data if result.ok else []  # type: ignore
     state["_retrieval_meta"] = result.meta  # type: ignore
+    backend = str(result.meta.get("backend") or "memory")
+    retrieval_mode = str(result.meta.get("mode") or "")
+    fallback_from = result.meta.get("fallback_from")
+    public_mode = (
+        "memory_fallback"
+        if fallback_from
+        else (f"memory_{retrieval_mode}" if backend == "memory" and retrieval_mode else backend)
+    )
+    record_execution(
+        state,
+        "rag",
+        public_mode,
+        degraded=bool(fallback_from) or retrieval_mode == "keyword" or not result.ok,
+        detail=(
+            "Milvus unavailable; using in-memory retrieval"
+            if fallback_from
+            else (
+                "Embedding model unavailable; using keyword matching"
+                if retrieval_mode == "keyword"
+                else ("Retrieval failed" if not result.ok else "")
+            )
+        ),
+    )
     logger.info(f"Retrieved {len(result.data)} chunks for: {state['user_input'][:50]}")
     return state
 

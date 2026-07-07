@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-07 | [黄金演示闭环阶段 1：执行模式可见性](./2026-07-07-execution-mode-visibility.md) | 对话公开真实/mock/fallback 执行轨迹，小程序展示模式标签，并修复环境变量解析 |
 | 2026-07-02 | [小程序阶段 1：回答元数据闭环](./2026-07-02-miniprogram-result-contract.md) | 三种对话协议统一透传 sources/warnings，小程序增加来源与运行提示卡片 |
 | 2026-07-01/02 | [Milvus RAG 接入与验证记录](./2026-07-01-milvus-rag-wip.md) | Retriever、索引、内存降级和 Compose 已加入；SDK 与容器健康已确认，真实 CRUD 冒烟仍待完成 |
 | 2026-06-30 | [Interview 简历口径修正](./2026-06-30-interview-resume-alignment-fix.md) | 移除默认看代码假设，按简历主线重写 P0/P1/P2 面试材料 |
@@ -22,7 +23,6 @@
 | 2026-06-30 | [MCP 菜谱退出核心架构（已被后续口径取代）](./2026-06-30-mcp-core-scope-reduction-decision.md) | 保留当时的范围收敛记录；当前路线继续保留 MCP 工具适配层 |
 | 2026-06-30 | [面试学习材料重组](./2026-06-30-interview-study-material-reorganization.md) | `interview/` 收敛为 P0/P1/P2 分级材料 |
 | 2026-06-30 | [面试与运行边界](./2026-06-30-interview-runtime-boundary.md) | 明确已实现、当前边界和后续规划的表达原则 |
-| 2026-06-30 | [面试准备审查](./2026-06-30-interview-preparation-audit.md) | 面试资料事实审查和优化清单 |
 
 ## 维护方式
 

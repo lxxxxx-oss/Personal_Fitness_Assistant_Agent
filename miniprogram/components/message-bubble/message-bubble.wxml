@@ -16,6 +16,14 @@
     </text>
   </view>
 
+  <view class="execution-row" wx:if="{{role === 'assistant' && execution.length}}">
+    <text
+      class="execution-chip {{item.degraded ? 'degraded' : 'real'}}"
+      wx:for="{{execution}}"
+      wx:key="component"
+    >{{item.component}} · {{item.mode}}</text>
+  </view>
+
   <view class="metadata-card warning-card" wx:if="{{role === 'assistant' && warnings.length}}">
     <view class="metadata-title">⚠️ 运行提示</view>
     <text class="metadata-item" wx:for="{{warnings}}" wx:key="*this" selectable>{{item}}</text>

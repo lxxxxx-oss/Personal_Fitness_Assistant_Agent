@@ -31,6 +31,8 @@ class TestChatEndpoint:
         assert len(data["reply"]) > 0
         assert isinstance(data["sources"], list)
         assert isinstance(data["warnings"], list)
+        assert isinstance(data["execution"], list)
+        assert any(item["component"] == "llm" for item in data["execution"])
 
     def test_chat_returns_deduplicated_sources_and_warnings(self, monkeypatch):
         import app.main as main_module
@@ -42,6 +44,14 @@ class TestChatEndpoint:
                     "result": "grounded answer",
                     "_sources": ["https://example.com/a", "https://example.com/a"],
                     "_route_execution_warnings": ["search_degraded", "search_degraded"],
+                    "_execution": [
+                        {
+                            "component": "search",
+                            "mode": "mock",
+                            "degraded": True,
+                            "detail": "demo data",
+                        }
+                    ],
                 }
 
         monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
@@ -53,6 +63,12 @@ class TestChatEndpoint:
         assert response.status_code == 200
         assert response.json()["sources"] == ["https://example.com/a"]
         assert response.json()["warnings"] == ["search_degraded"]
+        assert response.json()["execution"][0] == {
+            "component": "search",
+            "mode": "mock",
+            "degraded": True,
+            "detail": "demo data",
+        }
 
     def test_websocket_meta_returns_sources_and_warnings(self, monkeypatch):
         import app.main as main_module
@@ -64,6 +80,9 @@ class TestChatEndpoint:
                     "result": "fallback answer",
                     "_sources": ["https://example.com/ws"],
                     "_route_execution_warnings": ["partial_route_failure:diet"],
+                    "_execution": [
+                        {"component": "search", "mode": "tavily", "degraded": False}
+                    ],
                 }
 
         monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
@@ -75,6 +94,20 @@ class TestChatEndpoint:
                 "intent": "search",
                 "sources": ["https://example.com/ws"],
                 "warnings": ["partial_route_failure:diet"],
+                "execution": [
+                    {
+                        "component": "search",
+                        "mode": "tavily",
+                        "degraded": False,
+                        "detail": "",
+                    },
+                    {
+                        "component": "llm",
+                        "mode": "local_qwen",
+                        "degraded": False,
+                        "detail": "",
+                    },
+                ],
             }
             assert websocket.receive_json()["type"] == "token"
             assert websocket.receive_json()["type"] == "done"
@@ -117,6 +150,7 @@ class TestChatEndpoint:
         assert "streamed" in response.text
         assert '"sources": []' in response.text
         assert '"warnings": []' in response.text
+        assert '"execution":' in response.text
         assert calls == {"generate": 0, "generate_stream": 1}
 
 

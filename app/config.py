@@ -19,16 +19,16 @@ def _get_float_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value == "":
         return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 def _get_bool_env(name: str, default: bool) -> bool:
     """Read a boolean environment variable with a safe fallback."""
     value = os.getenv(name)
     if value is None or value == "":
-        return default
-    try:
-        return float(value)
-    except ValueError:
         return default
     normalized = value.strip().lower()
     if normalized in {"1", "true", "yes", "on"}:

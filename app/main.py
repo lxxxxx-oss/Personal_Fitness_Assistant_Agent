@@ -33,7 +33,16 @@ _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
 
 
-def _result_metadata(result_state: RouterState) -> tuple[List[str], List[str]]:
+class ExecutionTraceItem(BaseModel):
+    component: str
+    mode: str
+    degraded: bool = False
+    detail: str = ""
+
+
+def _result_metadata(
+    result_state: RouterState,
+) -> tuple[List[str], List[str], List[Dict]]:
     """Return stable, deduplicated client metadata from graph state."""
     sources = list(dict.fromkeys(
         str(item) for item in result_state.get("_sources", []) if item
@@ -43,7 +52,25 @@ def _result_metadata(result_state: RouterState) -> tuple[List[str], List[str]]:
         for item in result_state.get("_route_execution_warnings", [])
         if item
     ))
-    return sources, warnings
+    execution = []
+    for raw_item in result_state.get("_execution", []):
+        item = {
+            "component": str(raw_item.get("component", "unknown")),
+            "mode": str(raw_item.get("mode", "unknown")),
+            "degraded": bool(raw_item.get("degraded", False)),
+            "detail": str(raw_item.get("detail", "")),
+        }
+        if item not in execution:
+            execution.append(item)
+    llm_item = {
+        "component": "llm",
+        "mode": "mock" if config.llm_mock else "local_qwen",
+        "degraded": bool(config.llm_mock),
+        "detail": "LLM demo mode configured" if config.llm_mock else "",
+    }
+    if llm_item not in execution:
+        execution.append(llm_item)
+    return sources, warnings, execution
 
 
 def _get_router_graph():
@@ -74,6 +101,7 @@ class ChatResponse(BaseModel):
     reply: str
     sources: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    execution: List[ExecutionTraceItem] = Field(default_factory=list)
 
 
 class HistoryResponse(BaseModel):
@@ -149,7 +177,7 @@ async def chat(request: ChatRequest):
 
         reply = result_state.get("result", "")
         intent = result_state.get("intent", "chat")
-        sources, warnings = _result_metadata(result_state)
+        sources, warnings, execution = _result_metadata(result_state)
 
         memory.add_turn(request.message, reply)
 
@@ -159,6 +187,7 @@ async def chat(request: ChatRequest):
             reply=reply,
             sources=sources,
             warnings=warnings,
+            execution=execution,
         )
     except Exception as e:
         logger.exception(f"Error processing chat: {e}")
@@ -438,10 +467,15 @@ async def chat_stream(request: ChatRequest):
         result_state = graph.invoke(state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
-        sources, warnings = _result_metadata(result_state)
+        sources, warnings, execution = _result_metadata(result_state)
 
         # Send metadata first
-        meta = {"intent": intent, "sources": sources, "warnings": warnings}
+        meta = {
+            "intent": intent,
+            "sources": sources,
+            "warnings": warnings,
+            "execution": execution,
+        }
         yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
         if not prompt:
@@ -532,7 +566,7 @@ async def chat_websocket(websocket: WebSocket):
         result_state = graph.invoke(state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
-        sources, warnings = _result_metadata(result_state)
+        sources, warnings, execution = _result_metadata(result_state)
 
         # Send metadata
         await websocket.send_json({
@@ -540,6 +574,7 @@ async def chat_websocket(websocket: WebSocket):
             "intent": intent,
             "sources": sources,
             "warnings": warnings,
+            "execution": execution,
         })
 
         if not prompt:

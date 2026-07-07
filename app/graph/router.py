@@ -1070,6 +1070,7 @@ def intent_classify_node(state: RouterState) -> RouterState:
     state["_active_intent"] = execution_plan[0]
     state["_route_results"] = []
     state["_route_execution_warnings"] = warnings
+    state["_execution"] = []
     logger.info(
         "Intent: %s confidence=%.2f source=%s input=%s",
         decision["intent"],

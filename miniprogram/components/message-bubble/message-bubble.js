@@ -38,6 +38,10 @@ Component({
       type: Array,
       value: [],
     },
+    execution: {
+      type: Array,
+      value: [],
+    },
     msgId: {
       type: String,
       value: '',
