@@ -414,9 +414,14 @@ Content-Type: multipart/form-data
   "warnings": [
     "当前仅验证视频到多帧 PoseSequence，不包含动作周期切分或标准动作评分。"
   ],
+  "execution": [
+    {"component": "motion", "mode": "mediapipe_video", "degraded": false, "detail": ""}
+  ],
   "message": "视频已转换为多帧 PoseSequence。"
 }
 ```
+
+`execution` 表示结果来自 MediaPipe VIDEO 模式的真实多帧姿态提取；接口没有 mock 视频分析。`frames` 是检测到姿态的有效帧数，`sampled_frames` 是实际送入姿态估计的抽样帧数，二者不能混为一谈。
 
 错误：
 

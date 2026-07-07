@@ -67,19 +67,15 @@ function chat(userId, message) {
   return _post('/chat', { user_id: userId, message: message }, 120000);
 }
 
-/**
- * 上传动作图片并提取单帧姿态 — POST /motion/analyze-image.
- * 文件仅在用户主动选择后上传，成功返回结构化姿态摘要。
- */
-function analyzeMotionImage(filePath) {
+function _uploadMotionFile(path, filePath, label, onProgress) {
   var baseUrl = getApiBaseFn();
   return new Promise(function (resolve, reject) {
     if (!filePath) {
-      reject(new Error('请选择需要分析的图片'));
+      reject(new Error('请选择需要分析的' + label));
       return;
     }
-    wx.uploadFile({
-      url: baseUrl + '/motion/analyze-image',
+    var uploadTask = wx.uploadFile({
+      url: baseUrl + path,
       filePath: filePath,
       name: 'file',
       timeout: API_CONFIG.timeout,
@@ -88,21 +84,36 @@ function analyzeMotionImage(filePath) {
         try {
           data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
         } catch (e) {
-          reject(new Error('服务端返回了无法解析的图片分析结果'));
+          reject(new Error('服务端返回了无法解析的' + label + '分析结果'));
           return;
         }
         if (res.statusCode === 200) {
           resolve(data);
           return;
         }
-        var detail = data && data.detail ? data.detail : '图片分析失败';
+        var detail = data && data.detail ? data.detail : label + '分析失败';
         reject(new Error('HTTP ' + res.statusCode + ': ' + detail));
       },
       fail: function (err) {
-        reject(new Error('图片上传失败: ' + (err.errMsg || 'Unknown')));
+        reject(new Error(label + '上传失败: ' + (err.errMsg || 'Unknown')));
       },
     });
+    if (onProgress && uploadTask.onProgressUpdate) {
+      uploadTask.onProgressUpdate(function (progress) {
+        onProgress(progress.progress || 0);
+      });
+    }
   });
+}
+
+/** 上传动作图片并提取单帧姿态 — POST /motion/analyze-image. */
+function analyzeMotionImage(filePath) {
+  return _uploadMotionFile('/motion/analyze-image', filePath, '图片');
+}
+
+/** 上传动作视频并提取多帧姿态 — POST /motion/analyze-video. */
+function analyzeMotionVideo(filePath, onProgress) {
+  return _uploadMotionFile('/motion/analyze-video', filePath, '视频', onProgress);
 }
 
 /**
@@ -230,6 +241,7 @@ module.exports = {
   healthCheck: healthCheck,
   chat: chat,
   analyzeMotionImage: analyzeMotionImage,
+  analyzeMotionVideo: analyzeMotionVideo,
   wsChat: wsChat,
   getHistory: getHistory,
   clearHistory: clearHistory,

@@ -68,6 +68,14 @@
   background: #0f172a;
 }
 
+.motion-video {
+  width: 480rpx;
+  height: 300rpx;
+  margin-bottom: 8rpx;
+  border-radius: 16rpx;
+  background: #020617;
+}
+
 /* 内容 */
 .content {
   white-space: pre-wrap;

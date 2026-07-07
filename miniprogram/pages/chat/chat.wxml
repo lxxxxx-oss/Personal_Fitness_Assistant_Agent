@@ -36,6 +36,7 @@
         warnings="{{item.warnings}}"
         execution="{{item.execution}}"
         imagePath="{{item.imagePath}}"
+        videoPath="{{item.videoPath}}"
         timestamp="{{item.timestamp}}"
         msgId="{{item.id}}"
       />
@@ -47,10 +48,10 @@
   <view class="input-bar safe-area-bottom">
     <button
       class="media-btn"
-      bindtap="chooseMotionImage"
+      bindtap="chooseMotionMedia"
       disabled="{{isSending}}"
-      aria-label="上传动作图片"
-    >{{isUploading ? '…' : '📷'}}</button>
+      aria-label="上传动作图片或视频"
+    >{{isUploading ? '…' : '📎'}}</button>
     <input
       class="msg-input"
       type="text"

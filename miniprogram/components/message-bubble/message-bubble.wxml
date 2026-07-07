@@ -16,6 +16,14 @@
     mode="widthFix"
     bindtap="previewImage"
   />
+  <video
+    class="motion-video"
+    wx:if="{{videoPath}}"
+    src="{{videoPath}}"
+    controls
+    show-center-play-btn
+    object-fit="contain"
+  />
   <view class="bubble {{role}} {{isError ? 'error-bubble' : ''}}">
     <text class="content" wx:if="{{!isStreaming}}" selectable>{{displayContent}}</text>
     <text class="content streaming" wx:else>

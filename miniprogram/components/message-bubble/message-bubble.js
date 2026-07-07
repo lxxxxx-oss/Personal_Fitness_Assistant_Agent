@@ -46,6 +46,10 @@ Component({
       type: String,
       value: '',
     },
+    videoPath: {
+      type: String,
+      value: '',
+    },
     msgId: {
       type: String,
       value: '',

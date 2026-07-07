@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-07 | [黄金演示闭环阶段 3：小程序 Motion 视频上传](./2026-07-07-miniprogram-motion-video-upload.md) | 视频选择、30MB 校验、上传进度、本地播放、多帧姿态摘要和真实执行标签闭环 |
 | 2026-07-07 | [黄金演示闭环阶段 2：小程序 Motion 图片上传](./2026-07-07-miniprogram-motion-image-upload.md) | 小程序完成图片选择、预览、上传、MediaPipe 静态姿态摘要和真实执行标签闭环 |
 | 2026-07-07 | [黄金演示闭环阶段 1：执行模式可见性](./2026-07-07-execution-mode-visibility.md) | 对话公开真实/mock/fallback 执行轨迹，小程序展示模式标签，并修复环境变量解析 |
 | 2026-07-02 | [小程序阶段 1：回答元数据闭环](./2026-07-02-miniprogram-result-contract.md) | 三种对话协议统一透传 sources/warnings，小程序增加来源与运行提示卡片 |
@@ -22,7 +23,6 @@
 | 2026-06-30 | [面试回答风格再梳理](./2026-06-30-interview-answer-style-refinement.md) | 从标准答案改为项目思路、技术取舍、问题解决和边界说明 |
 | 2026-06-30 | [Router Phase 4 实施](./2026-06-30-router-phase4-implementation.md) | 多意图识别、白名单组合执行、错误隔离和结果合成 |
 | 2026-06-30 | [MCP 菜谱退出核心架构（已被后续口径取代）](./2026-06-30-mcp-core-scope-reduction-decision.md) | 保留当时的范围收敛记录；当前路线继续保留 MCP 工具适配层 |
-| 2026-06-30 | [面试学习材料重组](./2026-06-30-interview-study-material-reorganization.md) | `interview/` 收敛为 P0/P1/P2 分级材料 |
 
 ## 维护方式
 

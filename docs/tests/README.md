@@ -19,6 +19,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| 小程序 Motion 视频上传 | [2026-07-07-miniprogram-motion-video-upload.md](./2026-07-07-miniprogram-motion-video-upload.md) | 视频选择、30MB 校验、上传进度、本地播放和多帧姿态摘要已接通 |
 | 小程序 Motion 图片上传 | [2026-07-07-miniprogram-motion-image-upload.md](./2026-07-07-miniprogram-motion-image-upload.md) | 图片选择、10MB 校验、上传、预览、静态姿态摘要与真实执行标签已接通 |
 | 执行模式可见性 | [2026-07-07-execution-mode-visibility.md](./2026-07-07-execution-mode-visibility.md) | 三种协议公开真实/mock/fallback 轨迹，小程序显示执行标签，配置解析回归已覆盖 |
 | 小程序回答元数据 | [2026-07-02-miniprogram-result-contract.md](./2026-07-02-miniprogram-result-contract.md) | sources/warnings 在 HTTP、SSE、WebSocket 与小程序消息卡片间完成闭环 |

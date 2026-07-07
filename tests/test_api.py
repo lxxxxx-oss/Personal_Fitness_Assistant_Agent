@@ -294,6 +294,14 @@ class TestMotionAnalyzeVideoEndpoint:
         assert data["sampled_frames"] == 15
         assert data["valid_frame_ratio"] == 0.8
         assert data["confidence_summary"]["mean"] == 0.9
+        assert data["execution"] == [
+            {
+                "component": "motion",
+                "mode": "mediapipe_video",
+                "degraded": False,
+                "detail": "",
+            }
+        ]
 
     def test_motion_analyze_video_rejects_unsupported_suffix(self):
         response = client.post(

@@ -39,7 +39,7 @@ Page({
       '🏃 动作分析 — "分析深蹲姿势"\n' +
       '🍳 菜谱查询 — "怎么做番茄炒蛋？"\n' +
       '🔍 联网搜索 — "搜索最新健身资讯"\n\n' +
-      '也可以点击输入框左侧的 📷，上传一张动作图片进行静态姿态提取。\n\n' +
+      '也可以点击输入框左侧的 📎，上传动作图片或视频进行姿态提取。\n\n' +
       '系统会自动识别你的意图并路由到对应的专业模块处理。',
       'chat'
     );
@@ -88,6 +88,18 @@ Page({
     }
   },
 
+  chooseMotionMedia: function () {
+    if (this.data.isSending) return;
+    var self = this;
+    wx.showActionSheet({
+      itemList: ['上传动作图片', '上传动作视频'],
+      success: function (res) {
+        if (res.tapIndex === 0) self.chooseMotionImage();
+        if (res.tapIndex === 1) self.chooseMotionVideo();
+      },
+    });
+  },
+
   chooseMotionImage: function () {
     if (this.data.isSending) return;
     var self = this;
@@ -131,6 +143,54 @@ Page({
       fail: function (err) {
         if (!(err.errMsg || '').includes('cancel')) {
           wx.showToast({ title: '无法选择图片', icon: 'none' });
+        }
+      },
+    });
+  },
+
+  chooseMotionVideo: function () {
+    if (this.data.isSending) return;
+    var self = this;
+
+    function handleSelected(filePath, size) {
+      if (!filePath) return;
+      if (size && size > CONST.MAX_MOTION_VIDEO_BYTES) {
+        wx.showToast({ title: '视频不能超过 30MB', icon: 'none' });
+        return;
+      }
+      self._uploadMotionVideo(filePath);
+    }
+
+    if (wx.chooseMedia) {
+      wx.chooseMedia({
+        count: 1,
+        mediaType: ['video'],
+        sourceType: ['album', 'camera'],
+        maxDuration: 60,
+        sizeType: ['compressed'],
+        success: function (res) {
+          var file = res.tempFiles && res.tempFiles[0];
+          if (file) handleSelected(file.tempFilePath, file.size);
+        },
+        fail: function (err) {
+          if (!(err.errMsg || '').includes('cancel')) {
+            wx.showToast({ title: '无法选择视频', icon: 'none' });
+          }
+        },
+      });
+      return;
+    }
+
+    wx.chooseVideo({
+      sourceType: ['album', 'camera'],
+      compressed: true,
+      maxDuration: 60,
+      success: function (res) {
+        handleSelected(res.tempFilePath, res.size);
+      },
+      fail: function (err) {
+        if (!(err.errMsg || '').includes('cancel')) {
+          wx.showToast({ title: '无法选择视频', icon: 'none' });
         }
       },
     });
@@ -187,6 +247,78 @@ Page({
       self._updateMessage(
         assistantId,
         '❌ 图片分析失败：' + err.message + '\n请确认后端已安装 Motion 依赖并准备姿态模型。',
+        'motion',
+        false,
+        true
+      );
+    }).finally(function () {
+      self.setData({ isSending: false, isUploading: false });
+      self._scrollToBottom();
+    });
+  },
+
+  _uploadMotionVideo: function (filePath) {
+    var filename = filePath.split('/').pop() || '动作视频';
+    this.setData({
+      isSending: true,
+      isUploading: true,
+      currentIntent: 'motion',
+      showRetry: false,
+    });
+    this._addMessage(
+      'user',
+      '请提取这段动作视频的姿态序列：' + filename,
+      'motion',
+      false,
+      [],
+      [],
+      [],
+      '',
+      filePath
+    );
+    var assistantId = this._addMessage('assistant', '正在上传视频（0%）...', 'motion', true);
+    var self = this;
+
+    api.analyzeMotionVideo(filePath, function (progress) {
+      var status = progress >= 100
+        ? '视频上传完成，正在提取多帧姿态...'
+        : '正在上传视频（' + progress + '%）...';
+      self._updateMessage(assistantId, status, 'motion', true, false);
+    }).then(function (result) {
+      var confidence = result.confidence_summary || {};
+      var meanConfidence = typeof confidence.mean === 'number'
+        ? Math.round(confidence.mean * 100) + '%'
+        : '未提供';
+      var validRatio = typeof result.valid_frame_ratio === 'number'
+        ? Math.round(result.valid_frame_ratio * 100) + '%'
+        : '未提供';
+      var content = [
+        '视频姿态序列提取完成',
+        '',
+        '有效姿态帧：' + result.frames,
+        '抽样帧：' + result.sampled_frames,
+        '有效帧比例：' + validRatio,
+        '视频 FPS：' + result.fps,
+        '每帧关键点：' + result.joints,
+        '姿态模型：' + result.pose_model,
+        '平均置信度：' + meanConfidence,
+        '',
+        result.message,
+      ].join('\n');
+      self._updateMessage(
+        assistantId,
+        content,
+        'motion',
+        false,
+        false,
+        [],
+        result.warnings || [],
+        result.execution || []
+      );
+    }).catch(function (err) {
+      self._updateMessage(
+        assistantId,
+        '❌ 视频分析失败：' + err.message + '\n请使用 30MB 以内的 MP4、MOV 或 AVI 单人动作视频。',
         'motion',
         false,
         true
@@ -316,13 +448,14 @@ Page({
     this.setData({ showRetry: false });
   },
 
-  _addMessage: function (role, content, intent, isStreaming, sources, warnings, execution, imagePath) {
+  _addMessage: function (role, content, intent, isStreaming, sources, warnings, execution, imagePath, videoPath) {
     intent = intent || '';
     isStreaming = isStreaming || false;
     sources = sources || [];
     warnings = warnings || [];
     execution = execution || [];
     imagePath = imagePath || '';
+    videoPath = videoPath || '';
     var id = 'msg_' + (this.msgCounter++);
     var msg = {
       id: id,
@@ -335,6 +468,7 @@ Page({
       warnings: warnings,
       execution: execution,
       imagePath: imagePath,
+      videoPath: videoPath,
       timestamp: Date.now(),
     };
     var messages = this.data.messages.concat([msg]);
@@ -362,6 +496,7 @@ Page({
           warnings: warnings || m.warnings || [],
           execution: execution || m.execution || [],
           imagePath: m.imagePath || '',
+          videoPath: m.videoPath || '',
           timestamp: Date.now(),
         };
       }

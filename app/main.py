@@ -148,6 +148,7 @@ class MotionAnalyzeVideoResponse(BaseModel):
     valid_frame_ratio: float
     confidence_summary: dict | None = None
     warnings: List[str] = Field(default_factory=list)
+    execution: List[ExecutionTraceItem] = Field(default_factory=list)
     message: str
 
 
@@ -447,6 +448,14 @@ async def analyze_motion_video(file: UploadFile = File(...)):
             valid_frame_ratio=round(valid_frame_ratio, 4),
             confidence_summary=confidence_summary,
             warnings=warnings,
+            execution=[
+                ExecutionTraceItem(
+                    component="motion",
+                    mode="mediapipe_video",
+                    degraded=False,
+                    detail="",
+                )
+            ],
             message="视频已转换为多帧 PoseSequence。",
         )
     finally:
