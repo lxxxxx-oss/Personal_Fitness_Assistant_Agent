@@ -68,6 +68,44 @@ function chat(userId, message) {
 }
 
 /**
+ * 上传动作图片并提取单帧姿态 — POST /motion/analyze-image.
+ * 文件仅在用户主动选择后上传，成功返回结构化姿态摘要。
+ */
+function analyzeMotionImage(filePath) {
+  var baseUrl = getApiBaseFn();
+  return new Promise(function (resolve, reject) {
+    if (!filePath) {
+      reject(new Error('请选择需要分析的图片'));
+      return;
+    }
+    wx.uploadFile({
+      url: baseUrl + '/motion/analyze-image',
+      filePath: filePath,
+      name: 'file',
+      timeout: API_CONFIG.timeout,
+      success: function (res) {
+        var data;
+        try {
+          data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+        } catch (e) {
+          reject(new Error('服务端返回了无法解析的图片分析结果'));
+          return;
+        }
+        if (res.statusCode === 200) {
+          resolve(data);
+          return;
+        }
+        var detail = data && data.detail ? data.detail : '图片分析失败';
+        reject(new Error('HTTP ' + res.statusCode + ': ' + detail));
+      },
+      fail: function (err) {
+        reject(new Error('图片上传失败: ' + (err.errMsg || 'Unknown')));
+      },
+    });
+  });
+}
+
+/**
  * WebSocket 流式对话 — ws://host/chat/ws.
  *
  * 协议:
@@ -191,6 +229,7 @@ function clearHistory(userId) {
 module.exports = {
   healthCheck: healthCheck,
   chat: chat,
+  analyzeMotionImage: analyzeMotionImage,
   wsChat: wsChat,
   getHistory: getHistory,
   clearHistory: clearHistory,

@@ -131,7 +131,8 @@ class MotionAnalyzeImageResponse(BaseModel):
     pose_model: str
     joint_schema: str
     confidence_summary: dict | None = None
-    warnings: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    execution: List[ExecutionTraceItem] = Field(default_factory=list)
     message: str
 
 
@@ -146,7 +147,7 @@ class MotionAnalyzeVideoResponse(BaseModel):
     sampled_frames: int
     valid_frame_ratio: float
     confidence_summary: dict | None = None
-    warnings: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
     message: str
 
 
@@ -353,6 +354,14 @@ async def analyze_motion_image(file: UploadFile = File(...)):
             joint_schema=sequence.joint_schema,
             confidence_summary=confidence_summary,
             warnings=warnings,
+            execution=[
+                ExecutionTraceItem(
+                    component="motion",
+                    mode="mediapipe_image",
+                    degraded=False,
+                    detail="",
+                )
+            ],
             message=(
                 "图片姿态已提取为 PoseSequence。当前返回静态姿态摘要；"
                 "完整动作标准性判断需要视频序列或标准动作库对比。"

@@ -31,6 +31,7 @@ const STREAM_THROTTLE_MS = 50;
 
 // 消息列表最大渲染条数
 const MAX_VISIBLE_MESSAGES = 100;
+const MAX_MOTION_IMAGE_BYTES = 10 * 1024 * 1024;
 
 module.exports = {
   INTENT_MAP,
@@ -38,4 +39,5 @@ module.exports = {
   API_CONFIG,
   STREAM_THROTTLE_MS,
   MAX_VISIBLE_MESSAGES,
+  MAX_MOTION_IMAGE_BYTES,
 };

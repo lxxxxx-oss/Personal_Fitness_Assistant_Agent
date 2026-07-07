@@ -237,6 +237,14 @@ class TestMotionAnalyzeImageEndpoint:
         assert data["confidence_summary"]["mean"] == 0.9
         assert "静态姿态" in data["message"]
         assert data["warnings"]
+        assert data["execution"] == [
+            {
+                "component": "motion",
+                "mode": "mediapipe_image",
+                "degraded": False,
+                "detail": "",
+            }
+        ]
 
     def test_motion_analyze_image_rejects_non_image_suffix(self):
         response = client.post(

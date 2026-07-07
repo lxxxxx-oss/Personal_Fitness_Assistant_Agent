@@ -60,6 +60,14 @@
   border-color: #ef4444;
 }
 
+.motion-image {
+  width: 360rpx;
+  max-height: 460rpx;
+  margin-bottom: 8rpx;
+  border-radius: 16rpx;
+  background: #0f172a;
+}
+
 /* 内容 */
 .content {
   white-space: pre-wrap;

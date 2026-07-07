@@ -18,6 +18,7 @@ Page({
     serverOnline: true,
     useWebSocket: true,
     showRetry: false,
+    isUploading: false,
   },
 
   onLoad: function () {
@@ -38,6 +39,7 @@ Page({
       '🏃 动作分析 — "分析深蹲姿势"\n' +
       '🍳 菜谱查询 — "怎么做番茄炒蛋？"\n' +
       '🔍 联网搜索 — "搜索最新健身资讯"\n\n' +
+      '也可以点击输入框左侧的 📷，上传一张动作图片进行静态姿态提取。\n\n' +
       '系统会自动识别你的意图并路由到对应的专业模块处理。',
       'chat'
     );
@@ -84,6 +86,115 @@ Page({
     } else {
       this._sendViaHttp(msg);
     }
+  },
+
+  chooseMotionImage: function () {
+    if (this.data.isSending) return;
+    var self = this;
+
+    function handleSelected(filePath, size) {
+      if (!filePath) return;
+      if (size && size > CONST.MAX_MOTION_IMAGE_BYTES) {
+        wx.showToast({ title: '图片不能超过 10MB', icon: 'none' });
+        return;
+      }
+      self._uploadMotionImage(filePath);
+    }
+
+    if (wx.chooseMedia) {
+      wx.chooseMedia({
+        count: 1,
+        mediaType: ['image'],
+        sourceType: ['album', 'camera'],
+        sizeType: ['compressed'],
+        success: function (res) {
+          var file = res.tempFiles && res.tempFiles[0];
+          if (file) handleSelected(file.tempFilePath, file.size);
+        },
+        fail: function (err) {
+          if (!(err.errMsg || '').includes('cancel')) {
+            wx.showToast({ title: '无法选择图片', icon: 'none' });
+          }
+        },
+      });
+      return;
+    }
+
+    wx.chooseImage({
+      count: 1,
+      sizeType: ['compressed'],
+      sourceType: ['album', 'camera'],
+      success: function (res) {
+        var file = res.tempFiles && res.tempFiles[0];
+        handleSelected(res.tempFilePaths[0], file && file.size);
+      },
+      fail: function (err) {
+        if (!(err.errMsg || '').includes('cancel')) {
+          wx.showToast({ title: '无法选择图片', icon: 'none' });
+        }
+      },
+    });
+  },
+
+  _uploadMotionImage: function (filePath) {
+    var filename = filePath.split('/').pop() || '动作图片';
+    this.setData({
+      isSending: true,
+      isUploading: true,
+      currentIntent: 'motion',
+      showRetry: false,
+    });
+    this._addMessage(
+      'user',
+      '请分析这张动作图片：' + filename,
+      'motion',
+      false,
+      [],
+      [],
+      [],
+      filePath
+    );
+    var assistantId = this._addMessage('assistant', '正在提取人体关键点...', 'motion', true);
+    var self = this;
+
+    api.analyzeMotionImage(filePath).then(function (result) {
+      var confidence = result.confidence_summary || {};
+      var meanConfidence = typeof confidence.mean === 'number'
+        ? Math.round(confidence.mean * 100) + '%'
+        : '未提供';
+      var content = [
+        '图片姿态提取完成',
+        '',
+        '帧数：' + result.frames,
+        '关键点：' + result.joints,
+        '姿态模型：' + result.pose_model,
+        '关键点规范：' + result.joint_schema,
+        '平均置信度：' + meanConfidence,
+        '',
+        result.message,
+      ].join('\n');
+      self._updateMessage(
+        assistantId,
+        content,
+        'motion',
+        false,
+        false,
+        [],
+        result.warnings || [],
+        result.execution || []
+      );
+    }).catch(function (err) {
+      self._updateMessage(
+        assistantId,
+        '❌ 图片分析失败：' + err.message + '\n请确认后端已安装 Motion 依赖并准备姿态模型。',
+        'motion',
+        false,
+        true
+      );
+    }).finally(function () {
+      self.setData({ isSending: false, isUploading: false });
+      self._scrollToBottom();
+    });
   },
 
   /**
@@ -205,12 +316,13 @@ Page({
     this.setData({ showRetry: false });
   },
 
-  _addMessage: function (role, content, intent, isStreaming, sources, warnings, execution) {
+  _addMessage: function (role, content, intent, isStreaming, sources, warnings, execution, imagePath) {
     intent = intent || '';
     isStreaming = isStreaming || false;
     sources = sources || [];
     warnings = warnings || [];
     execution = execution || [];
+    imagePath = imagePath || '';
     var id = 'msg_' + (this.msgCounter++);
     var msg = {
       id: id,
@@ -222,6 +334,7 @@ Page({
       sources: sources,
       warnings: warnings,
       execution: execution,
+      imagePath: imagePath,
       timestamp: Date.now(),
     };
     var messages = this.data.messages.concat([msg]);
@@ -248,6 +361,7 @@ Page({
           sources: sources || m.sources || [],
           warnings: warnings || m.warnings || [],
           execution: execution || m.execution || [],
+          imagePath: m.imagePath || '',
           timestamp: Date.now(),
         };
       }

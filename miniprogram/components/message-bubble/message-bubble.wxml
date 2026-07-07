@@ -9,6 +9,13 @@
   </view>
 
   <!-- 消息内容 -->
+  <image
+    class="motion-image"
+    wx:if="{{imagePath}}"
+    src="{{imagePath}}"
+    mode="widthFix"
+    bindtap="previewImage"
+  />
   <view class="bubble {{role}} {{isError ? 'error-bubble' : ''}}">
     <text class="content" wx:if="{{!isStreaming}}" selectable>{{displayContent}}</text>
     <text class="content streaming" wx:else>

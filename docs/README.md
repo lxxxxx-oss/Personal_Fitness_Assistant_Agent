@@ -57,7 +57,7 @@
 | Memory | 已完成滑动窗口记忆，默认保留 6 轮并按 `user_id` 隔离 |
 | 流式接口 | SSE 和 WebSocket 已完成 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
-| 微信小程序 | Chat 主链路、WebSocket/HTTP 降级、来源/运行提示及真实/mock 执行模式展示已完成；媒体上传和端到端联调未完成 |
+| 微信小程序 | Chat 主链路、执行模式展示和 Motion 图片上传闭环已完成；视频上传及开发者工具/真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
 当前文档记录的自动化测试结果为 `129 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。

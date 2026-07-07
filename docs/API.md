@@ -319,7 +319,7 @@ Content-Type: multipart/form-data
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `file` | file | 是 | 图片文件，支持 `.jpg`、`.jpeg`、`.png` |
+| `file` | file | 是 | 图片文件，支持 `.jpg`、`.jpeg`、`.png`，最大 10MB |
 
 处理流程：
 
@@ -349,9 +349,14 @@ Content-Type: multipart/form-data
   "warnings": [
     "单张图片只能分析静态姿态，不能判断动作节奏、轨迹或发力顺序。"
   ],
+  "execution": [
+    {"component": "motion", "mode": "mediapipe_image", "degraded": false, "detail": ""}
+  ],
   "message": "图片姿态已提取为 PoseSequence。当前返回静态姿态摘要；完整动作标准性判断需要视频序列或标准动作库对比。"
 }
 ```
+
+`execution` 明确表示该结果由 MediaPipe 图片姿态链路真实产生；接口不存在 mock 图片分析，模型或依赖缺失时直接返回 `503`。
 
 命令：
 
