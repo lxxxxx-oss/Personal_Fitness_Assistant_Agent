@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-08 | [GitHub 首屏与架构入口](./2026-07-08-root-readme-and-architecture.md) | 新增根 README，用 Mermaid 区分对话 Agent 与独立媒体 API |
 | 2026-07-08 | [测试与真实依赖边界审计](./2026-07-08-test-and-dependency-boundary-audit.md) | 区分 mock 自动化、真实依赖验收和 MCP 协议原型边界 |
 | 2026-07-08 | [API 输入边界加固](./2026-07-08-api-input-boundary-hardening.md) | 后端强制图片 10MB 上限，WebSocket 复用 HTTP 字段契约 |
 | 2026-07-08 | [文档与运行时边界审计](./2026-07-08-documentation-runtime-boundary-audit.md) | 修正跨任务记忆、媒体 Motion、关节角和 ReAct 的事实口径 |
