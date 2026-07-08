@@ -19,7 +19,7 @@
 | PoseSequence 中间格式 | 已实现 | `app/tools/pose_sequence.py`，兼容 `.npz` metadata |
 | 姿态估计适配器 | 已实现 | `app/tools/pose_estimator.py`，MediaPipe 可选依赖 |
 | 图片静态姿态分析 | 已验证 | `/motion/analyze-image`，已使用真实 MediaPipe 模型完成单帧图片 -> PoseSequence 验收 |
-| 视频姿态估计与相似度 | 已验证 | 视频 PoseSequence 可选择同 schema 标准动作，执行 FastDTW、余弦和形状差异 |
+| 视频姿态估计与相似度 | 已验证 | 视频 PoseSequence 可选择兼容标准动作，执行 FastDTW、余弦和 DTW 对齐逐关节平均距离；已知坐标空间不一致时拒绝 |
 | 标准动作库工具链 | 已实现 | 标准视频可离线生成带 pose_model/joint_schema metadata 的 `.npz`；正式样本集待采集 |
 | 动作专项规则 | 未实现 | 计划先从深蹲、硬拉、卧推等高频动作做 |
 | Motion 评测集 | 未实现 | 计划覆盖姿态提取、相似度、低质量媒体降级 |
@@ -186,7 +186,8 @@ normalize_pose
 - 未检测到人体的帧会跳过，输出记录 `sampled_frames`、`valid_frames` 和 `valid_frame_ratio`。
 - 新增 `/motion/analyze-video`，支持 `.mp4`、`.mov`、`.avi`，请求结束后删除临时文件。
 - 使用真实 MediaPipe 模型和短 MP4 完成 HTTP 200 验收，生成 `PoseSequence(T=15, J=33, C=3)`，有效帧率为 100%。
-- 新增 `compute_pose_sequence_similarity()`：要求用户序列与参考序列的 `pose_model`、`joint_schema` 一致；MediaPipe 33 点使用 23/24 号髋关节中点做中心化。
+- 新增 `compute_pose_sequence_similarity()`：要求用户序列与参考序列的 `pose_model`、`joint_schema` 一致，已知 `coordinate_space` 不一致时拒绝；MediaPipe 33 点使用 23/24 号髋关节中点做中心化。
+- 2026-07-08 修正 `shape_difference`：旧实现只比较每帧姿态矩阵的整体范数，可能掩盖关节结构变化；新实现复用 FastDTW 对齐路径，计算对应帧逐关节欧氏距离的全局均值。该值仍是原型阈值，不提供关节级定位。
 - `/motion/analyze-video` 增加可选 `reference_name`，兼容时返回 FastDTW、余弦相似度、形状差异和整体结论；不兼容时返回 422。
 - 同一真实视频先构建参考再上传比较，得到 DTW `0.0`、余弦 `1.0`、形状差异 `0.0`，证明 MediaPipe -> 标准库 -> 相似度公开接口闭环成立。
 

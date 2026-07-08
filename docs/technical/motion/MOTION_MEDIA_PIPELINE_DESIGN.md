@@ -14,7 +14,8 @@ Motion 子图是本项目最容易体现“不是纯 LLM 套壳”的模块。
 
 ```text
 图片/视频 -> MediaPipe PoseSequence -> 标准样本选择
--> 髋中心归一化 -> FastDTW/余弦/形状差异 -> 结构化结果
+-> model/schema/coordinate space 检查 -> 髋中心归一化
+-> FastDTW/余弦/DTW 对齐逐关节平均距离 -> 结构化结果
 ```
 
 真实用户更自然的输入是：
@@ -27,7 +28,7 @@ Motion 子图是本项目最容易体现“不是纯 LLM 套壳”的模块。
 
 面试时可以这样讲：
 
-> Motion 已经把普通视频转换为 MediaPipe PoseSequence，并可选择同模型、同关键点 schema 的标准样本执行 FastDTW、余弦和形状差异比较。schema 不一致会明确拒绝。当前结果表达“与参考样本有多接近”，专业纠错还要补动作周期和关节级规则。
+> Motion 已经把普通视频转换为 MediaPipe PoseSequence，并可选择同模型、同关键点 schema 的标准样本执行 FastDTW、余弦和形状差异比较。已知坐标空间不一致时也会明确拒绝。形状差异复用 DTW 对齐路径并计算逐关节平均距离，但当前只返回全局均值，仍不能定位具体错误关节。
 
 ### 1.1 完整流程理解
 
@@ -263,7 +264,7 @@ POST /motion/analyze-media
 | `frames_used` | 实际用于分析的帧数 |
 | `joint_schema` | 关键点格式 |
 | `confidence_summary` | 关键点置信度摘要 |
-| `metrics` | 关节角度、DTW、余弦相似度、形状差异等 |
+| `metrics` | DTW、余弦相似度、DTW 对齐后的逐关节平均距离；动作专项关节角尚未接入 |
 | `warnings` | 画面遮挡、置信度低、只能静态分析等提醒 |
 | `answer` | 面向用户的中文解释 |
 

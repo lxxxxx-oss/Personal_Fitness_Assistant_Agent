@@ -490,3 +490,4 @@ class TestMotionAnalyzeVideoEndpoint:
         references = {item["name"]: item for item in response.json()["references"]}
         assert references["legacy_squat"]["compatible_with_video"] is False
         assert references["squat_standard"]["compatible_with_video"] is True
+        assert references["squat_standard"]["coordinate_space"] == "unknown"

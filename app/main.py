@@ -238,6 +238,7 @@ class MotionReferenceItem(BaseModel):
     joints: int | None = None
     pose_model: str = "unknown"
     joint_schema: str = "unknown"
+    coordinate_space: str = "unknown"
     compatible_with_video: bool = False
     reason: str = ""
 
@@ -499,6 +500,9 @@ async def list_motion_references():
                 joints=sequence.joints,
                 pose_model=sequence.pose_model,
                 joint_schema=sequence.joint_schema,
+                coordinate_space=str(
+                    sequence.metadata.get("coordinate_space") or "unknown"
+                ),
                 compatible_with_video=compatible,
                 reason=(
                     ""

@@ -30,7 +30,7 @@
 | Tavily | 面向 LLM 应用的联网搜索 API。 | 负责最新健身信息、外部资料和时效性问题。 | Query Understanding -> Tavily Search -> Answer Synthesis。 | Bing Search API、SerpAPI、直接爬虫。 | Tavily 易接入且结果结构化，适合个人项目展示搜索链路。 |
 | Query Understanding / query rewrite | 把用户口语问题改写成更适合检索或搜索的查询。 | 提升 Tavily 搜索召回质量。 | 提取核心实体、时间、目标和约束，生成搜索 query。 | 直接用原始问题、关键词抽取、LLM classifier。 | 原始问题常有口语和上下文，改写能提升稳定性，但要记录原 query 防止丢约束。 |
 | Answer Synthesis | 把多个检索或搜索结果综合成最终回答。 | 让搜索结果变成结构化、可读、有来源约束的回答。 | 输入 title/content/url，输出总结、建议和来源。 | 直接返回搜索列表、模板拼接。 | 用户需要答案而不是结果列表，但要避免编造来源。 |
-| Motion | 动作分析模块。 | 支撑姿态序列相似度分析和动作指导亮点。 | 独立媒体 API 将图片/视频转成 PoseSequence，并做归一化、DTW、余弦和整体形状差异；对话 Motion 子图负责文本规划与 `.npz` 工具链。 | 只用 LLM 看图、规则阈值、训练动作分类模型。 | 没有大规模标注数据时，成熟姿态模型 + 可解释数值算法最适合原型验证；当前媒体 API 尚未作为附件接入 `/chat`。 |
+| Motion | 动作分析模块。 | 支撑姿态序列相似度分析和动作指导亮点。 | 独立媒体 API 将图片/视频转成 PoseSequence，并做归一化、DTW、余弦和 DTW 对齐逐关节平均距离；对话 Motion 子图负责文本规划与 `.npz` 工具链。 | 只用 LLM 看图、规则阈值、训练动作分类模型。 | 没有大规模标注数据时，成熟姿态模型 + 可解释数值算法最适合原型验证；当前媒体 API 尚未作为附件接入 `/chat`。 |
 | MediaPipe Pose | Google 提供的预训练人体姿态估计方案。 | 把普通图片或视频帧转换为人体关键点，补齐 Motion 的媒体输入层。 | 图片使用 IMAGE 模式；视频由 OpenCV 抽帧后使用 VIDEO 模式和递增时间戳推理，输出 33 个关键点。 | MoveNet、RTMPose、YOLO-Pose、OpenPose。 | 本地运行、接入成本低且无需自行训练；复杂遮挡和专项精度不足时再替换模型。 |
 | PoseSequence | Motion 内部统一姿态数据契约。 | 隔离媒体输入、姿态模型和下游分析算法，避免下游绑定 MediaPipe。 | 保存 `(T,J,C)` keypoints、fps、source_type、pose_model、joint_schema、confidence 和 metadata。 | 直接传 ndarray、模型原始结果、逐帧 JSON。 | 统一契约便于测试、持久化和替换上游模型，也兼容 `.npz`。 |
 | OpenCV 视频抽帧 | 视频解码和帧采样工具。 | 控制视频推理量，把短视频转换成有限帧序列。 | 当前默认目标约 10 FPS、最多 300 个采样帧，并统计有效姿态帧比例。 | FFmpeg、PyAV、逐帧全量推理。 | OpenCV 接入简单；限量采样可以控制延迟和资源，生产化再补异步任务和硬件加速。 |
@@ -41,7 +41,7 @@
 | 关节角度 | 由三个关键点计算出的身体关节弯曲角。 | 后续让动作反馈落到膝、髋、肘等局部结构。 | 当前已实现通用三点夹角函数，但尚未接入公开媒体响应，也没有动作类型到关键关节和标准范围的映射。 | 直接比较坐标、训练分类器。 | 角度比坐标更符合健身动作语言；当前只能讲“算法原语已实现、专项规则待接入”。 |
 | FastDTW / DTW 距离 | 比较两段时间序列相似度的算法，允许速度不同。 | 比较用户动作和标准动作的时序相似度。 | 对姿态序列或特征序列做时间对齐，输出距离。 | 标准 DTW、Soft-DTW、动作阶段切分。 | FastDTW 复杂度更低，适合原型；标准 DTW 更准确但更慢。 |
 | 余弦相似度 | 衡量两个向量方向是否一致。 | 衡量归一化姿态特征整体方向是否相似。 | 把姿态或特征展开为向量后计算 cosine。 | L2 距离、皮尔逊相关。 | 和 RAG 中 COSINE 类似，直观且容易解释。 |
-| 形状差异 | 衡量人体结构或轨迹形态的平均差异。 | 补充 DTW 和 cosine，说明动作姿态哪里不像。 | 逐帧比较关键点相对结构或骨架形状。 | Procrustes 分析、骨长约束、关节角规则。 | 多指标组合比单一分数更容易解释动作问题。 |
+| 形状差异 | 时间对齐后对应关节位置的平均距离。 | 补充 DTW 和 cosine，衡量对齐后的全身结构偏差。 | 复用 FastDTW 路径，对每对对应帧计算逐关节欧氏距离，再取全局均值。 | Procrustes 分析、骨长约束、关节角规则。 | 当前只能说明总体偏差，不能回答具体哪个关节错误；阈值也需要正式样本校准。 |
 | ReAct-inspired 状态流 | 借鉴 Reasoning + Acting，把推理、参数解析、工具执行和检查拆开。 | Motion 子图的 `think -> parse -> tool -> check`。 | 当前每次请求按固定边执行一次，不会根据观察结果回到 think/parse 继续自主规划。 | Function Calling、Plan-and-Execute、完整 ReAct 循环。 | 分阶段状态流便于观察和测试；准确口径是“借鉴 ReAct”，不是多轮自主 Agent。 |
 | MCP | Model Context Protocol，模型应用连接外部工具的标准协议。 | 支撑外部菜谱/工具调用能力。 | 轻量 Client 已通过 JSON-RPC 发出 initialize、tools/list、tools/call，并解析首个 text content block；默认使用 mock。 | 直接 HTTP API、LangChain Tools、OpenAPI function calling。 | 当前没有完成响应 ID 校验、inputSchema 参数校验和真实 Server 兼容性验收，准确口径是“协议主链路原型”。 |
 | JSON-RPC | 一种用 JSON 表达请求、响应和 id 的远程调用协议。 | MCP Client 与 Server 通信的基础形式。 | 当前请求会生成 UUID，但实现按 stdout 下一行读取响应，没有核对响应 id；只适合串行原型。 | REST、gRPC、WebSocket 自定义协议。 | 生产化需要 id 匹配、并发请求表、通知语义和协议错误校验。 |

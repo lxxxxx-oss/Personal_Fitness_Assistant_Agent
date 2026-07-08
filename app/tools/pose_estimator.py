@@ -170,6 +170,7 @@ def _extract_mediapipe_landmarks(
     metadata = {
         "width": int(width),
         "height": int(height),
+        "coordinate_space": "normalized_image",
     }
     if source_name:
         metadata["source_name"] = source_name
@@ -458,6 +459,7 @@ def estimate_pose_from_video_path(
 
     keypoint_frames = []
     confidence_frames = []
+    coordinate_space = ""
     sampled_frames = 0
     frame_index = 0
     try:
@@ -491,6 +493,10 @@ def estimate_pose_from_video_path(
                 if extracted.ok:
                     sequence = extracted.data
                     keypoint_frames.append(sequence.keypoints[0])
+                    if not coordinate_space:
+                        coordinate_space = str(
+                            sequence.metadata.get("coordinate_space") or ""
+                        )
                     if sequence.confidence is not None:
                         confidence_frames.append(sequence.confidence[0])
                 frame_index += 1
@@ -531,5 +537,6 @@ def estimate_pose_from_video_path(
             "valid_frame_ratio": len(keypoint_frames) / sampled_frames,
             "source_frame_count": frame_count,
             "duration_seconds": duration_seconds,
+            "coordinate_space": coordinate_space or "unknown",
         },
     )

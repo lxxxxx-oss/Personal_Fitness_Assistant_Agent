@@ -274,7 +274,7 @@ Content-Type: multipart/form-data
 
 不传 `reference_name` 时，接口只校验和加载上传的姿态数据，返回帧数、关键点数量等基础信息。
 
-传入 `reference_name` 时，接口会从 `config.motion_library_dir` 中查找同名标准动作，并返回 DTW 距离、余弦相似度、形状差异和整体评价。
+传入 `reference_name` 时，接口会从 `config.motion_library_dir` 中查找同名标准动作，并返回 DTW 距离、余弦相似度、形状差异和整体评价。当前 `shape_difference` 的准确定义是：复用 FastDTW 时间对齐路径，计算对应帧逐关节欧氏距离后取全局均值；它比旧版单帧整体范数更能反映关节结构差异，但仍不能定位具体错误关节。
 
 `.npz` 姿态数据说明：
 
@@ -409,7 +409,8 @@ Content-Type: multipart/form-data
   -> 最多处理 300 个采样帧
   -> PoseSequence(T=N, J=33, C=3)
   -> 可选加载同 pose_model / joint_schema 标准 PoseSequence
-  -> 髋中心归一化 -> FastDTW + 余弦相似度 + 形状差异
+  -> 已知 coordinate_space 不一致时拒绝比较
+  -> 髋中心归一化 -> FastDTW + 余弦相似度 + DTW 对齐逐关节平均距离
   -> 返回有效帧率、置信度和可选相似度指标
 ```
 
@@ -462,6 +463,7 @@ GET /motion/references
       "joints": 33,
       "pose_model": "mediapipe_pose",
       "joint_schema": "mediapipe_33",
+      "coordinate_space": "world",
       "compatible_with_video": true,
       "reason": ""
     }
@@ -469,7 +471,7 @@ GET /motion/references
 }
 ```
 
-早期 `data/motions/squat.npz` 是 17 关节、无 schema 的 legacy 占位数据，会被标记为不兼容，不能用于 MediaPipe 33 点视频评分。
+早期 `data/motions/squat.npz` 是 17 关节、无 schema 的 legacy 占位数据，会被标记为不兼容，不能用于 MediaPipe 33 点视频评分。新构建的标准动作还会保存 `coordinate_space`；用户与参考均声明坐标空间且值不一致时返回 422。旧文件缺少该字段时保留兼容，但结果边界必须显式说明。
 
 错误：
 

@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-08 | [Motion 指标语义与坐标空间加固](./2026-07-08-motion-metric-semantics-hardening.md) | 形状差异改为 DTW 对齐逐关节距离，并拒绝已知坐标空间冲突 |
 | 2026-07-08 | [本地原型安全与部署边界](./2026-07-08-local-prototype-security-boundary.md) | 明确无鉴权、CORS、内存会话和 liveness/readiness 边界 |
 | 2026-07-08 | [GitHub 首屏与架构入口](./2026-07-08-root-readme-and-architecture.md) | 新增根 README，用 Mermaid 区分对话 Agent 与独立媒体 API |
 | 2026-07-08 | [测试与真实依赖边界审计](./2026-07-08-test-and-dependency-boundary-audit.md) | 区分 mock 自动化、真实依赖验收和 MCP 协议原型边界 |

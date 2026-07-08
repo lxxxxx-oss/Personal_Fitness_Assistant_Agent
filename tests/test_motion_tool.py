@@ -78,6 +78,25 @@ class TestSimilarity:
         assert result.data["shape_difference"] < 0.01
         assert "overall_verdict" in result.data
         assert "labels" in result.data
+        assert (
+            result.meta["shape_difference_definition"]
+            == "dtw_aligned_mean_joint_distance"
+        )
+
+    def test_shape_difference_uses_aligned_joint_distances(self):
+        seq1 = np.array([
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        ], dtype=np.float32)
+        seq2 = np.array([
+            [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+            [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+        ], dtype=np.float32)
+
+        result = compute_similarity(seq1, seq2)
+
+        assert result.ok
+        assert result.data["shape_difference"] > 0.5
 
     def test_different_poses_have_lower_similarity(self):
         seq1 = np.ones((10, 17, 3), dtype=np.float32)
@@ -135,6 +154,27 @@ class TestSimilarity:
         assert result.data["dtw_distance"] == 0.0
         assert result.data["cosine_similarity"] > 0.99
         assert result.meta["normalization"] == "hip_center_mean_scale"
+
+    def test_pose_sequence_similarity_rejects_coordinate_space_mismatch(self):
+        keypoints = np.random.randn(12, 33, 3).astype(np.float32)
+        user = PoseSequence(
+            keypoints=keypoints,
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            metadata={"coordinate_space": "world"},
+        )
+        reference = PoseSequence(
+            keypoints=keypoints.copy(),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            metadata={"coordinate_space": "normalized_image"},
+        )
+
+        result = compute_pose_sequence_similarity(user, reference)
+
+        assert not result.ok
+        assert result.error_code == "INVALID_PARAM"
+        assert "coordinate_space mismatch" in result.error_message
 
 
 def test_motion_guidance_without_pose_data_is_visible_as_degraded(monkeypatch, tmp_path):

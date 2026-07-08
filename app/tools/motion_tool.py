@@ -241,7 +241,7 @@ def compute_similarity(
 
         flat1 = seq1_norm.reshape(seq1_norm.shape[0], -1)
         flat2 = seq2_norm.reshape(seq2_norm.shape[0], -1)
-        dtw_dist, _ = fastdtw(flat1, flat2, dist=euclidean)
+        dtw_dist, alignment_path = fastdtw(flat1, flat2, dist=euclidean)
         max_len = max(len(flat1), len(flat2))
         dtw_normalized = dtw_dist / max_len
 
@@ -252,23 +252,15 @@ def compute_similarity(
             / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-8)
         )
 
-        shape1 = np.array([np.linalg.norm(frame) for frame in seq1_norm])
-        shape2 = np.array([np.linalg.norm(frame) for frame in seq2_norm])
-        if len(shape1) != len(shape2):
-            target_len = max(len(shape1), len(shape2))
-            shape1_interp = np.interp(
-                np.linspace(0, 1, target_len),
-                np.linspace(0, 1, len(shape1)),
-                shape1,
-            )
-            shape2_interp = np.interp(
-                np.linspace(0, 1, target_len),
-                np.linspace(0, 1, len(shape2)),
-                shape2,
-            )
-            shape_diff = float(np.mean(np.abs(shape1_interp - shape2_interp)))
-        else:
-            shape_diff = float(np.mean(np.abs(shape1 - shape2)))
+        # Reuse the temporal alignment produced by FastDTW, then measure the
+        # mean Euclidean distance between corresponding joints. The previous
+        # implementation compared one Frobenius norm per frame, which could
+        # hide large joint-level changes behind a similar global magnitude.
+        aligned_joint_distances = [
+            np.linalg.norm(seq1_norm[left] - seq2_norm[right], axis=1)
+            for left, right in alignment_path
+        ]
+        shape_diff = float(np.mean(aligned_joint_distances))
     except Exception as e:
         return ToolResult.fail(
             ErrorCode.INTERNAL_ERROR,
@@ -310,6 +302,7 @@ def compute_similarity(
             },
             "overall_verdict": overall,
         },
+        shape_difference_definition="dtw_aligned_mean_joint_distance",
     )
 
 
@@ -343,6 +336,22 @@ def compute_pose_sequence_similarity(
             "PoseSequence pose_model mismatch: "
             f"{user_sequence.pose_model} vs {reference_sequence.pose_model}",
         )
+    user_coordinate_space = str(
+        user_sequence.metadata.get("coordinate_space") or ""
+    )
+    reference_coordinate_space = str(
+        reference_sequence.metadata.get("coordinate_space") or ""
+    )
+    if (
+        user_coordinate_space
+        and reference_coordinate_space
+        and user_coordinate_space != reference_coordinate_space
+    ):
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "PoseSequence coordinate_space mismatch: "
+            f"{user_coordinate_space} vs {reference_coordinate_space}",
+        )
     center_indices = _SCHEMA_HIP_INDICES.get(user_sequence.joint_schema)
     if center_indices is None:
         return ToolResult.fail(
@@ -361,6 +370,9 @@ def compute_pose_sequence_similarity(
                 "joint_schema": user_sequence.joint_schema,
                 "pose_model": user_sequence.pose_model,
                 "normalization": "hip_center_mean_scale",
+                "coordinate_space": user_coordinate_space
+                or reference_coordinate_space
+                or "unknown",
             }
         )
     return result

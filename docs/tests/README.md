@@ -19,6 +19,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| Motion 指标语义 | [2026-07-08-motion-metric-semantics.md](./2026-07-08-motion-metric-semantics.md) | 形状差异使用 DTW 对齐逐关节距离；已知坐标空间冲突被拒绝 |
 | API 输入边界 | [2026-07-08-api-input-boundary-hardening.md](./2026-07-08-api-input-boundary-hardening.md) | 图片 10MB 限制由后端实施；WebSocket 与 HTTP/SSE 共享字段约束 |
 | Motion 视频相似度闭环 | [2026-07-07-video-pose-similarity-closure.md](./2026-07-07-video-pose-similarity-closure.md) | 真实视频标准构建与公开接口对比为 HTTP 200；schema 不兼容被明确拒绝 |
 | WebSocket 真流式与黄金冒烟 | [2026-07-07-websocket-true-streaming-and-golden-smoke.md](./2026-07-07-websocket-true-streaming-and-golden-smoke.md) | 首 token 在生成结束前到达；真实图片/视频 MediaPipe 公开接口均为 HTTP 200 |
