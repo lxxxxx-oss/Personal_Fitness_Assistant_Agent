@@ -76,6 +76,8 @@ pip install -r requirements-motion.txt
 
 ## 当前边界
 
+- 当前服务定位为本地面试原型：没有登录鉴权、请求限流和持久化会话，CORS 允许任意来源，不应直接暴露到公网。
+- `/health` 只是进程存活检查，不代表 Qwen、Milvus、MediaPipe、Tavily 或 MCP 已就绪。
 - 会话缓冲区最多保存 6 轮，但当前只有 Chat 消费最后 6 条消息；跨子图记忆尚未完成。
 - MCP 默认使用 mock；真实 Server 的响应 ID、inputSchema、通知语义和兼容性验收待补。
 - Motion 缺关键点平滑、动作周期切分、正式标准样本集和关节级专项纠错。
@@ -98,4 +100,3 @@ pip install -r requirements-motion.txt
 ## 技术栈
 
 Python · FastAPI · LangGraph · Qwen3 · Sentence-Transformers · Milvus · Tavily · MediaPipe · OpenCV · NumPy · FastDTW · MCP/JSON-RPC · 微信小程序
-

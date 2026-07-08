@@ -12,7 +12,7 @@ http://127.0.0.1:8000
 
 | 方法 | 路径 | 说明 | 状态 |
 |---|---|---|---|
-| GET | `/health` | 健康检查 | 已实现 |
+| GET | `/health` | 进程存活检查，不检查依赖 readiness | 已实现 |
 | POST | `/chat` | 非流式对话 | 已实现 |
 | POST | `/chat/stream` | SSE 流式对话 | 已实现 |
 | WebSocket | `/chat/ws` | WebSocket 流式对话 | 已实现 |
@@ -24,7 +24,7 @@ http://127.0.0.1:8000
 | POST | `/motion/analyze-video` | 上传短视频并生成多帧姿态序列摘要 | 已实现 |
 | GET | `/motion/references` | 列出标准动作及其视频 schema 兼容状态 | 已实现 |
 
-## 2. 健康检查
+## 2. 进程存活检查
 
 ```http
 GET /health
@@ -44,6 +44,15 @@ GET /health
 ```bash
 curl http://127.0.0.1:8000/health
 ```
+
+该接口只说明 FastAPI 进程能够响应，不检查 Qwen 模型、Embedding、Milvus、MediaPipe、Tavily 或 MCP Server。部署时应另建 readiness/依赖状态接口。
+
+## 安全与身份边界
+
+- 当前 API 没有登录鉴权和请求限流，仅适合绑定本机地址进行开发演示。
+- `user_id` 是客户端提供的会话键，不是经过验证的用户身份；历史查询和清空接口没有所有权校验。
+- 会话历史只保存在当前 Python 进程内，重启丢失，多 worker/多实例之间不共享，并且当前没有会话键 TTL。
+- CORS 当前允许任意来源。公网部署前必须配置来源白名单、HTTPS/WSS、认证授权、用户级访问控制、限流和安全错误响应。
 
 ## 3. 非流式对话
 
