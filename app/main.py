@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, W
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config import config
 from app.graph.router import build_router_graph
@@ -34,6 +34,29 @@ app.add_middleware(
 
 _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
+
+
+async def _read_upload_with_limit(
+    file: UploadFile,
+    *,
+    max_bytes: int,
+    media_label: str,
+) -> bytes:
+    """Read one upload without buffering more than the documented limit."""
+    chunks: List[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await file.read(min(1024 * 1024, max_bytes + 1 - total_bytes))
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{media_label} file is too large, max {max_bytes} bytes",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 async def _stream_llm_to_websocket(
@@ -373,6 +396,7 @@ async def analyze_motion_image(file: UploadFile = File(...)):
     stability.
     """
     from app.tools.pose_estimator import (
+        MAX_IMAGE_BYTES,
         decode_image_bytes_to_rgb,
         estimate_pose_from_image,
     )
@@ -382,7 +406,11 @@ async def analyze_motion_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="Image filename is required")
 
     try:
-        content = await file.read()
+        content = await _read_upload_with_limit(
+            file,
+            max_bytes=MAX_IMAGE_BYTES,
+            media_label="Image",
+        )
         image_result = decode_image_bytes_to_rgb(content, filename=file.filename)
         if not image_result.ok:
             status_code = 503 if image_result.error_code == ErrorCode.CONFIG_MISSING else 422
@@ -723,13 +751,21 @@ async def chat_websocket(websocket: WebSocket):
         # Wait for client message
         raw = await websocket.receive_text()
         data = json.loads(raw)
-        user_id = data.get("user_id", "")
-        message = data.get("message", "")
-
-        if not user_id or not message:
-            await websocket.send_json({"type": "error", "message": "Missing user_id or message"})
+        try:
+            request = ChatRequest.model_validate(data)
+        except ValidationError:
+            await websocket.send_json({
+                "type": "error",
+                "code": "INVALID_REQUEST",
+                "message": (
+                    "user_id must be a 1-64 character string and message must "
+                    "be a 1-4096 character string"
+                ),
+            })
             await websocket.close()
             return
+        user_id = request.user_id
+        message = request.message
 
         memory = _get_or_create_memory(user_id)
 

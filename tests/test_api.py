@@ -114,6 +114,24 @@ class TestChatEndpoint:
             assert websocket.receive_json()["type"] == "token"
             assert websocket.receive_json()["type"] == "done"
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"user_id": "", "message": "hello"},
+            {"user_id": "u" * 65, "message": "hello"},
+            {"user_id": "valid", "message": ""},
+            {"user_id": "valid", "message": "m" * 4097},
+            {"user_id": 123, "message": "hello"},
+        ],
+    )
+    def test_websocket_rejects_payloads_outside_http_contract(self, payload):
+        with client.websocket_connect("/chat/ws") as websocket:
+            websocket.send_json(payload)
+            error = websocket.receive_json()
+
+        assert error["type"] == "error"
+        assert error["code"] == "INVALID_REQUEST"
+
     def test_chat_with_empty_message(self):
         response = client.post("/chat", json={"user_id": "test_user", "message": ""})
         assert response.status_code == 422
@@ -294,6 +312,18 @@ class TestMotionAnalyzeImageEndpoint:
         )
 
         assert response.status_code == 422
+
+    def test_motion_analyze_image_enforces_server_side_size_limit(self, monkeypatch):
+        from app.tools import pose_estimator
+
+        monkeypatch.setattr(pose_estimator, "MAX_IMAGE_BYTES", 8)
+        response = client.post(
+            "/motion/analyze-image",
+            files={"file": ("pose.png", io.BytesIO(b"x" * 9), "image/png")},
+        )
+
+        assert response.status_code == 413
+        assert "too large" in response.json()["detail"]
 
 
 class TestMotionAnalyzeVideoEndpoint:

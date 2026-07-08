@@ -170,13 +170,14 @@ ws://127.0.0.1:8000/chat/ws
 错误返回：
 
 ```json
-{"type":"error","message":"Missing user_id or message"}
+{"type":"error","code":"INVALID_REQUEST","message":"user_id must be a 1-64 character string and message must be a 1-4096 character string"}
 ```
 
 说明：
 
 - WebSocket 接口适合微信小程序或需要双向连接的客户端。
 - 当前实现为一次连接处理一条用户消息，发送完成后服务端关闭连接。
+- WebSocket 与 HTTP/SSE 复用同一输入约束：`user_id` 为 1-64 字符串，`message` 为 1-4096 字符串；非法 JSON 返回 `Invalid JSON`，字段非法返回 `INVALID_REQUEST`。
 - 本地 LLM 的同步 token 生成器运行在工作线程中，通过 asyncio queue 桥接到 WebSocket；每个 token 生成后立即发送，不再先收集完整列表。
 
 ## 6. 获取对话历史
@@ -371,6 +372,7 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 
 | 状态码 | 场景 |
 |---|---|
+| 413 | 图片超过 10MB；限制由后端分块读取时强制执行，不只依赖客户端校验 |
 | 422 | 文件为空、格式不支持、图片无法解码、未检测到人体姿态 |
 | 503 | Pillow、MediaPipe 或 `pose_landmarker.task` 模型文件缺失 |
 
@@ -493,7 +495,7 @@ Phase 4 的执行层只允许四种两步组合：`search -> diet`、`search -> 
 |---|---|
 | 200 | 成功 |
 | 422 | 请求参数校验失败，例如 `user_id` 或 `message` 为空/超长 |
-| 413 | 上传视频超过大小限制 |
+| 413 | 上传图片或视频超过后端大小限制 |
 | 500 | 服务内部错误，例如模型加载失败、子图执行异常 |
 
 ## 14. 快速启动
