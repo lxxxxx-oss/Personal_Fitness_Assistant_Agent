@@ -19,6 +19,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| RAG 来源透传 | [2026-07-08-rag-source-propagation.md](./2026-07-08-rag-source-propagation.md) | Chat/Diet 证据块包含来源，API 返回去重知识来源标识 |
 | Motion 指标语义 | [2026-07-08-motion-metric-semantics.md](./2026-07-08-motion-metric-semantics.md) | 形状差异使用 DTW 对齐逐关节距离；已知坐标空间冲突被拒绝 |
 | API 输入边界 | [2026-07-08-api-input-boundary-hardening.md](./2026-07-08-api-input-boundary-hardening.md) | 图片 10MB 限制由后端实施；WebSocket 与 HTTP/SSE 共享字段约束 |
 | Motion 视频相似度闭环 | [2026-07-07-video-pose-similarity-closure.md](./2026-07-07-video-pose-similarity-closure.md) | 真实视频标准构建与公开接口对比为 HTTP 200；schema 不兼容被明确拒绝 |

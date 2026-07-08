@@ -5,7 +5,7 @@
 ## 项目亮点
 
 - Hybrid Router：加权规则、语义样例、歧义检测和四种白名单多意图组合；本地 Qwen Router 完成 A/B 后因无准确率收益且延迟较高而默认关闭。
-- RAG：Sentence-Transformers + Milvus/内存 Retriever，支持稳定主键、幂等 upsert、来源字段和失败降级。
+- RAG：Sentence-Transformers + Milvus/内存 Retriever，支持稳定主键、幂等 upsert、编号证据块、来源标识透传和失败降级。
 - Motion：图片/视频转 PoseSequence，同 schema 标准视频构建，髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - MCP：自实现轻量 subprocess + stdio JSON-RPC Client 原型，默认 mock，并公开真实/mock/fallback 执行轨迹。
@@ -69,7 +69,7 @@ pip install -r requirements-motion.txt
 当前自动化回归：
 
 ```text
-147 passed, 2 skipped, 1 warning
+150 passed, 2 skipped, 1 warning
 ```
 
 默认 pytest 会 mock 本地 LLM 与 SentenceTransformer，因此该数字证明代码、接口、算法和降级契约可回归，不代表真实模型回答质量或 Milvus 检索质量。项目另外保留了真实 MediaPipe 图片/视频冒烟、Qwen Router A/B 和可选 Milvus 集成测试记录。

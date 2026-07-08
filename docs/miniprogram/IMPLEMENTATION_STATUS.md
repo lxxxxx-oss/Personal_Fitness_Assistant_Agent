@@ -12,7 +12,7 @@
 | API 封装 | 已完成 | health、chat、WebSocket、history、clear、Motion 图片/视频上传 |
 | 流式接收 | 已完成 | WebSocket meta/token/done、后端真实逐 token 转发、端侧增量更新和 HTTP 降级 |
 | Chat 页面 | 已完成 | 消息列表、意图展示、等待态、错误提示 |
-| 回答元数据 | 已完成 | 展示后端透传的来源 URL 和非致命 warning，空数组时不占界面 |
+| 回答元数据 | 已完成 | 展示后端透传的来源标识（Search URL 或 RAG 知识文件名）和非致命 warning，空数组时不占界面 |
 | 执行模式可见性 | 已完成 | 展示 LLM、RAG、Search、MCP、Motion 的实际 mode；绿色为真实路径，黄色为 mock/fallback |
 | Motion 图片上传 | 已完成 | `chooseMedia/chooseImage`、10MB 前置校验、`wx.uploadFile`、缩略图预览和结构化摘要 |
 | Motion 视频上传 | 已完成 | 视频选择、30MB 校验、上传进度、本地播放、标准动作发现和可选相似度结果 |

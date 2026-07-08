@@ -26,7 +26,7 @@
 | Milvus | 向量数据库，负责持久化向量并执行近似最近邻检索。 | 承载健身知识 RAG 的向量存储与检索。 | chunk、embedding、source 写入 Collection，使用 IVF_FLAT + COSINE 检索 Top-K，并通过 nlist/nprobe 平衡召回与延迟。 | FAISS、Chroma、Qdrant、Elasticsearch/OpenSearch。 | 相比纯内存方案，Milvus 更适合持久化、索引管理和后续扩展；Retriever 接口保持上层无感。 |
 | IVF_FLAT / ANN | IVF_FLAT 是一种近似最近邻索引；ANN 指近似最近邻搜索。 | 在 Milvus 方案中提升大规模向量检索效率。 | nlist 控制分桶，nprobe 控制查询多少桶，在召回和延迟间取舍。 | HNSW、FLAT、DiskANN。 | IVF_FLAT 好解释、适合面试讲清参数含义；不是回答质量的充分条件。 |
 | COSINE 相似度 | 衡量两个向量方向是否相近的指标。 | 用于 query 与知识 chunk 的语义匹配。 | 对 embedding 归一化后计算余弦相似度，选 Top-K。 | L2 距离、内积 IP。 | 文本语义更关注方向，COSINE 是常用选择；最终要用 Recall@K 验证。 |
-| 阈值过滤 / 去重 / 排序 | RAG 检索后的后处理链路。 | 减少无关片段、重复片段进入 Prompt。 | 低于相似度阈值丢弃，相同来源或高度重复内容去重，再按分数排序。 | reranker、规则过滤、人工标签。 | 原型阶段性价比高；生产化可引入 reranker 提升精度。 |
+| 阈值过滤 / 去重 / 来源透传 | RAG 检索后的处理链路。 | 减少无关片段并保留回答依据。 | 低于阈值的结果丢弃；召回内容与 source 组成 `[RefN]` 证据块，去重后的 source 同时进入 API metadata。 | reranker、规则过滤、人工标签。 | 当前完成来源标识可追溯，不等于逐句 citation 已验证；生产化可引入 reranker 和 citation verifier。 |
 | Tavily | 面向 LLM 应用的联网搜索 API。 | 负责最新健身信息、外部资料和时效性问题。 | Query Understanding -> Tavily Search -> Answer Synthesis。 | Bing Search API、SerpAPI、直接爬虫。 | Tavily 易接入且结果结构化，适合个人项目展示搜索链路。 |
 | Query Understanding / query rewrite | 把用户口语问题改写成更适合检索或搜索的查询。 | 提升 Tavily 搜索召回质量。 | 提取核心实体、时间、目标和约束，生成搜索 query。 | 直接用原始问题、关键词抽取、LLM classifier。 | 原始问题常有口语和上下文，改写能提升稳定性，但要记录原 query 防止丢约束。 |
 | Answer Synthesis | 把多个检索或搜索结果综合成最终回答。 | 让搜索结果变成结构化、可读、有来源约束的回答。 | 输入 title/content/url，输出总结、建议和来源。 | 直接返回搜索列表、模板拼接。 | 用户需要答案而不是结果列表，但要避免编造来源。 |

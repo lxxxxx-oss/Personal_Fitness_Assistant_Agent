@@ -49,7 +49,7 @@
 | 模块 | 当前状态 |
 |---|---|
 | Router | Phase 4 已完成：保留 Phase 3 hybrid classifier，增加多意图观测、四种白名单两步组合、错误隔离和结果合成；真实 Qwen classifier 因收益不足默认关闭 |
-| Chat RAG | 已完成 Milvus/内存可配置 Retriever、共享知识库检索和记忆注入；真实服务效果基线待补 |
+| Chat RAG | 已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传和 Chat 记忆注入；逐句 citation 校验与真实效果基线待补 |
 | Search | 已完成 Tavily 接入和 mock 降级 |
 | Diet | 已完成画像提取、营养 RAG 和建议生成 |
 | Motion | 独立图片/视频 API、PoseSequence、标准视频构建脚本、schema 安全比较及小程序参考选择已完成；媒体上传尚未作为附件进入 `/chat` Router，关节角专项规则、平滑、周期切分和正式样本集待补 |
@@ -60,7 +60,7 @@
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `147 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `150 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -72,7 +72,7 @@
 | Tavily 未配置或调用失败 | 未配置 key 时返回 mock；真实调用失败时返回可处理错误并记录降级 warning | 增加超时、重试、熔断和可观测性 |
 | mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
 | MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
-| Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入和容器配置已完成 | 补真实冒烟、Recall@K、MRR 与 P95 延迟基线 |
+| Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入、知识来源标识透传和容器配置已完成 | 补真实冒烟、Recall@K、MRR、生成忠实度与 P95 延迟基线 |
 | Motion 缺正式标准样本集 | 已提供标准视频构建脚本和同 schema 相似度链路；legacy 17 点占位数据会被拒绝 | 采集同视角标准动作、教练标注、周期切分和专项规则 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
 | 小程序 WebSocket 存在端侧与网络差异 | 建连或执行失败时降级到非流式接口 | 完成真机、弱网和不同基础库版本验收 |

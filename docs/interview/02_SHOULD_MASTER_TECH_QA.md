@@ -135,7 +135,7 @@
 
 **推荐回答**
 
-> Milvus 负责向量持久化、索引管理和 ANN 检索。我把 `id、vector、content、source` 定义成固定 Collection Schema，使用 IVF_FLAT + COSINE；nlist 决定分桶粒度，nprobe 决定查询覆盖多少桶。Retriever 对上返回统一的 `content、score、source`，所以 Chat/Diet 不需要感知 Milvus 的连接和索引细节。
+> Milvus 负责向量持久化、索引管理和 ANN 检索。我把 `id、vector、content、source` 定义成固定 Collection Schema，使用 IVF_FLAT + COSINE；nlist 决定分桶粒度，nprobe 决定查询覆盖多少桶。Retriever 对上返回统一的 `content、score、source`，Chat/Diet 再把它组织成带来源的 `[RefN]` 证据块，并将去重 source 透传到 API，因此上层既不感知数据库细节，又能保留检索依据。
 
 **如果继续追问幂等与故障处理**
 

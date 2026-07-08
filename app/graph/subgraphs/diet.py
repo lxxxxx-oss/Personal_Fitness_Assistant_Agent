@@ -4,6 +4,7 @@ import logging
 from langgraph.graph import StateGraph, END
 
 from app.graph.state import RouterState, record_execution
+from app.graph.subgraphs.rag_context import build_rag_context
 from app.tools.retriever import get_shared_retriever
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,8 @@ def recommend_node(state: RouterState) -> RouterState:
 
     profile = state.get("_user_profile", "")
     retrieved = state.get("_retrieved", [])  # type: ignore
-    context_text = "\n".join([r["content"] for r in retrieved]) if retrieved else ""
+    context_text, sources = build_rag_context(retrieved)
+    state["_sources"] = sources  # type: ignore
 
     prompt = f"""# 角色
 你是一位注册运动营养师，专长于减脂饮食规划和增肌营养方案。

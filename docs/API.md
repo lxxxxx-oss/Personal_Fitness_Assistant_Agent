@@ -93,7 +93,7 @@ Content-Type: application/json
 }
 ```
 
-`sources` 返回执行链路收集并去重后的来源 URL，主要由 Search 子图产生；没有外部来源时为空列表。`warnings` 返回组合执行、工具调用或降级过程中产生的非致命提示。`execution` 公开本次请求实际使用的依赖与模式，客户端据此区分真实执行和 mock/fallback；该字段不会包含 Token、服务命令、文件路径或原始异常。逐条 citation 与正文引用关系校验仍是后续项。
+`sources` 返回执行链路收集并去重后的来源标识：Search 使用 URL，Chat/Diet RAG 使用知识库 `source` 字段（当前本地知识库为文件名，例如 `fitness_basics.txt`）。Prompt 中的 `[RefN]` 证据块会同时写入来源标识，客户端因此能看到本次使用了哪些知识文件；逐句 citation 与正文引用关系校验仍是后续项。`warnings` 返回组合执行、工具调用或降级过程中产生的非致命提示。`execution` 公开本次请求实际使用的依赖与模式，客户端据此区分真实执行和 mock/fallback；该字段不会包含 Token、服务命令、文件路径或原始异常。
 
 `execution` 元素结构：
 

@@ -4,6 +4,7 @@ import logging
 from langgraph.graph import StateGraph, END
 
 from app.graph.state import RouterState, record_execution
+from app.graph.subgraphs.rag_context import build_rag_context
 from app.tools.retriever import get_shared_retriever
 
 logger = logging.getLogger(__name__)
@@ -48,12 +49,8 @@ def generate_node(state: RouterState) -> RouterState:
     from app.config import config
 
     retrieved = state.get("_retrieved", [])  # type: ignore
-    context_text = ""
-    sources = []
-    if retrieved:
-        for i, r in enumerate(retrieved):
-            context_text += f"\n[Ref{i+1}] {r['content']}"
-            sources.append(r["content"][:80] + "...")
+    context_text, sources = build_rag_context(retrieved)
+    state["_sources"] = sources  # type: ignore
 
     memory = state.get("memory", [])
     memory_text = ""
