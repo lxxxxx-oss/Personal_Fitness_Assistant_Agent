@@ -158,7 +158,7 @@ Page({
         wx.showToast({ title: '视频不能超过 30MB', icon: 'none' });
         return;
       }
-      self._uploadMotionVideo(filePath);
+      self._chooseMotionVideoReference(filePath);
     }
 
     if (wx.chooseMedia) {
@@ -193,6 +193,40 @@ Page({
           wx.showToast({ title: '无法选择视频', icon: 'none' });
         }
       },
+    });
+  },
+
+  _chooseMotionVideoReference: function (filePath) {
+    var self = this;
+    api.getMotionReferences().then(function (result) {
+      var compatible = (result.references || []).filter(function (item) {
+        return item.compatible_with_video;
+      }).slice(0, 5);
+      if (!compatible.length) {
+        wx.showToast({ title: '暂无兼容标准动作，仅提取姿态', icon: 'none' });
+        self._uploadMotionVideo(filePath, '');
+        return;
+      }
+      var itemList = ['仅提取姿态'].concat(compatible.map(function (item) {
+        return '对比：' + item.name;
+      }));
+      wx.showActionSheet({
+        itemList: itemList,
+        success: function (res) {
+          var referenceName = res.tapIndex > 0
+            ? compatible[res.tapIndex - 1].name
+            : '';
+          self._uploadMotionVideo(filePath, referenceName);
+        },
+      });
+    }).catch(function () {
+      wx.showModal({
+        title: '标准动作加载失败',
+        content: '是否继续仅提取视频姿态？',
+        success: function (res) {
+          if (res.confirm) self._uploadMotionVideo(filePath, '');
+        },
+      });
     });
   },
 
@@ -257,7 +291,7 @@ Page({
     });
   },
 
-  _uploadMotionVideo: function (filePath) {
+  _uploadMotionVideo: function (filePath, referenceName) {
     var filename = filePath.split('/').pop() || '动作视频';
     this.setData({
       isSending: true,
@@ -267,7 +301,9 @@ Page({
     });
     this._addMessage(
       'user',
-      '请提取这段动作视频的姿态序列：' + filename,
+      (referenceName
+        ? '请将这段视频与标准动作「' + referenceName + '」对比：'
+        : '请提取这段动作视频的姿态序列：') + filename,
       'motion',
       false,
       [],
@@ -279,7 +315,7 @@ Page({
     var assistantId = this._addMessage('assistant', '正在上传视频（0%）...', 'motion', true);
     var self = this;
 
-    api.analyzeMotionVideo(filePath, function (progress) {
+    api.analyzeMotionVideo(filePath, referenceName, function (progress) {
       var status = progress >= 100
         ? '视频上传完成，正在提取多帧姿态...'
         : '正在上传视频（' + progress + '%）...';
@@ -304,7 +340,18 @@ Page({
         '平均置信度：' + meanConfidence,
         '',
         result.message,
-      ].join('\n');
+      ];
+      if (result.metrics) {
+        content.push(
+          '',
+          '对比标准：' + result.reference,
+          'DTW 距离：' + result.metrics.dtw_distance + '（' + result.metrics.labels.dtw + '）',
+          '余弦相似度：' + result.metrics.cosine_similarity + '（' + result.metrics.labels.cosine + '）',
+          '形状差异：' + result.metrics.shape_difference + '（' + result.metrics.labels.shape + '）',
+          '综合结论：' + result.metrics.overall_verdict
+        );
+      }
+      content = content.join('\n');
       self._updateMessage(
         assistantId,
         content,

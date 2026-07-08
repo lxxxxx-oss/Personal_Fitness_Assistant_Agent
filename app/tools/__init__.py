@@ -24,7 +24,9 @@ from app.tools.motion_tool import (
     normalize_pose,
     compute_joint_angles,
     load_npz_pose,
+    load_npz_pose_sequence,
     compute_similarity,
+    compute_pose_sequence_similarity,
     list_motion_library,
 )
 from app.tools.mcp_client import MCPClient
@@ -50,7 +52,9 @@ __all__ = [
     "normalize_pose",
     "compute_joint_angles",
     "load_npz_pose",
+    "load_npz_pose_sequence",
     "compute_similarity",
+    "compute_pose_sequence_similarity",
     "list_motion_library",
     "MCPClient",
 ]

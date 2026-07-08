@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 from fastapi.testclient import TestClient
 from app.main import app
-from app.tools.pose_sequence import PoseSequence
+from app.tools.pose_sequence import PoseSequence, pose_sequence_to_npz_payload
 from app.tools.types import ToolResult
 
 client = TestClient(app)
@@ -335,6 +335,8 @@ class TestMotionAnalyzeVideoEndpoint:
         assert data["sampled_frames"] == 15
         assert data["valid_frame_ratio"] == 0.8
         assert data["confidence_summary"]["mean"] == 0.9
+        assert data["reference"] is None
+        assert data["metrics"] is None
         assert data["execution"] == [
             {
                 "component": "motion",
@@ -350,3 +352,111 @@ class TestMotionAnalyzeVideoEndpoint:
             files={"file": ("squat.txt", io.BytesIO(b"bad"), "text/plain")},
         )
         assert response.status_code == 422
+
+    def test_motion_video_compares_with_schema_compatible_reference(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+        from app.tools import pose_estimator
+
+        keypoints = np.random.RandomState(7).randn(12, 33, 3).astype(np.float32)
+        sequence = PoseSequence(
+            keypoints=keypoints,
+            fps=10.0,
+            source_type="video",
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            confidence=np.ones((12, 33), dtype=np.float32) * 0.95,
+            metadata={
+                "sampled_frames": 12,
+                "valid_frames": 12,
+                "valid_frame_ratio": 1.0,
+            },
+        )
+        reference_path = tmp_path / "squat_standard.npz"
+        np.savez_compressed(reference_path, **pose_sequence_to_npz_payload(sequence))
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            lambda *args, **kwargs: ToolResult.ok(data=sequence),
+        )
+
+        response = client.post(
+            "/motion/analyze-video",
+            data={"reference_name": "squat_standard"},
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["reference"] == "squat_standard"
+        assert data["metrics"]["dtw_distance"] == 0.0
+        assert data["metrics"]["cosine_similarity"] > 0.99
+        assert data["execution"][0]["mode"] == "mediapipe_video_similarity"
+        assert "统计接近程度" in data["warnings"][-1]
+
+    def test_motion_video_rejects_incompatible_reference(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+        from app.tools import pose_estimator
+
+        user_sequence = PoseSequence(
+            keypoints=np.random.randn(8, 33, 3).astype(np.float32),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            metadata={"sampled_frames": 8, "valid_frame_ratio": 1.0},
+        )
+        np.savez_compressed(
+            tmp_path / "legacy_squat.npz",
+            keypoints=np.random.randn(8, 17, 3).astype(np.float32),
+        )
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            lambda *args, **kwargs: ToolResult.ok(data=user_sequence),
+        )
+
+        response = client.post(
+            "/motion/analyze-video",
+            data={"reference_name": "legacy_squat"},
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 422
+        assert "joint_schema mismatch" in response.json()["detail"]
+
+    def test_motion_references_marks_legacy_fixture_incompatible(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+
+        np.savez_compressed(
+            tmp_path / "legacy_squat.npz",
+            keypoints=np.random.randn(8, 17, 3).astype(np.float32),
+        )
+        compatible = PoseSequence(
+            keypoints=np.random.randn(8, 33, 3).astype(np.float32),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+        )
+        np.savez_compressed(
+            tmp_path / "squat_standard.npz",
+            **pose_sequence_to_npz_payload(compatible),
+        )
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+
+        response = client.get("/motion/references")
+
+        assert response.status_code == 200
+        references = {item["name"]: item for item in response.json()["references"]}
+        assert references["legacy_squat"]["compatible_with_video"] is False
+        assert references["squat_standard"]["compatible_with_video"] is True

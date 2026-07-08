@@ -22,6 +22,7 @@ http://127.0.0.1:8000
 | POST | `/motion/analyze` | 上传 `.npz` 做独立动作分析，可选标准动作对比 | 已实现 |
 | POST | `/motion/analyze-image` | 上传图片做单帧静态姿态提取和摘要 | 已实现 |
 | POST | `/motion/analyze-video` | 上传短视频并生成多帧姿态序列摘要 | 已实现 |
+| GET | `/motion/references` | 列出标准动作及其视频 schema 兼容状态 | 已实现 |
 
 ## 2. 健康检查
 
@@ -245,9 +246,9 @@ http://127.0.0.1:8000/ui
 
 - `/motion/analyze`：上传 `.npz` 姿态序列，支持可选标准动作库对比。
 - `/motion/analyze-image`：上传图片，提取单帧人体姿态并返回静态姿态摘要。
-- `/motion/analyze-video`：上传短视频，受控抽帧并生成多帧 `PoseSequence` 摘要。
+- `/motion/analyze-video`：上传短视频，受控抽帧生成 `PoseSequence`；可选兼容标准动作并执行相似度分析。
 
-注意：图片接口只能分析单帧静态姿态；视频接口当前只验证视频到姿态序列，不包含动作周期切分、关键点平滑、标准动作评分或专项纠错。
+注意：图片接口只能分析单帧静态姿态；视频接口已经接通标准样本相似度，但仍不包含动作周期切分、关键点平滑和动作专项纠错，因此相似度不能直接等同于专业动作质量评分。
 
 ```http
 POST /motion/analyze
@@ -385,6 +386,7 @@ Content-Type: multipart/form-data
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `file` | file | 是 | 最大 30 MB 的 `.mp4`、`.mov` 或 `.avi` 短视频 |
+| `reference_name` | string | 否 | `/motion/references` 返回的兼容标准动作名称，最长 64 字符 |
 
 当前处理流程：
 
@@ -395,7 +397,9 @@ Content-Type: multipart/form-data
   -> MediaPipe VIDEO 模式
   -> 最多处理 300 个采样帧
   -> PoseSequence(T=N, J=33, C=3)
-  -> 返回有效帧率和置信度摘要
+  -> 可选加载同 pose_model / joint_schema 标准 PoseSequence
+  -> 髋中心归一化 -> FastDTW + 余弦相似度 + 形状差异
+  -> 返回有效帧率、置信度和可选相似度指标
 ```
 
 响应示例：
@@ -412,24 +416,57 @@ Content-Type: multipart/form-data
   "sampled_frames": 15,
   "valid_frame_ratio": 1.0,
   "confidence_summary": {"mean": 0.9926, "min": 0.9579, "max": 1.0},
+  "reference": "squat_standard",
+  "metrics": {
+    "dtw_distance": 0.18,
+    "cosine_similarity": 0.91,
+    "shape_difference": 0.12,
+    "labels": {"dtw": "优秀", "cosine": "优秀", "shape": "优秀"},
+    "overall_verdict": "动作与标准高度一致，三个维度均为优秀。"
+  },
   "warnings": [
-    "当前仅验证视频到多帧 PoseSequence，不包含动作周期切分或标准动作评分。"
+    "相似度仅表示与所选标准样本的统计接近程度，不等同于专业教练的动作质量诊断。"
   ],
   "execution": [
-    {"component": "motion", "mode": "mediapipe_video", "degraded": false, "detail": ""}
+    {"component": "motion", "mode": "mediapipe_video_similarity", "degraded": false, "detail": ""}
   ],
-  "message": "视频已转换为多帧 PoseSequence。"
+  "message": "视频已转换为 PoseSequence，并完成与标准动作的相似度分析。"
 }
 ```
 
-`execution` 表示结果来自 MediaPipe VIDEO 模式的真实多帧姿态提取；接口没有 mock 视频分析。`frames` 是检测到姿态的有效帧数，`sampled_frames` 是实际送入姿态估计的抽样帧数，二者不能混为一谈。
+不传 `reference_name` 时，`reference` 和 `metrics` 为 `null`，执行模式为 `mediapipe_video`。传入兼容参考时，执行模式为 `mediapipe_video_similarity`。`frames` 是检测到姿态的有效帧数，`sampled_frames` 是实际送入姿态估计的抽样帧数，二者不能混为一谈。
+
+标准动作查询：
+
+```http
+GET /motion/references
+```
+
+```json
+{
+  "references": [
+    {
+      "name": "squat_standard",
+      "frames": 42,
+      "joints": 33,
+      "pose_model": "mediapipe_pose",
+      "joint_schema": "mediapipe_33",
+      "compatible_with_video": true,
+      "reason": ""
+    }
+  ]
+}
+```
+
+早期 `data/motions/squat.npz` 是 17 关节、无 schema 的 legacy 占位数据，会被标记为不兼容，不能用于 MediaPipe 33 点视频评分。
 
 错误：
 
 | 状态码 | 场景 |
 |---|---|
 | 413 | 视频超过 30 MB |
-| 422 | 后缀不支持、无法解码或采样帧中未检测到人体 |
+| 422 | 后缀不支持、无法解码、未检测到人体或参考动作 schema/model 不兼容 |
+| 404 | `reference_name` 在标准动作库中不存在 |
 | 503 | OpenCV、MediaPipe 或 `pose_landmarker.task` 缺失 |
 
 ## 12. 意图路由规则

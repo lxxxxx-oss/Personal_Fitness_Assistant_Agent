@@ -60,6 +60,25 @@ curl.exe -L -o data\models\pose_landmarker.task https://storage.googleapis.com/m
 - `data/models/` 和 `*.task` 被 `.gitignore` 忽略，两台电脑需要分别准备。
 - 缺少模型文件时，图片和视频姿态接口返回 503 和明确的缺失提示。
 
+用标准动作视频构建与当前 MediaPipe 视频链路同 schema 的参考 PoseSequence：
+
+```powershell
+python scripts/build_motion_reference.py .\standard_squat.mp4 `
+  --name squat_standard `
+  --library-dir data\motions
+```
+
+脚本默认拒绝覆盖同名参考；确认替换时显式增加 `--overwrite`。参考名称只允许字母、数字、下划线和连字符。标准视频与用户视频必须使用同一姿态模型和 `joint_schema`，否则接口返回 422，不会强行计算无意义分数。
+
+查看参考库兼容状态并执行视频对比：
+
+```powershell
+curl.exe http://127.0.0.1:8000/motion/references
+curl.exe -X POST http://127.0.0.1:8000/motion/analyze-video `
+  -F "file=@user_squat.mp4" `
+  -F "reference_name=squat_standard"
+```
+
 ## 3. 服务检查
 
 健康检查：

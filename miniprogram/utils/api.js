@@ -67,7 +67,7 @@ function chat(userId, message) {
   return _post('/chat', { user_id: userId, message: message }, 120000);
 }
 
-function _uploadMotionFile(path, filePath, label, onProgress) {
+function _uploadMotionFile(path, filePath, label, formData, onProgress) {
   var baseUrl = getApiBaseFn();
   return new Promise(function (resolve, reject) {
     if (!filePath) {
@@ -78,6 +78,7 @@ function _uploadMotionFile(path, filePath, label, onProgress) {
       url: baseUrl + path,
       filePath: filePath,
       name: 'file',
+      formData: formData || {},
       timeout: API_CONFIG.timeout,
       success: function (res) {
         var data;
@@ -108,12 +109,24 @@ function _uploadMotionFile(path, filePath, label, onProgress) {
 
 /** 上传动作图片并提取单帧姿态 — POST /motion/analyze-image. */
 function analyzeMotionImage(filePath) {
-  return _uploadMotionFile('/motion/analyze-image', filePath, '图片');
+  return _uploadMotionFile('/motion/analyze-image', filePath, '图片', {});
 }
 
 /** 上传动作视频并提取多帧姿态 — POST /motion/analyze-video. */
-function analyzeMotionVideo(filePath, onProgress) {
-  return _uploadMotionFile('/motion/analyze-video', filePath, '视频', onProgress);
+function analyzeMotionVideo(filePath, referenceName, onProgress) {
+  var formData = referenceName ? { reference_name: referenceName } : {};
+  return _uploadMotionFile(
+    '/motion/analyze-video',
+    filePath,
+    '视频',
+    formData,
+    onProgress
+  );
+}
+
+/** 获取标准动作库及视频 schema 兼容状态. */
+function getMotionReferences() {
+  return _get('/motion/references');
 }
 
 /**
@@ -242,6 +255,7 @@ module.exports = {
   chat: chat,
   analyzeMotionImage: analyzeMotionImage,
   analyzeMotionVideo: analyzeMotionVideo,
+  getMotionReferences: getMotionReferences,
   wsChat: wsChat,
   getHistory: getHistory,
   clearHistory: clearHistory,

@@ -15,7 +15,7 @@
 | 回答元数据 | 已完成 | 展示后端透传的来源 URL 和非致命 warning，空数组时不占界面 |
 | 执行模式可见性 | 已完成 | 展示 LLM、RAG、Search、MCP、Motion 的实际 mode；绿色为真实路径，黄色为 mock/fallback |
 | Motion 图片上传 | 已完成 | `chooseMedia/chooseImage`、10MB 前置校验、`wx.uploadFile`、缩略图预览和结构化摘要 |
-| Motion 视频上传 | 已完成 | `chooseMedia/chooseVideo`、30MB 校验、上传进度、本地播放和多帧摘要 |
+| Motion 视频上传 | 已完成 | 视频选择、30MB 校验、上传进度、本地播放、标准动作发现和可选相似度结果 |
 | History 页面 | 已完成 | 加载、刷新、清空和空状态 |
 | 复用组件 | 已完成 | message-bubble、intent-badge |
 | 开发者工具联调 | 待验证 | 后端地址、流式分块、基础库兼容 |
@@ -47,7 +47,9 @@
   -> 本地 video 组件预览
   -> wx.uploadFile + onProgressUpdate
   -> OpenCV 抽帧 + MediaPipe VIDEO
-  -> 展示有效帧、抽样帧、有效帧比例、FPS、置信度与 mediapipe_video 标签
+  -> 可选同 schema 标准动作
+  -> 髋中心归一化 + FastDTW / 余弦 / 形状差异
+  -> 展示帧指标、相似度、综合结论与真实执行标签
 ```
 
 支持展示的执行路径：
@@ -69,8 +71,9 @@ chat / search / diet / motion / mcp
 | `DELETE /chat/{user_id}/history` | 清空历史 | 已实现 |
 | `POST /motion/analyze-image` | 动作图片上传与静态姿态提取 | 已接入小程序 |
 | `POST /motion/analyze-video` | 动作视频上传与多帧姿态提取 | 已接入小程序 |
+| `GET /motion/references` | 标准动作发现与 schema 兼容状态 | 已接入小程序 |
 
-Motion 图片和视频均已接入小程序。视频结果目前只证明多帧姿态序列提取，不等于动作周期切分、标准动作匹配或动作质量评分。
+Motion 图片和视频均已接入小程序。存在兼容标准动作时，视频可选择执行 FastDTW、余弦和形状差异比较；没有参考时安全退回姿态提取。相似度仍不等于动作周期切分或专业动作质量诊断。
 
 ## 下一步验收
 

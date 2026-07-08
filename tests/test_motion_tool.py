@@ -1,7 +1,13 @@
 """Motion analysis tool tests."""
 import numpy as np
 import pytest
-from app.tools.motion_tool import normalize_pose, compute_joint_angles, compute_similarity
+from app.tools.motion_tool import (
+    compute_joint_angles,
+    compute_pose_sequence_similarity,
+    compute_similarity,
+    normalize_pose,
+)
+from app.tools.pose_sequence import PoseSequence
 
 
 class TestPoseNormalization:
@@ -34,6 +40,15 @@ class TestPoseNormalization:
         keypoints = np.zeros((3, 3))
         with pytest.raises(ValueError):
             normalize_pose(keypoints)
+
+    def test_schema_center_uses_hip_midpoint(self):
+        keypoints = np.random.randn(33, 3).astype(np.float32)
+        translated = keypoints + np.array([5.0, -3.0, 2.0], dtype=np.float32)
+
+        normalized = normalize_pose(keypoints, center_indices=(23, 24))
+        translated_normalized = normalize_pose(translated, center_indices=(23, 24))
+
+        assert np.allclose(normalized, translated_normalized, atol=1e-5)
 
 
 class TestJointAngles:
@@ -72,6 +87,54 @@ class TestSimilarity:
         assert not result.ok
         assert result.error_code == "INTERNAL_ERROR"
         assert "all zeros" in result.error_message.lower() or "all zeros" in result.error_message
+
+    def test_rejects_mismatched_joint_counts(self):
+        result = compute_similarity(
+            np.random.randn(10, 33, 3).astype(np.float32),
+            np.random.randn(10, 17, 3).astype(np.float32),
+        )
+
+        assert not result.ok
+        assert result.error_code == "INVALID_PARAM"
+        assert "same joint count" in result.error_message
+
+    def test_pose_sequence_similarity_requires_matching_schema(self):
+        user = PoseSequence(
+            keypoints=np.random.randn(10, 33, 3).astype(np.float32),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+        )
+        reference = PoseSequence(
+            keypoints=np.random.randn(10, 17, 3).astype(np.float32),
+            pose_model="other_model",
+            joint_schema="coco_17",
+        )
+
+        result = compute_pose_sequence_similarity(user, reference)
+
+        assert not result.ok
+        assert result.error_code == "INVALID_PARAM"
+        assert "joint_schema mismatch" in result.error_message
+
+    def test_identical_mediapipe_pose_sequences_are_excellent(self):
+        keypoints = np.random.randn(12, 33, 3).astype(np.float32)
+        user = PoseSequence(
+            keypoints=keypoints,
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+        )
+        reference = PoseSequence(
+            keypoints=keypoints.copy(),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+        )
+
+        result = compute_pose_sequence_similarity(user, reference)
+
+        assert result.ok
+        assert result.data["dtw_distance"] == 0.0
+        assert result.data["cosine_similarity"] > 0.99
+        assert result.meta["normalization"] == "hip_center_mean_scale"
 
 
 def test_motion_guidance_without_pose_data_is_visible_as_degraded(monkeypatch, tmp_path):

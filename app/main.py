@@ -202,9 +202,25 @@ class MotionAnalyzeVideoResponse(BaseModel):
     sampled_frames: int
     valid_frame_ratio: float
     confidence_summary: dict | None = None
+    reference: str | None = None
+    metrics: dict | None = None
     warnings: List[str] = Field(default_factory=list)
     execution: List[ExecutionTraceItem] = Field(default_factory=list)
     message: str
+
+
+class MotionReferenceItem(BaseModel):
+    name: str
+    frames: int | None = None
+    joints: int | None = None
+    pose_model: str = "unknown"
+    joint_schema: str = "unknown"
+    compatible_with_video: bool = False
+    reason: str = ""
+
+
+class MotionReferencesResponse(BaseModel):
+    references: List[MotionReferenceItem] = Field(default_factory=list)
 
 
 # --- API Endpoints ---
@@ -427,13 +443,60 @@ async def analyze_motion_image(file: UploadFile = File(...)):
         await file.close()
 
 
+@app.get("/motion/references", response_model=MotionReferencesResponse)
+async def list_motion_references():
+    """List standard references and whether they match the video pose schema."""
+    from app.tools.motion_tool import list_motion_library, load_npz_pose_sequence
+
+    library_result = list_motion_library(config.motion_library_dir)
+    library = library_result.data if library_result.ok else {}
+    references = []
+    for name, path in library.items():
+        loaded = load_npz_pose_sequence(path)
+        if not loaded.ok:
+            references.append(
+                MotionReferenceItem(name=name, reason="Invalid PoseSequence file")
+            )
+            continue
+        sequence = loaded.data
+        compatible = (
+            sequence.pose_model == "mediapipe_pose"
+            and sequence.joint_schema == "mediapipe_33"
+            and sequence.joints == 33
+        )
+        references.append(
+            MotionReferenceItem(
+                name=name,
+                frames=sequence.frames,
+                joints=sequence.joints,
+                pose_model=sequence.pose_model,
+                joint_schema=sequence.joint_schema,
+                compatible_with_video=compatible,
+                reason=(
+                    ""
+                    if compatible
+                    else "Reference must use mediapipe_pose / mediapipe_33"
+                ),
+            )
+        )
+    return MotionReferencesResponse(references=references)
+
+
 @app.post("/motion/analyze-video", response_model=MotionAnalyzeVideoResponse)
-async def analyze_motion_video(file: UploadFile = File(...)):
+async def analyze_motion_video(
+    file: UploadFile = File(...),
+    reference_name: str | None = Form(None),
+):
     """Extract a bounded multi-frame pose sequence from an uploaded video."""
     from app.tools.pose_estimator import (
         MAX_VIDEO_BYTES,
         SUPPORTED_VIDEO_SUFFIXES,
         estimate_pose_from_video_path,
+    )
+    from app.tools.motion_tool import (
+        compute_pose_sequence_similarity,
+        list_motion_library,
+        load_npz_pose_sequence,
     )
     from app.tools.types import ErrorCode
 
@@ -485,11 +548,51 @@ async def analyze_motion_video(file: UploadFile = File(...)):
                 "max": round(float(confidence.max()), 4),
             }
         valid_frame_ratio = float(metadata.get("valid_frame_ratio", 0.0))
-        warnings = [
-            "当前仅验证视频到多帧 PoseSequence，不包含动作周期切分或标准动作评分。"
-        ]
+        warnings = []
         if valid_frame_ratio < 0.8:
             warnings.append("有效姿态帧比例较低，建议使用单人、无遮挡、固定机位视频。")
+
+        reference = None
+        metrics = None
+        execution_mode = "mediapipe_video"
+        if reference_name and reference_name.strip():
+            normalized_reference = reference_name.strip()
+            if len(normalized_reference) > 64:
+                raise HTTPException(status_code=422, detail="reference_name is too long")
+            library_result = list_motion_library(config.motion_library_dir)
+            library = library_result.data if library_result.ok else {}
+            reference_path = library.get(normalized_reference)
+            if reference_path is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Reference motion not found: {normalized_reference}",
+                )
+            reference_result = load_npz_pose_sequence(reference_path)
+            if not reference_result.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=reference_result.error_message or "Invalid reference motion",
+                )
+            similarity_result = compute_pose_sequence_similarity(
+                sequence,
+                reference_result.data,
+            )
+            if not similarity_result.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=similarity_result.error_message
+                    or "Motion similarity comparison failed",
+                )
+            reference = normalized_reference
+            metrics = similarity_result.data
+            execution_mode = "mediapipe_video_similarity"
+            warnings.append(
+                "相似度仅表示与所选标准样本的统计接近程度，不等同于专业教练的动作质量诊断。"
+            )
+        else:
+            warnings.append(
+                "未选择标准动作，本次仅提取多帧 PoseSequence，不执行相似度评分。"
+            )
 
         return MotionAnalyzeVideoResponse(
             filename=file.filename,
@@ -502,16 +605,22 @@ async def analyze_motion_video(file: UploadFile = File(...)):
             sampled_frames=int(metadata.get("sampled_frames", sequence.frames)),
             valid_frame_ratio=round(valid_frame_ratio, 4),
             confidence_summary=confidence_summary,
+            reference=reference,
+            metrics=metrics,
             warnings=warnings,
             execution=[
                 ExecutionTraceItem(
                     component="motion",
-                    mode="mediapipe_video",
+                    mode=execution_mode,
                     degraded=False,
                     detail="",
                 )
             ],
-            message="视频已转换为多帧 PoseSequence。",
+            message=(
+                "视频已转换为 PoseSequence，并完成与标准动作的相似度分析。"
+                if metrics is not None
+                else "视频已转换为多帧 PoseSequence。"
+            ),
         )
     finally:
         await file.close()

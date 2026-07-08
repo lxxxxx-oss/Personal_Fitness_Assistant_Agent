@@ -13,7 +13,7 @@
 | 健身知识问答 | 本地知识库 RAG 检索后由 LLM 生成回答 |
 | 联网搜索 | Tavily 搜索、来源整理和 mock 降级 |
 | 饮食与菜谱建议 | Diet 负责用户画像、营养检索和饮食建议；MCPTool 负责外部菜谱工具发现与调用 |
-| 动作分析 | `.npz` 姿态序列分析、图片单帧姿态，以及视频抽帧到多帧 `PoseSequence` |
+| 动作分析 | 图片/视频转 PoseSequence，视频可选择同 schema 标准动作执行 FastDTW 与多指标相似度分析 |
 
 项目展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、Milvus RAG/Search 数据增强，以及记忆、流式输出和失败降级。
 
@@ -52,7 +52,7 @@
 | Chat RAG | 已完成 Milvus/内存可配置 Retriever、共享知识库检索和记忆注入；真实服务效果基线待补 |
 | Search | 已完成 Tavily 接入和 mock 降级 |
 | Diet | 已完成画像提取、营养 RAG 和建议生成 |
-| Motion | 子图、算法、`PoseSequence`、`.npz`、真实图片和最小视频姿态提取已完成；平滑、周期切分、标准动作库和专项规则待补 |
+| Motion | 图片/视频 PoseSequence、标准视频构建脚本、schema 安全比较及小程序参考选择已完成；平滑、周期切分、正式标准样本集和专项规则待补 |
 | MCP | Client、initialize 握手、`tools/list`、`tools/call`、content 解析和 MCP 子图已完成；默认 mock，真实 Server 需显式配置与联调 |
 | Memory | 已完成滑动窗口记忆，默认保留 6 轮并按 `user_id` 隔离 |
 | 流式接口 | SSE 和 WebSocket 已完成；WebSocket 通过线程到 asyncio queue 桥接实现真实逐 token 发送 |
@@ -60,7 +60,7 @@
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `130 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `139 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -73,7 +73,7 @@
 | mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
 | MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
 | Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入和容器配置已完成 | 补真实冒烟、Recall@K、MRR 与 P95 延迟基线 |
-| Motion 缺标准动作库 | 支持 `.npz`、图片和视频姿态序列提取，不伪造完整动作判断 | 补标准动作数据、关键点平滑、周期切分和专项规则 |
+| Motion 缺正式标准样本集 | 已提供标准视频构建脚本和同 schema 相似度链路；legacy 17 点占位数据会被拒绝 | 采集同视角标准动作、教练标注、周期切分和专项规则 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
 | 小程序 WebSocket 存在端侧与网络差异 | 建连或执行失败时降级到非流式接口 | 完成真机、弱网和不同基础库版本验收 |
 | Docker 模型路径跨机器 | 配置支持环境变量覆盖 | 使用平台无关镜像和模型服务 |
@@ -94,6 +94,7 @@
 | POST | `/motion/analyze` | 上传 `.npz`，可选标准动作对比 |
 | POST | `/motion/analyze-image` | 上传图片并生成单帧静态姿态摘要 |
 | POST | `/motion/analyze-video` | 上传短视频并生成多帧姿态序列摘要 |
+| GET | `/motion/references` | 查看标准动作及视频比较兼容状态 |
 
 ## 6. 快速运行
 
@@ -130,7 +131,7 @@ docs/superpowers/            早期方案与规格
 ## 8. 下一步优先级
 
 1. 为 RAG 建立标准问答与检索评测集，补 Recall@K、MRR 和来源覆盖率。
-2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 为视频姿态序列补关键点平滑、动作周期切分和标准动作库。
+2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 补关键点平滑、动作周期切分、正式标准样本集和专项纠错规则。
 3. 完成真实 MCP Server 的稳定性、超时、Schema、进程生命周期和权限联调。
 4. 补全 Search 的逐条 citation 与正文引用关系校验。
 5. 完成 Milvus 真实服务冒烟，并建立检索质量与延迟基线。
