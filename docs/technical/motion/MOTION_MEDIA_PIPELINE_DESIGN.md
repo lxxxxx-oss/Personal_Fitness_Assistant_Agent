@@ -2,6 +2,8 @@
 
 本文档用于讲解 Motion 从媒体输入到可解释动作比较的设计与当前边界。图片/视频到 PoseSequence、标准视频构建和同 schema 相似度链路已经落地；当前重点转向平滑、周期切分、正式标准样本和专项纠错。
 
+当前架构边界：`/motion/analyze-image`、`/motion/analyze-video` 和 `/motion/analyze` 是独立 FastAPI 入口，直接调用确定性姿态工具；`/chat` 中的 Motion 子图是文本规划、服务端 `.npz` 工具调用与解释链路。媒体附件尚未进入 Router，也没有把媒体结构化结果自动续接到对话生成。`compute_joint_angles()` 已作为通用三点夹角原语存在，但没有接入公开媒体响应或动作专项阈值。
+
 后续执行进度、实际做法和路线偏差统一维护在 [MOTION_OPTIMIZATION_ROADMAP.md](./MOTION_OPTIMIZATION_ROADMAP.md)。
 
 ## 1. 面试定位

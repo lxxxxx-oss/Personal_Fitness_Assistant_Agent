@@ -6,7 +6,7 @@
 
 ## 30 秒介绍
 
-> 顶层 Router 采用“加权规则 + 语义样例 + 可选 Qwen 兜底”，既识别单一意图，也能按白名单执行复合请求，并在 66 条常规样本和 36 条困难样本上持续回归。执行层中，Milvus RAG 负责领域知识，Tavily 负责实时信息，Motion 负责媒体到 3D 姿态序列及数值分析，MCP Client 负责标准化外部工具调用；最近 6 轮对话通过滑动窗口在任务之间共享。
+> 顶层 Router 采用“加权规则 + 语义样例 + 可选 Qwen 兜底”，既识别单一意图，也能按白名单执行复合请求，并在 66 条常规样本和 36 条困难样本上持续回归。执行层中，Milvus RAG 负责领域知识，Tavily 负责实时信息，独立 Motion 媒体 API 负责 PoseSequence 和数值比较，MCP Client 负责外部工具调用；会话缓冲区最多保存 6 轮，但当前只有 Chat 消费最后 6 条消息。
 
 ## 五条主线
 
@@ -14,7 +14,7 @@
 |---|---|---|
 | Router | 用确定性优先、模型兜底的混合路由平衡稳定性与语义覆盖 | StateGraph、权重、语义样例、route plan、白名单、66+36 |
 | Milvus RAG | 把中文知识切块、编码、幂等写入 Milvus，再做 ANN 检索和后处理 | Schema、IVF_FLAT、COSINE、nlist/nprobe、Top-K、source |
-| Motion | 把图片/视频统一成 PoseSequence，再执行可解释的时序和相似度计算 | MediaPipe、OpenCV、33 点、FastDTW、关节角、有效帧率 |
+| Motion | 独立媒体 API 把图片/视频统一成 PoseSequence，再执行原型级时序和相似度计算 | MediaPipe、OpenCV、33 点、FastDTW、有效帧率；关节角专项规则待接入 |
 | Search | 查询改写、Tavily 检索、来源约束合成三阶段拆分 | title/content/url、source grounding、错误分类 |
 | MCP | 自实现 Client 完成 Server 生命周期、工具发现和调用 | subprocess、stdio、JSON-RPC、initialize、tools/list、tools/call |
 

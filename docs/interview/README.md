@@ -47,11 +47,11 @@
 | Router / 子工作流 | 如何把 Search、Motion、Chat、MCPTool 等能力调度起来 |
 | 3D Motion / FastDTW | 为什么动作分析不能只靠 LLM，如何用姿态序列和相似度指标 |
 | MediaPipe / PoseSequence | 如何把真实图片和视频转换成统一 3D 姿态序列，以及当前只完成到哪一层 |
-| ReAct | Motion 子图如何体现 think -> parse -> tool -> check |
+| ReAct-inspired 工作流 | Motion 子图如何用一次 `think -> parse -> tool -> check` 分阶段执行，以及它为什么不是多轮自主循环 |
 | MCP | 为什么引入标准化工具协议，自己实现 Client 做了什么 |
 | Milvus / RAG | 健身知识如何分块、向量化、检索和增强生成 |
 | Tavily | 为什么联网搜索要做 query rewrite 和 answer synthesis |
-| Sliding Window Memory | 为什么只保留最近 6 轮，以及如何跨任务共享短期上下文 |
+| Sliding Window Memory | 缓冲区为何保存 6 轮、Chat 当前为何只注入最后 6 条消息，以及跨子图消费尚未完成 |
 | Docker | 如何说明项目具备部署意识，而不是只在本机脚本运行 |
 
 ## 阅读顺序
@@ -98,4 +98,4 @@
 
 `docs/interview/agent.json` 是本地简历源文件，包含个人信息，已被 `.gitignore` 忽略，不上传 GitHub。interview 文档围绕它的项目描述组织，但不复制个人隐私信息。
 
-当前 Motion 面试口径：简历主项仍聚焦 `.npz` 姿态序列、归一化、关节角和 FastDTW 多指标对比；扩展能力可以补充为“已使用 MediaPipe 和 OpenCV 打通真实图片/短视频到 `PoseSequence` 的输入链路”。视频链路目前只负责姿态序列生成，不能表述为已经完成动作周期识别或专业动作质量评分。
+当前 Motion 面试口径：独立媒体 API 已使用 MediaPipe 和 OpenCV 打通图片/短视频到 `PoseSequence` 及同 schema 相似度链路；对话 Motion 子图与媒体上传入口仍是两条链路，不能表述为 Router 已自动消费图片/视频附件。`compute_joint_angles()` 是已实现的计算原语，尚未接入动作专项评分；视频相似度也不能表述为动作周期识别或专业动作质量诊断。

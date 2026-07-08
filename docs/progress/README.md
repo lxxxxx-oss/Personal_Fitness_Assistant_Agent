@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-08 | [文档与运行时边界审计](./2026-07-08-documentation-runtime-boundary-audit.md) | 修正跨任务记忆、媒体 Motion、关节角和 ReAct 的事实口径 |
 | 2026-07-07 | [黄金演示闭环阶段 4：WebSocket 真流式与真实媒体冒烟](./2026-07-07-websocket-true-streaming-and-golden-smoke.md) | 修复 token 全量缓冲，回归首 token 实时到达，并复验真实图片/视频 MediaPipe 链路 |
 | 2026-07-07 | [Motion 视频 PoseSequence 相似度闭环](./2026-07-07-video-pose-similarity-closure.md) | 同 schema 标准视频构建、髋中心归一化、FastDTW 多指标比较和小程序参考选择 |
 | 2026-07-07 | [黄金演示闭环阶段 3：小程序 Motion 视频上传](./2026-07-07-miniprogram-motion-video-upload.md) | 视频选择、30MB 校验、上传进度、本地播放、多帧姿态摘要和真实执行标签闭环 |
