@@ -212,6 +212,34 @@ class TestChatEndpoint:
 
         asyncio.run(scenario())
 
+    def test_sync_graph_invocation_does_not_block_event_loop(self):
+        from app.main import _invoke_graph
+
+        release_graph = threading.Event()
+
+        class SlowGraph:
+            def invoke(self, state):
+                release_graph.wait(timeout=2)
+                return {**state, "result": "done"}
+
+        async def scenario():
+            loop_progressed = asyncio.Event()
+            graph_task = asyncio.create_task(
+                _invoke_graph(SlowGraph(), {"user_input": "hello"})
+            )
+            try:
+                await asyncio.sleep(0)
+                loop_progressed.set()
+                await asyncio.wait_for(loop_progressed.wait(), timeout=0.5)
+                assert not graph_task.done()
+                release_graph.set()
+                result = await asyncio.wait_for(graph_task, timeout=1)
+            finally:
+                release_graph.set()
+            assert result["result"] == "done"
+
+        asyncio.run(scenario())
+
 
 class TestHistoryEndpoint:
     def test_get_history_empty(self):

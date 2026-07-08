@@ -144,6 +144,8 @@ data: {}
 | 默认 `data` | LLM token 文本 |
 | `done` | 生成结束 |
 
+实现说明：LangGraph 的同步准备阶段通过工作线程执行；本地 LLM 的同步 token 生成器也通过线程到 asyncio queue 桥接，再由 SSE async iterator 逐 token 输出。这样不会阻塞 FastAPI 事件循环，但不会提高模型本身的并行吞吐，单进程生成仍受共享模型锁串行控制。
+
 命令：
 
 ```bash
@@ -187,7 +189,7 @@ ws://127.0.0.1:8000/chat/ws
 - WebSocket 接口适合微信小程序或需要双向连接的客户端。
 - 当前实现为一次连接处理一条用户消息，发送完成后服务端关闭连接。
 - WebSocket 与 HTTP/SSE 复用同一输入约束：`user_id` 为 1-64 字符串，`message` 为 1-4096 字符串；非法 JSON 返回 `Invalid JSON`，字段非法返回 `INVALID_REQUEST`。
-- 本地 LLM 的同步 token 生成器运行在工作线程中，通过 asyncio queue 桥接到 WebSocket；每个 token 生成后立即发送，不再先收集完整列表。
+- LangGraph 同步准备阶段运行在工作线程中；本地 LLM 的同步 token 生成器通过共享的 asyncio queue 桥接到 WebSocket，每个 token 生成后立即发送，不再先收集完整列表。
 
 ## 6. 获取对话历史
 

@@ -21,7 +21,7 @@ $env:MCP_SERVER_COMMAND="mock"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-本地模型运行时保持单进程、单 worker。多个 worker 会分别加载模型，可能重新引入数 GB 内存复制；同一 worker 内的子图共享 tokenizer/model，并发生成在共享模型层串行执行。
+本地模型运行时保持单进程、单 worker。多个 worker 会分别加载模型，可能重新引入数 GB 内存复制；同一 worker 内的子图共享 tokenizer/model，并发生成在共享模型层串行执行。HTTP/SSE/WebSocket 会把同步 LangGraph 工作放入线程，SSE/WebSocket 还通过 asyncio queue 转发 token，因此推理期间事件循环仍能处理其他 I/O；这不代表模型推理已经并行化。
 
 Windows 桌面环境也可以使用项目脚本：
 

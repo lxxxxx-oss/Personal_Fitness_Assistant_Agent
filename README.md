@@ -9,7 +9,7 @@
 - Motion：图片/视频转 PoseSequence，同 schema 标准视频构建，髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - MCP：自实现轻量 subprocess + stdio JSON-RPC Client 原型，默认 mock，并公开真实/mock/fallback 执行轨迹。
-- 工程链路：FastAPI、HTTP/SSE/WebSocket、Web UI、微信小程序、统一 ToolResult/ErrorCode 与专项验收记录。
+- 工程链路：FastAPI、HTTP/SSE/WebSocket、同步 LangGraph/LLM 到 asyncio 的线程桥接、Web UI、微信小程序、统一 ToolResult/ErrorCode 与专项验收记录。
 
 ## 当前架构
 
@@ -69,7 +69,7 @@ pip install -r requirements-motion.txt
 当前自动化回归：
 
 ```text
-150 passed, 2 skipped, 1 warning
+151 passed, 2 skipped, 1 warning
 ```
 
 默认 pytest 会 mock 本地 LLM 与 SentenceTransformer，因此该数字证明代码、接口、算法和降级契约可回归，不代表真实模型回答质量或 Milvus 检索质量。项目另外保留了真实 MediaPipe 图片/视频冒烟、Qwen Router A/B 和可选 Milvus 集成测试记录。

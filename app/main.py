@@ -1,6 +1,6 @@
 """FastAPI application entry point — Fitness Assistant API."""
 import logging
-from typing import Any, Dict, List
+from typing import Any, AsyncIterator, Dict, List
 
 import asyncio
 from contextlib import suppress
@@ -64,7 +64,21 @@ async def _stream_llm_to_websocket(
     llm: Any,
     prompt: str,
 ) -> str:
-    """Bridge a synchronous token generator to WebSocket without buffering."""
+    """Forward non-blocking LLM tokens to one WebSocket connection."""
+    reply_parts: List[str] = []
+    async for token in _iterate_llm_tokens(llm, prompt):
+        reply_parts.append(token)
+        await websocket.send_json({"type": "token", "text": token})
+    return "".join(reply_parts)
+
+
+async def _invoke_graph(graph: Any, state: RouterState) -> RouterState:
+    """Run synchronous LangGraph work without blocking the asyncio loop."""
+    return await asyncio.to_thread(graph.invoke, state)
+
+
+async def _iterate_llm_tokens(llm: Any, prompt: str) -> AsyncIterator[str]:
+    """Bridge a synchronous token generator to an async iterator."""
     queue: asyncio.Queue = asyncio.Queue()
     stop_requested = threading.Event()
     loop = asyncio.get_running_loop()
@@ -87,7 +101,6 @@ async def _stream_llm_to_websocket(
             publish("done")
 
     producer_task = asyncio.create_task(asyncio.to_thread(produce))
-    reply_parts: List[str] = []
     try:
         while True:
             kind, payload = await queue.get()
@@ -98,8 +111,7 @@ async def _stream_llm_to_websocket(
                     raise payload
                 raise RuntimeError(str(payload))
             token = str(payload)
-            reply_parts.append(token)
-            await websocket.send_json({"type": "token", "text": token})
+            yield token
     finally:
         stop_requested.set()
         if producer_task.done():
@@ -108,7 +120,6 @@ async def _stream_llm_to_websocket(
             producer_task.cancel()
             with suppress(asyncio.CancelledError):
                 await producer_task
-    return "".join(reply_parts)
 
 
 class ExecutionTraceItem(BaseModel):
@@ -270,7 +281,7 @@ async def chat(request: ChatRequest):
 
     try:
         graph = _get_router_graph()
-        result_state = graph.invoke(state)
+        result_state = await _invoke_graph(graph, state)
 
         reply = result_state.get("result", "")
         intent = result_state.get("intent", "chat")
@@ -678,7 +689,7 @@ async def chat_stream(request: ChatRequest):
     async def event_stream():
         # Step 1: Run the graph to get context + prompt
         graph = _get_router_graph()
-        result_state = graph.invoke(state)
+        result_state = await _invoke_graph(graph, state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
         sources, warnings, execution = _result_metadata(result_state)
@@ -712,7 +723,7 @@ async def chat_stream(request: ChatRequest):
 
         full_reply = ""
         try:
-            for token in llm.generate_stream(prompt):
+            async for token in _iterate_llm_tokens(llm, prompt):
                 full_reply += token
                 yield f"data: {token}\n\n"
         except Exception as e:
@@ -785,7 +796,7 @@ async def chat_websocket(websocket: WebSocket):
 
         # Step 1: Run graph to build context + get prompt
         graph = _get_router_graph()
-        result_state = graph.invoke(state)
+        result_state = await _invoke_graph(graph, state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
         sources, warnings, execution = _result_metadata(result_state)
