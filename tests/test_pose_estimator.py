@@ -126,6 +126,7 @@ def test_extract_mediapipe_landmarks_returns_pose_sequence():
     assert sequence.metadata["width"] == 200
     assert sequence.metadata["height"] == 100
     assert sequence.metadata["source_name"] == "squat.jpg"
+    assert sequence.metadata["coordinate_space"] == "normalized_image"
 
 
 def test_extract_tasks_landmarks_returns_pose_sequence():

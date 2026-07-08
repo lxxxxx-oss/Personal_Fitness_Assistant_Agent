@@ -1,16 +1,19 @@
 """FastAPI application entry point — Fitness Assistant API."""
 import logging
-from typing import Dict, List
+from typing import Any, AsyncIterator, Dict, List
 
+import asyncio
+from contextlib import suppress
 import json
 import os
 import tempfile
+import threading
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.config import config
 from app.graph.router import build_router_graph
@@ -31,6 +34,132 @@ app.add_middleware(
 
 _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
+
+
+async def _read_upload_with_limit(
+    file: UploadFile,
+    *,
+    max_bytes: int,
+    media_label: str,
+) -> bytes:
+    """Read one upload without buffering more than the documented limit."""
+    chunks: List[bytes] = []
+    total_bytes = 0
+    while True:
+        chunk = await file.read(min(1024 * 1024, max_bytes + 1 - total_bytes))
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{media_label} file is too large, max {max_bytes} bytes",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _stream_llm_to_websocket(
+    websocket: WebSocket,
+    llm: Any,
+    prompt: str,
+) -> str:
+    """Forward non-blocking LLM tokens to one WebSocket connection."""
+    reply_parts: List[str] = []
+    async for token in _iterate_llm_tokens(llm, prompt):
+        reply_parts.append(token)
+        await websocket.send_json({"type": "token", "text": token})
+    return "".join(reply_parts)
+
+
+async def _invoke_graph(graph: Any, state: RouterState) -> RouterState:
+    """Run synchronous LangGraph work without blocking the asyncio loop."""
+    return await asyncio.to_thread(graph.invoke, state)
+
+
+async def _iterate_llm_tokens(llm: Any, prompt: str) -> AsyncIterator[str]:
+    """Bridge a synchronous token generator to an async iterator."""
+    queue: asyncio.Queue = asyncio.Queue()
+    stop_requested = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def publish(kind: str, payload: Any = None) -> None:
+        if loop.is_closed():
+            return
+        with suppress(RuntimeError):
+            asyncio.run_coroutine_threadsafe(queue.put((kind, payload)), loop)
+
+    def produce() -> None:
+        try:
+            for token in llm.generate_stream(prompt):
+                if stop_requested.is_set():
+                    break
+                publish("token", token)
+        except Exception as exc:
+            publish("error", exc)
+        finally:
+            publish("done")
+
+    producer_task = asyncio.create_task(asyncio.to_thread(produce))
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "done":
+                break
+            if kind == "error":
+                if isinstance(payload, BaseException):
+                    raise payload
+                raise RuntimeError(str(payload))
+            token = str(payload)
+            yield token
+    finally:
+        stop_requested.set()
+        if producer_task.done():
+            await producer_task
+        else:
+            producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await producer_task
+
+
+class ExecutionTraceItem(BaseModel):
+    component: str
+    mode: str
+    degraded: bool = False
+    detail: str = ""
+
+
+def _result_metadata(
+    result_state: RouterState,
+) -> tuple[List[str], List[str], List[Dict]]:
+    """Return stable, deduplicated client metadata from graph state."""
+    sources = list(dict.fromkeys(
+        str(item) for item in result_state.get("_sources", []) if item
+    ))
+    warnings = list(dict.fromkeys(
+        str(item)
+        for item in result_state.get("_route_execution_warnings", [])
+        if item
+    ))
+    execution = []
+    for raw_item in result_state.get("_execution", []):
+        item = {
+            "component": str(raw_item.get("component", "unknown")),
+            "mode": str(raw_item.get("mode", "unknown")),
+            "degraded": bool(raw_item.get("degraded", False)),
+            "detail": str(raw_item.get("detail", "")),
+        }
+        if item not in execution:
+            execution.append(item)
+    llm_item = {
+        "component": "llm",
+        "mode": "mock" if config.llm_mock else "local_qwen",
+        "degraded": bool(config.llm_mock),
+        "detail": "LLM demo mode configured" if config.llm_mock else "",
+    }
+    if llm_item not in execution:
+        execution.append(llm_item)
+    return sources, warnings, execution
 
 
 def _get_router_graph():
@@ -59,7 +188,9 @@ class ChatResponse(BaseModel):
     user_id: str
     intent: str
     reply: str
-    sources: List[str] = []
+    sources: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    execution: List[ExecutionTraceItem] = Field(default_factory=list)
 
 
 class HistoryResponse(BaseModel):
@@ -89,8 +220,42 @@ class MotionAnalyzeImageResponse(BaseModel):
     pose_model: str
     joint_schema: str
     confidence_summary: dict | None = None
-    warnings: List[str] = []
+    warnings: List[str] = Field(default_factory=list)
+    execution: List[ExecutionTraceItem] = Field(default_factory=list)
     message: str
+
+
+class MotionAnalyzeVideoResponse(BaseModel):
+    filename: str
+    source_type: str
+    frames: int
+    joints: int
+    fps: float
+    pose_model: str
+    joint_schema: str
+    sampled_frames: int
+    valid_frame_ratio: float
+    confidence_summary: dict | None = None
+    reference: str | None = None
+    metrics: dict | None = None
+    warnings: List[str] = Field(default_factory=list)
+    execution: List[ExecutionTraceItem] = Field(default_factory=list)
+    message: str
+
+
+class MotionReferenceItem(BaseModel):
+    name: str
+    frames: int | None = None
+    joints: int | None = None
+    pose_model: str = "unknown"
+    joint_schema: str = "unknown"
+    coordinate_space: str = "unknown"
+    compatible_with_video: bool = False
+    reason: str = ""
+
+
+class MotionReferencesResponse(BaseModel):
+    references: List[MotionReferenceItem] = Field(default_factory=list)
 
 
 # --- API Endpoints ---
@@ -116,10 +281,11 @@ async def chat(request: ChatRequest):
 
     try:
         graph = _get_router_graph()
-        result_state = graph.invoke(state)
+        result_state = await _invoke_graph(graph, state)
 
         reply = result_state.get("result", "")
         intent = result_state.get("intent", "chat")
+        sources, warnings, execution = _result_metadata(result_state)
 
         memory.add_turn(request.message, reply)
 
@@ -127,6 +293,9 @@ async def chat(request: ChatRequest):
             user_id=request.user_id,
             intent=intent,
             reply=reply,
+            sources=sources,
+            warnings=warnings,
+            execution=execution,
         )
     except Exception as e:
         logger.exception(f"Error processing chat: {e}")
@@ -239,6 +408,7 @@ async def analyze_motion_image(file: UploadFile = File(...)):
     stability.
     """
     from app.tools.pose_estimator import (
+        MAX_IMAGE_BYTES,
         decode_image_bytes_to_rgb,
         estimate_pose_from_image,
     )
@@ -248,7 +418,11 @@ async def analyze_motion_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="Image filename is required")
 
     try:
-        content = await file.read()
+        content = await _read_upload_with_limit(
+            file,
+            max_bytes=MAX_IMAGE_BYTES,
+            media_label="Image",
+        )
         image_result = decode_image_bytes_to_rgb(content, filename=file.filename)
         if not image_result.ok:
             status_code = 503 if image_result.error_code == ErrorCode.CONFIG_MISSING else 422
@@ -292,6 +466,14 @@ async def analyze_motion_image(file: UploadFile = File(...)):
             joint_schema=sequence.joint_schema,
             confidence_summary=confidence_summary,
             warnings=warnings,
+            execution=[
+                ExecutionTraceItem(
+                    component="motion",
+                    mode="mediapipe_image",
+                    degraded=False,
+                    detail="",
+                )
+            ],
             message=(
                 "图片姿态已提取为 PoseSequence。当前返回静态姿态摘要；"
                 "完整动作标准性判断需要视频序列或标准动作库对比。"
@@ -299,6 +481,194 @@ async def analyze_motion_image(file: UploadFile = File(...)):
         )
     finally:
         await file.close()
+
+
+@app.get("/motion/references", response_model=MotionReferencesResponse)
+async def list_motion_references():
+    """List standard references and whether they match the video pose schema."""
+    from app.tools.motion_tool import list_motion_library, load_npz_pose_sequence
+
+    library_result = list_motion_library(config.motion_library_dir)
+    library = library_result.data if library_result.ok else {}
+    references = []
+    for name, path in library.items():
+        loaded = load_npz_pose_sequence(path)
+        if not loaded.ok:
+            references.append(
+                MotionReferenceItem(name=name, reason="Invalid PoseSequence file")
+            )
+            continue
+        sequence = loaded.data
+        compatible = (
+            sequence.pose_model == "mediapipe_pose"
+            and sequence.joint_schema == "mediapipe_33"
+            and sequence.joints == 33
+        )
+        references.append(
+            MotionReferenceItem(
+                name=name,
+                frames=sequence.frames,
+                joints=sequence.joints,
+                pose_model=sequence.pose_model,
+                joint_schema=sequence.joint_schema,
+                coordinate_space=str(
+                    sequence.metadata.get("coordinate_space") or "unknown"
+                ),
+                compatible_with_video=compatible,
+                reason=(
+                    ""
+                    if compatible
+                    else "Reference must use mediapipe_pose / mediapipe_33"
+                ),
+            )
+        )
+    return MotionReferencesResponse(references=references)
+
+
+@app.post("/motion/analyze-video", response_model=MotionAnalyzeVideoResponse)
+async def analyze_motion_video(
+    file: UploadFile = File(...),
+    reference_name: str | None = Form(None),
+):
+    """Extract a bounded multi-frame pose sequence from an uploaded video."""
+    from app.tools.pose_estimator import (
+        MAX_VIDEO_BYTES,
+        SUPPORTED_VIDEO_SUFFIXES,
+        estimate_pose_from_video_path,
+    )
+    from app.tools.motion_tool import (
+        compute_pose_sequence_similarity,
+        list_motion_library,
+        load_npz_pose_sequence,
+    )
+    from app.tools.types import ErrorCode
+
+    if not file.filename:
+        raise HTTPException(status_code=422, detail="Video filename is required")
+    suffix = os.path.splitext(file.filename)[1].lower()
+    if suffix not in SUPPORTED_VIDEO_SUFFIXES:
+        raise HTTPException(
+            status_code=422,
+            detail="Only .mp4, .mov, and .avi videos are supported",
+        )
+
+    tmp_path = None
+    total_bytes = 0
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_VIDEO_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Video file is too large, max {MAX_VIDEO_BYTES} bytes",
+                    )
+                tmp.write(chunk)
+
+        pose_result = estimate_pose_from_video_path(
+            tmp_path,
+            source_name=file.filename,
+        )
+        if not pose_result.ok:
+            status_code = 503 if pose_result.error_code == ErrorCode.CONFIG_MISSING else 422
+            raise HTTPException(
+                status_code=status_code,
+                detail=pose_result.error_message or "Video pose estimation failed",
+            )
+
+        sequence = pose_result.data
+        metadata = sequence.metadata
+        confidence_summary = None
+        if sequence.confidence is not None:
+            confidence = sequence.confidence.astype(float)
+            confidence_summary = {
+                "mean": round(float(confidence.mean()), 4),
+                "min": round(float(confidence.min()), 4),
+                "max": round(float(confidence.max()), 4),
+            }
+        valid_frame_ratio = float(metadata.get("valid_frame_ratio", 0.0))
+        warnings = []
+        if valid_frame_ratio < 0.8:
+            warnings.append("有效姿态帧比例较低，建议使用单人、无遮挡、固定机位视频。")
+
+        reference = None
+        metrics = None
+        execution_mode = "mediapipe_video"
+        if reference_name and reference_name.strip():
+            normalized_reference = reference_name.strip()
+            if len(normalized_reference) > 64:
+                raise HTTPException(status_code=422, detail="reference_name is too long")
+            library_result = list_motion_library(config.motion_library_dir)
+            library = library_result.data if library_result.ok else {}
+            reference_path = library.get(normalized_reference)
+            if reference_path is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Reference motion not found: {normalized_reference}",
+                )
+            reference_result = load_npz_pose_sequence(reference_path)
+            if not reference_result.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=reference_result.error_message or "Invalid reference motion",
+                )
+            similarity_result = compute_pose_sequence_similarity(
+                sequence,
+                reference_result.data,
+            )
+            if not similarity_result.ok:
+                raise HTTPException(
+                    status_code=422,
+                    detail=similarity_result.error_message
+                    or "Motion similarity comparison failed",
+                )
+            reference = normalized_reference
+            metrics = similarity_result.data
+            execution_mode = "mediapipe_video_similarity"
+            warnings.append(
+                "相似度仅表示与所选标准样本的统计接近程度，不等同于专业教练的动作质量诊断。"
+            )
+        else:
+            warnings.append(
+                "未选择标准动作，本次仅提取多帧 PoseSequence，不执行相似度评分。"
+            )
+
+        return MotionAnalyzeVideoResponse(
+            filename=file.filename,
+            source_type=sequence.source_type,
+            frames=sequence.frames,
+            joints=sequence.joints,
+            fps=round(float(sequence.fps or 0.0), 4),
+            pose_model=sequence.pose_model,
+            joint_schema=sequence.joint_schema,
+            sampled_frames=int(metadata.get("sampled_frames", sequence.frames)),
+            valid_frame_ratio=round(valid_frame_ratio, 4),
+            confidence_summary=confidence_summary,
+            reference=reference,
+            metrics=metrics,
+            warnings=warnings,
+            execution=[
+                ExecutionTraceItem(
+                    component="motion",
+                    mode=execution_mode,
+                    degraded=False,
+                    detail="",
+                )
+            ],
+            message=(
+                "视频已转换为 PoseSequence，并完成与标准动作的相似度分析。"
+                if metrics is not None
+                else "视频已转换为多帧 PoseSequence。"
+            ),
+        )
+    finally:
+        await file.close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 @app.post("/chat/stream")
@@ -319,12 +689,19 @@ async def chat_stream(request: ChatRequest):
     async def event_stream():
         # Step 1: Run the graph to get context + prompt
         graph = _get_router_graph()
-        result_state = graph.invoke(state)
+        result_state = await _invoke_graph(graph, state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
+        sources, warnings, execution = _result_metadata(result_state)
 
         # Send metadata first
-        yield f"event: meta\ndata: {__import__('json').dumps({'intent': intent})}\n\n"
+        meta = {
+            "intent": intent,
+            "sources": sources,
+            "warnings": warnings,
+            "execution": execution,
+        }
+        yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
 
         if not prompt:
             # No prompt stored — graph couldn't prepare context
@@ -346,7 +723,7 @@ async def chat_stream(request: ChatRequest):
 
         full_reply = ""
         try:
-            for token in llm.generate_stream(prompt):
+            async for token in _iterate_llm_tokens(llm, prompt):
                 full_reply += token
                 yield f"data: {token}\n\n"
         except Exception as e:
@@ -389,13 +766,21 @@ async def chat_websocket(websocket: WebSocket):
         # Wait for client message
         raw = await websocket.receive_text()
         data = json.loads(raw)
-        user_id = data.get("user_id", "")
-        message = data.get("message", "")
-
-        if not user_id or not message:
-            await websocket.send_json({"type": "error", "message": "Missing user_id or message"})
+        try:
+            request = ChatRequest.model_validate(data)
+        except ValidationError:
+            await websocket.send_json({
+                "type": "error",
+                "code": "INVALID_REQUEST",
+                "message": (
+                    "user_id must be a 1-64 character string and message must "
+                    "be a 1-4096 character string"
+                ),
+            })
             await websocket.close()
             return
+        user_id = request.user_id
+        message = request.message
 
         memory = _get_or_create_memory(user_id)
 
@@ -411,12 +796,19 @@ async def chat_websocket(websocket: WebSocket):
 
         # Step 1: Run graph to build context + get prompt
         graph = _get_router_graph()
-        result_state = graph.invoke(state)
+        result_state = await _invoke_graph(graph, state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
+        sources, warnings, execution = _result_metadata(result_state)
 
         # Send metadata
-        await websocket.send_json({"type": "meta", "intent": intent})
+        await websocket.send_json({
+            "type": "meta",
+            "intent": intent,
+            "sources": sources,
+            "warnings": warnings,
+            "execution": execution,
+        })
 
         if not prompt:
             # No prompt — graph couldn't prepare context, send result directly
@@ -428,9 +820,8 @@ async def chat_websocket(websocket: WebSocket):
             return
 
         # Step 2: Stream LLM tokens via WebSocket
-        # Run sync generation in a thread to avoid blocking the event loop
-        # (which would cause WebSocket keepalive ping timeouts).
-        import asyncio as aio
+        # Bridge sync generation through an async queue so each token is sent
+        # as soon as it is produced without blocking the event loop.
         from app.llm.loader import LLMLoader
 
         llm = LLMLoader(
@@ -441,11 +832,7 @@ async def chat_websocket(websocket: WebSocket):
             top_p=config.model_top_p,
         )
 
-        tokens = await aio.to_thread(lambda: list(llm.generate_stream(prompt)))
-        full_reply = ""
-        for token in tokens:
-            full_reply += token
-            await websocket.send_json({"type": "token", "text": token})
+        full_reply = await _stream_llm_to_websocket(websocket, llm, prompt)
 
         # Signal completion
         await websocket.send_json({"type": "done"})

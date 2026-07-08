@@ -8,18 +8,29 @@
 
 - 基础端点冒烟和核心链路。
 - Router 绿色回归集与 challenge set。
-- Motion `PoseSequence`、姿态估计适配器、图片静态姿态分析。
+- Motion `PoseSequence`、姿态估计适配器，以及真实图片/视频姿态链路。
 - MCP 默认 mock 和真实 server fallback。
 - Milvus RAG 可选后端、Memory fallback 和主链路回归。
 - Web UI 对话等待状态和 Motion 图片上传入口。
 - 面试/演示用手工体验语句。
 
-自动化测试的当前总结果以 [../README.md](../README.md) 中“当前测试结果”为准；本目录用于记录测试过程和验收依据。
+自动化测试的当前总结果以 [../README.md](../README.md) 中“当前测试结果”为准；本目录用于记录测试过程和验收依据。默认 pytest 会 mock LLM 生成和 SentenceTransformer 编码，真实模型与真实 Milvus 不属于默认通过数，MediaPipe 真实媒体链路通过单独冒烟记录证明。
 
 ## 验收矩阵
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| Diet 画像校验 | [2026-07-08-diet-profile-validation.md](./2026-07-08-diet-profile-validation.md) | LLM JSON 经过范围/枚举校验，非法输出降级并公开 warning |
+| 异步图与流式桥接 | [2026-07-08-async-graph-and-stream-bridge.md](./2026-07-08-async-graph-and-stream-bridge.md) | 同步 graph 不阻塞事件循环；SSE/WS 共用线程到 queue token 桥接 |
+| RAG 来源透传 | [2026-07-08-rag-source-propagation.md](./2026-07-08-rag-source-propagation.md) | Chat/Diet 证据块包含来源，API 返回去重知识来源标识 |
+| Motion 指标语义 | [2026-07-08-motion-metric-semantics.md](./2026-07-08-motion-metric-semantics.md) | 形状差异使用 DTW 对齐逐关节距离；已知坐标空间冲突被拒绝 |
+| API 输入边界 | [2026-07-08-api-input-boundary-hardening.md](./2026-07-08-api-input-boundary-hardening.md) | 图片 10MB 限制由后端实施；WebSocket 与 HTTP/SSE 共享字段约束 |
+| Motion 视频相似度闭环 | [2026-07-07-video-pose-similarity-closure.md](./2026-07-07-video-pose-similarity-closure.md) | 真实视频标准构建与公开接口对比为 HTTP 200；schema 不兼容被明确拒绝 |
+| WebSocket 真流式与黄金冒烟 | [2026-07-07-websocket-true-streaming-and-golden-smoke.md](./2026-07-07-websocket-true-streaming-and-golden-smoke.md) | 首 token 在生成结束前到达；真实图片/视频 MediaPipe 公开接口均为 HTTP 200 |
+| 小程序 Motion 视频上传 | [2026-07-07-miniprogram-motion-video-upload.md](./2026-07-07-miniprogram-motion-video-upload.md) | 视频选择、30MB 校验、上传进度、本地播放和多帧姿态摘要已接通 |
+| 小程序 Motion 图片上传 | [2026-07-07-miniprogram-motion-image-upload.md](./2026-07-07-miniprogram-motion-image-upload.md) | 图片选择、10MB 校验、上传、预览、静态姿态摘要与真实执行标签已接通 |
+| 执行模式可见性 | [2026-07-07-execution-mode-visibility.md](./2026-07-07-execution-mode-visibility.md) | 三种协议公开真实/mock/fallback 轨迹，小程序显示执行标签，配置解析回归已覆盖 |
+| 小程序回答元数据 | [2026-07-02-miniprogram-result-contract.md](./2026-07-02-miniprogram-result-contract.md) | sources/warnings 在 HTTP、SSE、WebSocket 与小程序消息卡片间完成闭环 |
 | 全端点冒烟 | [2026-06-10-level-1-smoke-test.md](./2026-06-10-level-1-smoke-test.md) | 早期全端点冒烟，记录 Motion 和 SSE 初期问题 |
 | 核心链路 | [2026-06-10-level-2-core-link.md](./2026-06-10-level-2-core-link.md) | 路由、SSE、WebSocket 核心链路验证 |
 | 手工体验语句 | [2026-06-23-manual-test-prompts.md](./2026-06-23-manual-test-prompts.md) | 面试/演示前可用的接口、对话、Motion 上传和异常测试语句 |
@@ -30,6 +41,8 @@
 | MCP fallback | [2026-06-26-mcp-default-mock-fallback.md](./2026-06-26-mcp-default-mock-fallback.md) | 默认 mock、真实 server 失败降级和集成测试记录 |
 | Web UI 等待状态 | [2026-06-26-web-ui-chat-pending-state.md](./2026-06-26-web-ui-chat-pending-state.md) | 提问后 pending 状态、intent meta 状态更新、错误展示验证 |
 | Web UI 图片上传 | [2026-06-26-web-ui-motion-image-upload.md](./2026-06-26-web-ui-motion-image-upload.md) | 图片上传入口、手工上传反馈和遗留风险记录 |
+| Motion 真实图片 | [2026-07-02-motion-real-image-smoke.md](./2026-07-02-motion-real-image-smoke.md) | 官方模型真实推理与 `/motion/analyze-image` HTTP 200 |
+| Motion 真实视频 | [2026-07-02-motion-real-video-smoke.md](./2026-07-02-motion-real-video-smoke.md) | OpenCV 抽帧、MediaPipe VIDEO 与多帧 PoseSequence HTTP 200 |
 | LLM 内存安全 | [2026-06-27-llm-memory-oom-fix.md](./2026-06-27-llm-memory-oom-fix.md) | 共享模型缓存、并发首次加载、流式单次生成回归验证 |
 | Router Phase 3 A/B | [2026-06-27-router-phase3-ab-eval.md](./2026-06-27-router-phase3-ab-eval.md) | 36 条 challenge、真实 Qwen 接入、延迟和接管收益评测 |
 | Router Phase 4 | [2026-06-30-router-phase4-eval.md](./2026-06-30-router-phase4-eval.md) | 多意图字段、受控组合执行、结果合成与降级验证 |
@@ -41,7 +54,7 @@
 如果被问“你怎么证明项目不是只写了功能”，可以按这个顺序回答：
 
 1. Router 有绿色回归集和 challenge set，不只看总 accuracy，还记录 evaluation slices、route source counts 和困难边界。
-2. Motion 的媒体输入不是口头规划，`PoseSequence`、姿态估计适配器和图片静态分析都有专项测试记录。
+2. Motion 的媒体输入不是口头规划，`PoseSequence`、真实图片和最小视频链路都有专项验收记录。
 3. MCP 和 Web UI 都记录了降级和用户体验相关验收，说明项目关注演示稳定性和失败路径。
 4. 早期 Level 1/2 测试记录保留了核心链路从问题到修复的过程。
 

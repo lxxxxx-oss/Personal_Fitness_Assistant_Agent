@@ -21,7 +21,7 @@ $env:MCP_SERVER_COMMAND="mock"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-本地模型运行时保持单进程、单 worker。多个 worker 会分别加载模型，可能重新引入数 GB 内存复制；同一 worker 内的子图共享 tokenizer/model，并发生成在共享模型层串行执行。
+本地模型运行时保持单进程、单 worker。多个 worker 会分别加载模型，可能重新引入数 GB 内存复制；同一 worker 内的子图共享 tokenizer/model，并发生成在共享模型层串行执行。HTTP/SSE/WebSocket 会把同步 LangGraph 工作放入线程，SSE/WebSocket 还通过 asyncio queue 转发 token，因此推理期间事件循环仍能处理其他 I/O；这不代表模型推理已经并行化。
 
 Windows 桌面环境也可以使用项目脚本：
 
@@ -44,7 +44,7 @@ logs/uvicorn.err.log
 pip install -r requirements.txt
 ```
 
-体验 `/motion/analyze-image` 或 Web UI 图片上传时，还要安装 MediaPipe：
+体验 `/motion/analyze-image`、`/motion/analyze-video` 或 Web UI 图片上传时，还要安装 MediaPipe 与 OpenCV：
 
 ```powershell
 pip install -r requirements-motion.txt
@@ -58,11 +58,30 @@ curl.exe -L -o data\models\pose_landmarker.task https://storage.googleapis.com/m
 - 默认模型路径为 `data/models/pose_landmarker.task`。
 - 可通过 `MEDIAPIPE_POSE_MODEL_PATH` 覆盖模型路径。
 - `data/models/` 和 `*.task` 被 `.gitignore` 忽略，两台电脑需要分别准备。
-- 缺少模型文件时，`/motion/analyze-image` 返回 503 和明确的缺失提示。
+- 缺少模型文件时，图片和视频姿态接口返回 503 和明确的缺失提示。
+
+用标准动作视频构建与当前 MediaPipe 视频链路同 schema 的参考 PoseSequence：
+
+```powershell
+python scripts/build_motion_reference.py .\standard_squat.mp4 `
+  --name squat_standard `
+  --library-dir data\motions
+```
+
+脚本默认拒绝覆盖同名参考；确认替换时显式增加 `--overwrite`。参考名称只允许字母、数字、下划线和连字符。标准视频与用户视频必须使用同一姿态模型和 `joint_schema`，否则接口返回 422，不会强行计算无意义分数。
+
+查看参考库兼容状态并执行视频对比：
+
+```powershell
+curl.exe http://127.0.0.1:8000/motion/references
+curl.exe -X POST http://127.0.0.1:8000/motion/analyze-video `
+  -F "file=@user_squat.mp4" `
+  -F "reference_name=squat_standard"
+```
 
 ## 3. 服务检查
 
-健康检查：
+进程存活检查（不代表模型或外部依赖就绪）：
 
 ```powershell
 curl.exe http://127.0.0.1:8000/health
@@ -112,6 +131,12 @@ curl.exe -X DELETE http://127.0.0.1:8000/chat/u1/history
 ```powershell
 python -m pytest tests/ -q
 ```
+
+默认自动化测试的边界：
+
+- `tests/conftest.py` 会替换本地 LLM 生成和 SentenceTransformer 编码，避免测试依赖模型文件或网络下载。
+- 本地真实模型测试在模型不存在时跳过；真实 Milvus 集成测试只有设置 `MILVUS_TEST_URI` 后才运行。
+- 因此总通过数用于说明代码与协议回归，不等于真实回答质量、检索召回率或生产依赖可用性；真实 MediaPipe、Qwen Router A/B 和 Milvus 需分别看专项记录。
 
 如果缺少 pytest：
 
@@ -168,6 +193,8 @@ git pull origin master
 
 ## 6. 局域网与微信小程序联调
 
+以下 `0.0.0.0` 启动方式只用于受信任局域网联调。当前服务没有鉴权、限流或会话所有权校验；不要把端口直接映射到公网。
+
 后端监听局域网地址：
 
 ```powershell
@@ -180,9 +207,17 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 2. 使用测试 AppID。
 3. 开发阶段勾选“不校验合法域名”。
 4. 确认小程序 API 地址指向本机局域网 IP。
-5. 依次验证健康检查、普通问答、饮食推荐、搜索、MCP、历史记录和流式效果。
+5. 依次验证进程存活、普通问答、饮食推荐、搜索、MCP、历史记录和流式效果。
 
 生产环境需要 HTTPS/WSS，并在微信后台配置 request 合法域名。当前小程序代码基本完成，但端到端联调仍未完成。
+
+生产化前还需要：
+
+- 把 `user_id` 替换为认证后端签发并校验的用户身份。
+- 为历史读取/删除和媒体上传增加用户级授权与限流。
+- 将 CORS 从 `*` 收紧到明确来源。
+- 使用带 TTL 的共享会话存储，并提供数据删除、日志脱敏和审计。
+- 将 `/health` 保留为 liveness，另建模型、Milvus、MediaPipe、Tavily、MCP 的 readiness 检查。
 
 ## 7. Docker
 
@@ -190,32 +225,12 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 docker compose up --build
 ```
 
-启用 Milvus RAG 服务：
-
-```powershell
-$env:RETRIEVER_BACKEND="milvus"
-docker compose --profile milvus up --build
-```
-
-更完整的真实 Milvus 集成测试步骤、预期日志和常见错误见：
-
-[tests/2026-07-01-milvus-real-integration-checklist.md](./tests/2026-07-01-milvus-real-integration-checklist.md)
-
-本机不使用 Docker 后端、只启动 Milvus 依赖时：
-
-```powershell
-docker compose --profile milvus up -d milvus-standalone
-$env:RETRIEVER_BACKEND="milvus"
-$env:MILVUS_URI="http://localhost:19530"
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
 当前边界：
 
 - `docker-compose.yml` 挂载了 Windows 本地模型路径，换机器时需要调整。
 - `app/config.py` 支持 `MODEL_PATH`、`MODEL_DEVICE` 等环境变量覆盖。
-- Milvus、etcd、MinIO 放在 `milvus` profile 下，默认 `docker compose up` 不会启动重依赖服务。
-- Docker 文件已经提供，但完整跨机器构建和启动仍待验证。
+- 当前 Dockerfile 只安装 `requirements.txt`，没有安装 `requirements-motion.txt`，Compose 也没有挂载 `pose_landmarker.task`；容器内图片/视频 Motion 接口当前会返回 503。
+- Docker 文件已经提供，但完整构建和启动仍待验证。
 
 ## 8. 配置速查
 
@@ -229,16 +244,9 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 | `llm_router_enabled` | 是否启用本地 Qwen Router A/B，默认 `false` |
 | `llm_router_max_tokens` | Router classifier 最大输出 token，默认 128 |
 | `embedding_model` | Sentence-Transformer 模型名 |
-| `retriever_backend` | `memory` 或 `milvus`，默认 `memory` |
-| `milvus_uri` | Milvus 服务地址，默认 `http://localhost:19530` |
-| `milvus_collection_name` | Milvus Collection 名称 |
-| `milvus_recreate_collection` | 是否启动时重建 Collection，默认 `false` |
-| `milvus_index_type` | Milvus 索引类型，默认 `IVF_FLAT` |
-| `milvus_metric_type` | Milvus 向量度量，默认 `COSINE` |
-| `milvus_nlist` / `milvus_nprobe` | IVF_FLAT 建索引和检索参数 |
 | `tavily_api_key` | Tavily API Key，默认读取环境变量 |
 | `motion_library_dir` | 标准动作库目录 |
-| `react_max_iterations` | Motion ReAct 最大迭代次数 |
+| `react_max_iterations` | 为 Motion 迭代上限预留的配置；当前图按固定边执行一次，不构成多轮 ReAct 循环 |
 | `mcp_server_command` | MCP Server 命令，默认 `mock`；真实 server 失败后降级到 mock |
 | `api_host` / `api_port` | 后端服务地址和端口 |
 
@@ -254,16 +262,6 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 - `MEMORY_MAX_TURNS`
 - `RETRIEVER_TOP_K`
 - `RETRIEVER_THRESHOLD`
-- `RETRIEVER_BACKEND`
-- `MILVUS_URI`
-- `MILVUS_TOKEN`
-- `MILVUS_COLLECTION_NAME`
-- `MILVUS_COLLECTION`（兼容旧变量）
-- `MILVUS_RECREATE_COLLECTION`
-- `MILVUS_INDEX_TYPE`
-- `MILVUS_METRIC_TYPE`
-- `MILVUS_NLIST`
-- `MILVUS_NPROBE`
 - `EMBEDDING_MODEL`
 - `MOTION_LIBRARY_DIR`
 - `REACT_MAX_ITERATIONS`
@@ -274,8 +272,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 ## 9. 常见运行边界
 
-- Sentence-Transformer 首次加载可能需要联网；Memory 检索器失败时降级为关键词匹配。
-- `RETRIEVER_BACKEND=milvus` 时，Milvus 连接、建表、写入或搜索失败会自动 fallback 到 MemoryRetriever，保证演示不断链。
+- Sentence-Transformer 首次加载可能需要联网；失败时检索器降级为关键词匹配。
 - Tavily API Key 缺失时 SearchTool 使用 mock 搜索结果。
 - `MCP_SERVER_COMMAND` 默认为 `mock`；显式使用真实 MCP Server 时，连接失败会自动降级。
 - Motion 图片入口只做单帧静态姿态摘要，不能判断完整节奏、轨迹或发力顺序。

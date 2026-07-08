@@ -32,6 +32,11 @@
         content="{{item.content}}"
         isStreaming="{{item.isStreaming}}"
         isError="{{item.isError}}"
+        sources="{{item.sources}}"
+        warnings="{{item.warnings}}"
+        execution="{{item.execution}}"
+        imagePath="{{item.imagePath}}"
+        videoPath="{{item.videoPath}}"
         timestamp="{{item.timestamp}}"
         msgId="{{item.id}}"
       />
@@ -41,11 +46,17 @@
 
   <!-- 输入栏 -->
   <view class="input-bar safe-area-bottom">
+    <button
+      class="media-btn"
+      bindtap="chooseMotionMedia"
+      disabled="{{isSending}}"
+      aria-label="上传动作图片或视频"
+    >{{isUploading ? '…' : '📎'}}</button>
     <input
       class="msg-input"
       type="text"
       value="{{inputValue}}"
-      placeholder="输入你的问题..."
+      placeholder="输入问题或上传动作图片..."
       placeholder-class="input-placeholder"
       bindinput="onInput"
       bindconfirm="sendMessage"

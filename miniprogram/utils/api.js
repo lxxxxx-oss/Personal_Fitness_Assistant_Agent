@@ -67,6 +67,68 @@ function chat(userId, message) {
   return _post('/chat', { user_id: userId, message: message }, 120000);
 }
 
+function _uploadMotionFile(path, filePath, label, formData, onProgress) {
+  var baseUrl = getApiBaseFn();
+  return new Promise(function (resolve, reject) {
+    if (!filePath) {
+      reject(new Error('请选择需要分析的' + label));
+      return;
+    }
+    var uploadTask = wx.uploadFile({
+      url: baseUrl + path,
+      filePath: filePath,
+      name: 'file',
+      formData: formData || {},
+      timeout: API_CONFIG.timeout,
+      success: function (res) {
+        var data;
+        try {
+          data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data;
+        } catch (e) {
+          reject(new Error('服务端返回了无法解析的' + label + '分析结果'));
+          return;
+        }
+        if (res.statusCode === 200) {
+          resolve(data);
+          return;
+        }
+        var detail = data && data.detail ? data.detail : label + '分析失败';
+        reject(new Error('HTTP ' + res.statusCode + ': ' + detail));
+      },
+      fail: function (err) {
+        reject(new Error(label + '上传失败: ' + (err.errMsg || 'Unknown')));
+      },
+    });
+    if (onProgress && uploadTask.onProgressUpdate) {
+      uploadTask.onProgressUpdate(function (progress) {
+        onProgress(progress.progress || 0);
+      });
+    }
+  });
+}
+
+/** 上传动作图片并提取单帧姿态 — POST /motion/analyze-image. */
+function analyzeMotionImage(filePath) {
+  return _uploadMotionFile('/motion/analyze-image', filePath, '图片', {});
+}
+
+/** 上传动作视频并提取多帧姿态 — POST /motion/analyze-video. */
+function analyzeMotionVideo(filePath, referenceName, onProgress) {
+  var formData = referenceName ? { reference_name: referenceName } : {};
+  return _uploadMotionFile(
+    '/motion/analyze-video',
+    filePath,
+    '视频',
+    formData,
+    onProgress
+  );
+}
+
+/** 获取标准动作库及视频 schema 兼容状态. */
+function getMotionReferences() {
+  return _get('/motion/references');
+}
+
 /**
  * WebSocket 流式对话 — ws://host/chat/ws.
  *
@@ -191,6 +253,9 @@ function clearHistory(userId) {
 module.exports = {
   healthCheck: healthCheck,
   chat: chat,
+  analyzeMotionImage: analyzeMotionImage,
+  analyzeMotionVideo: analyzeMotionVideo,
+  getMotionReferences: getMotionReferences,
   wsChat: wsChat,
   getHistory: getHistory,
   clearHistory: clearHistory,

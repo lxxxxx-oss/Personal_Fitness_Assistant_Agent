@@ -21,6 +21,10 @@ EXPECTED_IMAGE_NDIM = 3
 EXPECTED_IMAGE_CHANNELS = 3
 SUPPORTED_IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+SUPPORTED_VIDEO_SUFFIXES = (".mp4", ".mov", ".avi")
+MAX_VIDEO_BYTES = 30 * 1024 * 1024
+DEFAULT_VIDEO_SAMPLE_FPS = 10.0
+MAX_VIDEO_SAMPLE_FRAMES = 300
 DEFAULT_POSE_MODEL_PATH = os.path.join("data", "models", "pose_landmarker.task")
 
 
@@ -166,6 +170,7 @@ def _extract_mediapipe_landmarks(
     metadata = {
         "width": int(width),
         "height": int(height),
+        "coordinate_space": "normalized_image",
     }
     if source_name:
         metadata["source_name"] = source_name
@@ -376,4 +381,162 @@ def estimate_pose_from_image(
         result.pose_landmarks,
         image_shape=rgb_image.shape,
         source_name=source_name,
+    )
+
+
+def estimate_pose_from_video_path(
+    video_path: str,
+    *,
+    source_name: Optional[str] = None,
+    target_fps: float = DEFAULT_VIDEO_SAMPLE_FPS,
+    max_frames: int = MAX_VIDEO_SAMPLE_FRAMES,
+    min_detection_confidence: float = 0.5,
+) -> ToolResult:
+    """Extract a bounded multi-frame PoseSequence from a local video.
+
+    The caller owns the video file lifecycle. This adapter only reads the
+    configured path, samples frames, runs MediaPipe in VIDEO mode, and returns
+    detected poses. It does not persist uploads or score exercise quality.
+    """
+    if not isinstance(video_path, str) or not video_path.strip():
+        return ToolResult.fail(ErrorCode.INVALID_PARAM, "video_path is required")
+    if not os.path.isfile(video_path):
+        return ToolResult.fail(
+            ErrorCode.DATA_NOT_FOUND,
+            f"Video file not found: {video_path}",
+        )
+    if not isinstance(target_fps, (int, float)) or target_fps <= 0 or target_fps > 60:
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "target_fps must be between 0 and 60",
+        )
+    if not isinstance(max_frames, int) or max_frames < 1 or max_frames > 3000:
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "max_frames must be between 1 and 3000",
+        )
+    if not isinstance(min_detection_confidence, (int, float)) or not (
+        0.0 <= min_detection_confidence <= 1.0
+    ):
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "min_detection_confidence must be between 0.0 and 1.0",
+        )
+
+    model_path = os.getenv("MEDIAPIPE_POSE_MODEL_PATH", DEFAULT_POSE_MODEL_PATH)
+    if not os.path.isfile(model_path):
+        return ToolResult.fail(
+            ErrorCode.CONFIG_MISSING,
+            "MediaPipe Pose Landmarker model file is missing. Place it at "
+            f"{DEFAULT_POSE_MODEL_PATH} or set MEDIAPIPE_POSE_MODEL_PATH.",
+            model_path=model_path,
+        )
+
+    try:
+        import cv2
+        import mediapipe as mp
+        from mediapipe.tasks import python
+        from mediapipe.tasks.python import vision
+    except ImportError as exc:
+        return ToolResult.fail(
+            ErrorCode.CONFIG_MISSING,
+            f"Video pose dependencies are missing: {exc}",
+        )
+
+    capture = cv2.VideoCapture(video_path)
+    if not capture.isOpened():
+        capture.release()
+        return ToolResult.fail(ErrorCode.INVALID_PARAM, "Cannot decode video file")
+
+    source_fps = float(capture.get(cv2.CAP_PROP_FPS) or 0.0)
+    if not np.isfinite(source_fps) or source_fps <= 0:
+        source_fps = 30.0
+    frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    sample_stride = max(1, int(round(source_fps / float(target_fps))))
+    effective_fps = source_fps / sample_stride
+
+    keypoint_frames = []
+    confidence_frames = []
+    coordinate_space = ""
+    sampled_frames = 0
+    frame_index = 0
+    try:
+        options = vision.PoseLandmarkerOptions(
+            base_options=python.BaseOptions(model_asset_path=model_path),
+            running_mode=vision.RunningMode.VIDEO,
+            num_poses=1,
+            min_pose_detection_confidence=float(min_detection_confidence),
+            min_pose_presence_confidence=float(min_detection_confidence),
+            min_tracking_confidence=float(min_detection_confidence),
+        )
+        with vision.PoseLandmarker.create_from_options(options) as landmarker:
+            while sampled_frames < max_frames:
+                ok, bgr_frame = capture.read()
+                if not ok:
+                    break
+                if frame_index % sample_stride != 0:
+                    frame_index += 1
+                    continue
+
+                sampled_frames += 1
+                rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+                timestamp_ms = int(round(frame_index * 1000.0 / source_fps))
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+                result = landmarker.detect_for_video(mp_image, timestamp_ms)
+                extracted = _extract_tasks_landmarks(
+                    result,
+                    image_shape=rgb_frame.shape,
+                    source_name=source_name,
+                )
+                if extracted.ok:
+                    sequence = extracted.data
+                    keypoint_frames.append(sequence.keypoints[0])
+                    if not coordinate_space:
+                        coordinate_space = str(
+                            sequence.metadata.get("coordinate_space") or ""
+                        )
+                    if sequence.confidence is not None:
+                        confidence_frames.append(sequence.confidence[0])
+                frame_index += 1
+    except Exception as exc:
+        return ToolResult.fail(
+            ErrorCode.INTERNAL_ERROR,
+            f"MediaPipe video pose estimation failed: {exc}",
+        )
+    finally:
+        capture.release()
+
+    if not keypoint_frames:
+        return ToolResult.fail(
+            ErrorCode.DATA_NOT_FOUND,
+            "No human pose detected in sampled video frames",
+            sampled_frames=sampled_frames,
+        )
+
+    confidence = None
+    if len(confidence_frames) == len(keypoint_frames):
+        confidence = np.asarray(confidence_frames, dtype=np.float32)
+    duration_seconds = frame_count / source_fps if frame_count > 0 else None
+    return validate_pose_sequence(
+        np.asarray(keypoint_frames, dtype=np.float32),
+        fps=effective_fps,
+        source_type="video",
+        pose_model=MEDIAPIPE_POSE_MODEL,
+        joint_schema=MEDIAPIPE_JOINT_SCHEMA,
+        confidence=confidence,
+        metadata={
+            "source_name": source_name or os.path.basename(video_path),
+            "width": width,
+            "height": height,
+            "source_fps": source_fps,
+            "sample_stride": sample_stride,
+            "sampled_frames": sampled_frames,
+            "valid_frames": len(keypoint_frames),
+            "valid_frame_ratio": len(keypoint_frames) / sampled_frames,
+            "source_frame_count": frame_count,
+            "duration_seconds": duration_seconds,
+            "coordinate_space": coordinate_space or "unknown",
+        },
     )

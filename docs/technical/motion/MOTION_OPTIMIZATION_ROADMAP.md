@@ -9,7 +9,7 @@
 
 ## 1. 当前总状态
 
-截至 2026-06-25：
+截至 2026-07-07：
 
 | 能力 | 当前状态 | 说明 |
 |---|---|---|
@@ -18,16 +18,16 @@
 | 姿态归一化与相似度 | 已实现 | `normalize_pose`、FastDTW、cosine similarity、shape difference |
 | PoseSequence 中间格式 | 已实现 | `app/tools/pose_sequence.py`，兼容 `.npz` metadata |
 | 姿态估计适配器 | 已实现 | `app/tools/pose_estimator.py`，MediaPipe 可选依赖 |
-| 图片静态姿态分析 | 已实现 | `/motion/analyze-image`，单帧图片 -> PoseSequence 摘要 |
-| 视频姿态估计 | 未实现 | 计划在图片链路稳定后实现 |
-| 标准动作库 | 未实现 | 计划由标准动作视频离线生成 `.npz` |
+| 图片静态姿态分析 | 已验证 | `/motion/analyze-image`，已使用真实 MediaPipe 模型完成单帧图片 -> PoseSequence 验收 |
+| 视频姿态估计与相似度 | 已验证 | 视频 PoseSequence 可选择兼容标准动作，执行 FastDTW、余弦和 DTW 对齐逐关节平均距离；已知坐标空间不一致时拒绝 |
+| 标准动作库工具链 | 已实现 | 标准视频可离线生成带 pose_model/joint_schema metadata 的 `.npz`；正式样本集待采集 |
 | 动作专项规则 | 未实现 | 计划先从深蹲、硬拉、卧推等高频动作做 |
 | Motion 评测集 | 未实现 | 计划覆盖姿态提取、相似度、低质量媒体降级 |
-| 前端/小程序上传体验 | 未实现 | 依赖后端媒体接口完成 |
+| 前端/小程序上传体验 | 代码已完成 | 图片/视频选择、预览、上传进度、标准动作选择和结果展示已接入；真机待验收 |
 
-面试时不要说“已经支持用户上传视频自动分析动作”。准确表述是：
+面试时可以准确表述为：
 
-> 当前 Motion 已经完成姿态序列进入系统后的分析链路；下一步路线是补齐图片/视频到 PoseSequence 的 media-to-pose 适配层，再逐步建设标准动作库、专项动作规则和评测集。
+> 当前 Motion 已完成视频到 PoseSequence、同 schema 标准动作发现、髋中心归一化和多指标相似度链路。它能回答“和某个标准样本有多接近”，但动作周期切分、正式标准样本集和关节级专项纠错仍需补齐。
 
 ## 2. 优化路线总览
 
@@ -133,7 +133,7 @@ metadata
 - 输出静态姿态、关键关节角度、置信度提醒。
 - 明确边界：图片不能判断动作节奏、完整轨迹和发力顺序。
 
-当前状态：已实现图片上传入口，已通过局部测试。
+当前状态：已实现图片上传入口，并已通过真实 MediaPipe 模型与 HTTP 接口验收。
 
 实际做法记录：
 
@@ -152,6 +152,7 @@ metadata
 - 预设目标中提到“关节角度”。本次先完成图片上传、解码、姿态提取和置信度摘要，没有加入具体动作的关节角度规则。原因是关节角度需要按动作类型定义关键关节映射，属于 Step 6“动作专项质量规则”的一部分；当前先保证媒体入口和 PoseSequence 链路稳定。
 - 当前图片接口依赖 MediaPipe 可用性；项目仍没有把 `mediapipe` 写成强依赖，所以未安装时会返回 `503 CONFIG_MISSING` 对应的错误说明。
 - 2026-06-26 手工上传图片时发现本机 `mediapipe==0.10.35` 不再暴露旧版 `mp.solutions` API。已将适配器改为：显式 import `mediapipe.solutions.pose` / `mediapipe.python.solutions.pose`，只有旧版模块可导入时才走旧 API；否则走 MediaPipe Tasks API，避免直接访问 `mp.solutions` 属性。Tasks API 需要本地 `pose_landmarker.task` 模型文件，可通过 `MEDIAPIPE_POSE_MODEL_PATH` 配置，默认路径为 `data/models/pose_landmarker.task`。
+- 2026-07-02 下载 Google 官方 `pose_landmarker_full/float16` 模型到本地忽略目录 `data/models/pose_landmarker.task`，使用官方人体样例图完成真实推理：输出 `PoseSequence(T=1, J=33, C=3)`，平均 visibility 为 `0.9922`；随后通过 `/motion/analyze-image` 完成 HTTP 200 验收。模型文件和测试图片均由 `.gitignore` 排除，不提交到仓库。
 
 ### Step 4：视频动作序列分析
 
@@ -176,15 +177,23 @@ normalize_pose
   -> 动作评价
 ```
 
-当前状态：未实现。
+当前状态：视频姿态提取与可选标准样本相似度已实现并通过真实链路验收；关键点平滑、缺失帧插值、动作周期切分和专项动作评分尚未实现。
 
 实际做法记录：
 
-- 暂无。
+- 新增 `estimate_pose_from_video_path()`，使用 OpenCV 读取视频，并通过 MediaPipe `VIDEO` 模式按时间戳提取关键点。
+- 默认目标采样率约 10 FPS，最多处理 300 个采样帧；上传限制为 30 MB。
+- 未检测到人体的帧会跳过，输出记录 `sampled_frames`、`valid_frames` 和 `valid_frame_ratio`。
+- 新增 `/motion/analyze-video`，支持 `.mp4`、`.mov`、`.avi`，请求结束后删除临时文件。
+- 使用真实 MediaPipe 模型和短 MP4 完成 HTTP 200 验收，生成 `PoseSequence(T=15, J=33, C=3)`，有效帧率为 100%。
+- 新增 `compute_pose_sequence_similarity()`：要求用户序列与参考序列的 `pose_model`、`joint_schema` 一致，已知 `coordinate_space` 不一致时拒绝；MediaPipe 33 点使用 23/24 号髋关节中点做中心化。
+- 2026-07-08 修正 `shape_difference`：旧实现只比较每帧姿态矩阵的整体范数，可能掩盖关节结构变化；新实现复用 FastDTW 对齐路径，计算对应帧逐关节欧氏距离的全局均值。该值仍是原型阈值，不提供关节级定位。
+- `/motion/analyze-video` 增加可选 `reference_name`，兼容时返回 FastDTW、余弦相似度、形状差异和整体结论；不兼容时返回 422。
+- 同一真实视频先构建参考再上传比较，得到 DTW `0.0`、余弦 `1.0`、形状差异 `0.0`，证明 MediaPipe -> 标准库 -> 相似度公开接口闭环成立。
 
 偏差说明：
 
-- 暂无。
+- 本轮接入的是“整段视频与标准样本的通用相似度”，没有提前宣称已经完成单次动作周期识别或关节级纠错。相似度表达样本接近程度，不直接等价于专业动作质量。
 
 ### Step 5：建设标准动作库
 
@@ -204,15 +213,18 @@ normalize_pose
 - 第一批动作优先覆盖：深蹲、硬拉、卧推、俯卧撑、平板支撑。
 - 每个动作记录来源、拍摄角度、帧率、pose_model、joint_schema。
 
-当前状态：未实现。
+当前状态：构建工具和 schema 门禁已实现；正式标准动作样本集未完成。
 
 实际做法记录：
 
-- 暂无。
+- 新增 `scripts/build_motion_reference.py`，用同一个 `estimate_pose_from_video_path()` 把标准视频生成稳定 PoseSequence `.npz`。
+- 脚本写入 `pose_model`、`joint_schema`、fps、confidence 和来源 metadata；默认拒绝覆盖，参考名称禁止路径字符。
+- 新增 `GET /motion/references`，列出参考动作并标记是否兼容当前 MediaPipe 视频链路。
+- 早期随机 `data/motions/squat.npz` 为 17 关节 unknown schema 占位数据，接口会标记不兼容，不用于视频评分。
 
 偏差说明：
 
-- 暂无。
+- 本阶段先完成“标准库生产工具 + 一致性门禁”，没有提交伪造的深蹲标准样本。正式样本需要明确来源、拍摄视角和教练确认后再加入。
 
 ### Step 6：增加动作专项质量规则
 
@@ -283,11 +295,13 @@ normalize_pose
 - 返回结果区分：姿态提取状态、指标结果、动作建议、风险提醒。
 - 对低置信度媒体给出重新拍摄建议。
 
-当前状态：未实现。
+当前状态：小程序代码已实现，微信开发者工具和真机待验收。
 
 实际做法记录：
 
-- 暂无。
+- 小程序支持图片/视频选择、本地预览、10MB/30MB 校验和上传进度。
+- 视频上传前调用 `/motion/references`；有兼容标准时让用户选择仅提取或执行相似度，无兼容参考时安全退回姿态提取。
+- 结果区展示有效帧、抽样帧、FPS、置信度，以及可选 DTW/余弦/形状差异和边界 warning。
 
 偏差说明：
 
@@ -320,8 +334,9 @@ normalize_pose
 
 ## 5. 当前下一步
 
-Step 1、Step 2 和 Step 3 已完成，当前建议进入 Step 4：
+Step 1-5 的核心工具链和 Step 8 端侧代码已完成，当前下一步是把通用相似度升级为动作质量闭环：
 
-1. 设计短视频上传和抽帧策略。
-2. 将多帧图片序列转换为 `PoseSequence(T=N)`。
-3. 对关键点做基础平滑和缺失帧处理，再接入现有相似度算法。
+1. 对视频关键点做基础平滑和缺失帧处理。
+2. 增加单次深蹲动作周期切分。
+3. 采集与 `mediapipe_33` 一致、同视角并经教练确认的正式标准动作样本。
+4. 为深蹲等动作增加关节角、幅度、对称性和阶段级规则。

@@ -1,6 +1,8 @@
 # Motion 媒体输入技术路线与需求分析
 
-本文档用于面试讲解 Motion 子图的下一阶段演进：从当前 `.npz` 姿态序列分析，升级到普通用户可理解的图片/视频动作分析。重点不是宣称已经完成图片/视频分析，而是把需求、技术路线、工程边界和可落地顺序讲清楚。
+本文档用于讲解 Motion 从媒体输入到可解释动作比较的设计与当前边界。图片/视频到 PoseSequence、标准视频构建和同 schema 相似度链路已经落地；当前重点转向平滑、周期切分、正式标准样本和专项纠错。
+
+当前架构边界：`/motion/analyze-image`、`/motion/analyze-video` 和 `/motion/analyze` 是独立 FastAPI 入口，直接调用确定性姿态工具；`/chat` 中的 Motion 子图是文本规划、服务端 `.npz` 工具调用与解释链路。媒体附件尚未进入 Router，也没有把媒体结构化结果自动续接到对话生成。`compute_joint_angles()` 已作为通用三点夹角原语存在，但没有接入公开媒体响应或动作专项阈值。
 
 后续执行进度、实际做法和路线偏差统一维护在 [MOTION_OPTIMIZATION_ROADMAP.md](./MOTION_OPTIMIZATION_ROADMAP.md)。
 
@@ -8,10 +10,12 @@
 
 Motion 子图是本项目最容易体现“不是纯 LLM 套壳”的模块。
 
-当前代码已经实现的是后半段能力：
+当前代码已经把前后两段接通：
 
 ```text
-姿态序列 .npz -> 姿态归一化 -> 时序对齐 -> 相似度指标 -> LLM 解释报告
+图片/视频 -> MediaPipe PoseSequence -> 标准样本选择
+-> model/schema/coordinate space 检查 -> 髋中心归一化
+-> FastDTW/余弦/DTW 对齐逐关节平均距离 -> 结构化结果
 ```
 
 真实用户更自然的输入是：
@@ -20,11 +24,11 @@ Motion 子图是本项目最容易体现“不是纯 LLM 套壳”的模块。
 图片 / 视频 -> 姿态估计 -> 统一姿态序列 -> 现有 Motion 分析工具
 ```
 
-所以后续技术路线的核心是补齐前半段 `media-to-pose` 适配层，而不是从零训练一个人体姿态估计模型。
+后续技术路线的核心不再是补输入层，而是提高标准样本质量和动作级解释能力。
 
 面试时可以这样讲：
 
-> Motion 当前已经完成“姿态数据进入系统之后怎么分析”的部分，包括 `.npz` 上传、姿态归一化、FastDTW 对齐和相似度指标。普通用户不会直接上传 `.npz`，所以下一步不是推翻现有设计，而是在前面加一个媒体转姿态的适配层：图片或视频先通过成熟姿态估计模型提取关键点，再统一成 PoseSequence / `.npz`，复用已有分析链路。
+> Motion 已经把普通视频转换为 MediaPipe PoseSequence，并可选择同模型、同关键点 schema 的标准样本执行 FastDTW、余弦和形状差异比较。已知坐标空间不一致时也会明确拒绝。形状差异复用 DTW 对齐路径并计算逐关节平均距离，但当前只返回全局均值，仍不能定位具体错误关节。
 
 ### 1.1 完整流程理解
 
@@ -62,15 +66,18 @@ Motion 子图是本项目最容易体现“不是纯 LLM 套壳”的模块。
 - Motion 子图：`think -> parse -> tool -> check`。
 - `/motion/analyze`：支持上传 `.npz` 姿态数据。
 - `/motion/analyze-image`：支持上传 `.jpg`、`.jpeg`、`.png` 图片，提取单帧静态姿态摘要。
+- `/motion/analyze-video`：支持真实视频 PoseSequence，并可选兼容标准动作执行通用相似度。
+- `scripts/build_motion_reference.py`：从标准视频生成带完整 schema metadata 的参考 `.npz`。
+- 小程序：支持图片/视频上传、参考动作选择和相似度结果展示。
 - `motion_tool.py`：支持加载 `(T, J, 3)` 姿态数组、姿态归一化、FastDTW、余弦相似度、形状差异和整体评价。
 - 无数据时的降级回答：说明如何准备姿态数据，不让 LLM 凭空判断用户动作问题。
 
 ### 未实现
 
-- 视频上传后的逐帧姿态估计。
-- 标准动作库数据。
+- 视频关键点平滑、缺失帧处理和动作周期切分。
+- 经教练确认的正式标准动作样本集。
 - 自定义训练的人体姿态估计模型。
-- 小程序端图片/视频上传到 Motion 分析接口的端到端联调。
+- 微信开发者工具和真机端到端联调。
 
 ### 不应夸大的说法
 
@@ -80,7 +87,7 @@ Motion 子图是本项目最容易体现“不是纯 LLM 套壳”的模块。
 
 更准确的说法：
 
-> 当前系统已经实现了姿态序列分析能力和图片单帧姿态提取能力，视频到姿态序列的适配层是下一阶段最明确的工程演进方向。
+> 当前系统已实现图片/视频姿态提取，以及视频与同 schema 标准样本的通用相似度分析；下一阶段重点是关键点平滑、动作周期切分、正式标准样本集和专项纠错规则。
 
 ## 3. 需求分析
 
@@ -151,7 +158,7 @@ app/tools/pose_estimator.py
 - `PoseSequence` 允许 `C >= 2`，方便后续保存 x/y、x/y/z 或带 visibility 的关键点。
 - 当前 Motion 分析算法仍使用前三维坐标，所以 `.npz` 进入 `load_npz_pose()` 后会转换为 `(T, J, 3)`。
 - `.npz` 兼容 `keypoints`、`pose`、`positions` 三种 key；推荐新数据统一使用 `keypoints`。
-- `pose_estimator.py` 已提供图片数组到 `PoseSequence` 的适配器骨架，MediaPipe 为可选依赖；当前尚未开放图片/视频上传 API。
+- `pose_estimator.py` 已提供图片和视频到 `PoseSequence` 的 MediaPipe 适配器；图片与最小视频上传 API 均已开放。
 
 与当前实现的关系：
 
@@ -160,7 +167,7 @@ app/tools/pose_estimator.py
   -> pose_estimator 提取关键点
   -> PoseSequence
   -> 保存为内部 .npz 或直接传 ndarray
-  -> motion_tool.compute_similarity()
+  -> motion_tool.compute_pose_sequence_similarity()
 ```
 
 这样可以解释清楚：`.npz` 不是让用户手动准备的最终产品输入，而是系统内部可测试、可缓存、可评测的姿态序列载体。
@@ -203,12 +210,14 @@ POST /motion/analyze-image
 视频可以生成多帧姿态序列，适合复用现有 `(T, J, 3)` 分析算法。
 
 ```text
-POST /motion/analyze-media
+POST /motion/analyze-video
   -> 校验视频类型、时长、大小
   -> 抽帧或按 fps 采样
   -> 每帧姿态估计
   -> 关键点平滑和缺失帧处理
   -> PoseSequence(T=N)
+  -> 校验 pose_model / joint_schema 一致
+  -> 以髋关节中点中心化并做尺度归一化
   -> 与标准动作库 PoseSequence 对齐
   -> FastDTW + 多指标相似度
   -> LLM 输出动作报告
@@ -255,7 +264,7 @@ POST /motion/analyze-media
 | `frames_used` | 实际用于分析的帧数 |
 | `joint_schema` | 关键点格式 |
 | `confidence_summary` | 关键点置信度摘要 |
-| `metrics` | 关节角度、DTW、余弦相似度、形状差异等 |
+| `metrics` | DTW、余弦相似度、DTW 对齐后的逐关节平均距离；动作专项关节角尚未接入 |
 | `warnings` | 画面遮挡、置信度低、只能静态分析等提醒 |
 | `answer` | 面向用户的中文解释 |
 
@@ -320,7 +329,7 @@ app/tools/pose_estimator.py
 
 - 单张图片只能分析静态姿态，不能判断完整动作质量。
 - 视频分析受拍摄角度、遮挡、光照、衣着、多人体影响明显。
-- 当前没有标准动作库，所以“和标准动作对比”的演示需要先补数据。
+- 已有标准视频构建工具，但仓库不伪造正式深蹲样本；演示前需用同视角标准视频生成兼容参考。
 - 当前没有自训练模型，姿态估计质量依赖外部成熟模型。
 - 输出是健身参考建议，不是医疗诊断，也不能替代专业教练现场指导。
 
@@ -348,4 +357,4 @@ app/tools/pose_estimator.py
 
 答：
 
-> 当前可以演示 `.npz` 上传后的姿态数据加载和相似度分析链路，也可以演示没有数据时系统不会乱猜，而是提示如何准备姿态数据。图片/视频上传是下一阶段路线，文档已经拆成了 PoseSequence 格式、MediaPipe 适配器、媒体接口、标准动作库和评测集几个步骤。
+> 当前可以演示真实视频生成 PoseSequence，并与同模型同 schema 的标准样本执行 FastDTW、余弦和形状差异。它证明通用动作比较链路成立，但不宣称已经完成动作周期识别、关节级纠错或专业动作质量诊断。

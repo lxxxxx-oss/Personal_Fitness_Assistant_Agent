@@ -1,12 +1,14 @@
 """FastAPI integration tests."""
+import asyncio
 import io
+import threading
 
 import numpy as np
 import pytest
 from PIL import Image
 from fastapi.testclient import TestClient
 from app.main import app
-from app.tools.pose_sequence import PoseSequence
+from app.tools.pose_sequence import PoseSequence, pose_sequence_to_npz_payload
 from app.tools.types import ToolResult
 
 client = TestClient(app)
@@ -29,6 +31,106 @@ class TestChatEndpoint:
         assert "intent" in data
         assert isinstance(data["reply"], str)
         assert len(data["reply"]) > 0
+        assert isinstance(data["sources"], list)
+        assert isinstance(data["warnings"], list)
+        assert isinstance(data["execution"], list)
+        assert any(item["component"] == "llm" for item in data["execution"])
+
+    def test_chat_returns_deduplicated_sources_and_warnings(self, monkeypatch):
+        import app.main as main_module
+
+        class FakeGraph:
+            def invoke(self, state):
+                return {
+                    "intent": "search",
+                    "result": "grounded answer",
+                    "_sources": ["https://example.com/a", "https://example.com/a"],
+                    "_route_execution_warnings": ["search_degraded", "search_degraded"],
+                    "_execution": [
+                        {
+                            "component": "search",
+                            "mode": "mock",
+                            "degraded": True,
+                            "detail": "demo data",
+                        }
+                    ],
+                }
+
+        monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
+        response = client.post(
+            "/chat",
+            json={"user_id": "metadata_user", "message": "搜索最新资料"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["sources"] == ["https://example.com/a"]
+        assert response.json()["warnings"] == ["search_degraded"]
+        assert response.json()["execution"][0] == {
+            "component": "search",
+            "mode": "mock",
+            "degraded": True,
+            "detail": "demo data",
+        }
+
+    def test_websocket_meta_returns_sources_and_warnings(self, monkeypatch):
+        import app.main as main_module
+
+        class FakeGraph:
+            def invoke(self, state):
+                return {
+                    "intent": "search",
+                    "result": "fallback answer",
+                    "_sources": ["https://example.com/ws"],
+                    "_route_execution_warnings": ["partial_route_failure:diet"],
+                    "_execution": [
+                        {"component": "search", "mode": "tavily", "degraded": False}
+                    ],
+                }
+
+        monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
+        with client.websocket_connect("/chat/ws") as websocket:
+            websocket.send_json({"user_id": "ws_metadata_user", "message": "测试来源"})
+            meta = websocket.receive_json()
+            assert meta == {
+                "type": "meta",
+                "intent": "search",
+                "sources": ["https://example.com/ws"],
+                "warnings": ["partial_route_failure:diet"],
+                "execution": [
+                    {
+                        "component": "search",
+                        "mode": "tavily",
+                        "degraded": False,
+                        "detail": "",
+                    },
+                    {
+                        "component": "llm",
+                        "mode": "local_qwen",
+                        "degraded": False,
+                        "detail": "",
+                    },
+                ],
+            }
+            assert websocket.receive_json()["type"] == "token"
+            assert websocket.receive_json()["type"] == "done"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"user_id": "", "message": "hello"},
+            {"user_id": "u" * 65, "message": "hello"},
+            {"user_id": "valid", "message": ""},
+            {"user_id": "valid", "message": "m" * 4097},
+            {"user_id": 123, "message": "hello"},
+        ],
+    )
+    def test_websocket_rejects_payloads_outside_http_contract(self, payload):
+        with client.websocket_connect("/chat/ws") as websocket:
+            websocket.send_json(payload)
+            error = websocket.receive_json()
+
+        assert error["type"] == "error"
+        assert error["code"] == "INVALID_REQUEST"
 
     def test_chat_with_empty_message(self):
         response = client.post("/chat", json={"user_id": "test_user", "message": ""})
@@ -66,7 +168,77 @@ class TestChatEndpoint:
 
         assert response.status_code == 200
         assert "streamed" in response.text
+        assert '"sources": []' in response.text
+        assert '"warnings": []' in response.text
+        assert '"execution":' in response.text
         assert calls == {"generate": 0, "generate_stream": 1}
+
+    def test_websocket_forwards_first_token_before_generation_finishes(self):
+        from app.main import _stream_llm_to_websocket
+
+        release_second_token = threading.Event()
+
+        class SlowLLM:
+            def generate_stream(self, prompt):
+                yield "first"
+                release_second_token.wait(timeout=2)
+                yield "second"
+
+        class FakeWebSocket:
+            def __init__(self):
+                self.messages = []
+                self.first_token_sent = asyncio.Event()
+
+            async def send_json(self, message):
+                self.messages.append(message)
+                if message.get("text") == "first":
+                    self.first_token_sent.set()
+
+        async def scenario():
+            websocket = FakeWebSocket()
+            stream_task = asyncio.create_task(
+                _stream_llm_to_websocket(websocket, SlowLLM(), "prompt")
+            )
+            try:
+                await asyncio.wait_for(websocket.first_token_sent.wait(), timeout=1)
+                assert not stream_task.done()
+                assert websocket.messages == [{"type": "token", "text": "first"}]
+                release_second_token.set()
+                reply = await asyncio.wait_for(stream_task, timeout=1)
+            finally:
+                release_second_token.set()
+            assert reply == "firstsecond"
+            assert websocket.messages[-1] == {"type": "token", "text": "second"}
+
+        asyncio.run(scenario())
+
+    def test_sync_graph_invocation_does_not_block_event_loop(self):
+        from app.main import _invoke_graph
+
+        release_graph = threading.Event()
+
+        class SlowGraph:
+            def invoke(self, state):
+                release_graph.wait(timeout=2)
+                return {**state, "result": "done"}
+
+        async def scenario():
+            loop_progressed = asyncio.Event()
+            graph_task = asyncio.create_task(
+                _invoke_graph(SlowGraph(), {"user_input": "hello"})
+            )
+            try:
+                await asyncio.sleep(0)
+                loop_progressed.set()
+                await asyncio.wait_for(loop_progressed.wait(), timeout=0.5)
+                assert not graph_task.done()
+                release_graph.set()
+                result = await asyncio.wait_for(graph_task, timeout=1)
+            finally:
+                release_graph.set()
+            assert result["result"] == "done"
+
+        asyncio.run(scenario())
 
 
 class TestHistoryEndpoint:
@@ -152,6 +324,14 @@ class TestMotionAnalyzeImageEndpoint:
         assert data["confidence_summary"]["mean"] == 0.9
         assert "静态姿态" in data["message"]
         assert data["warnings"]
+        assert data["execution"] == [
+            {
+                "component": "motion",
+                "mode": "mediapipe_image",
+                "degraded": False,
+                "detail": "",
+            }
+        ]
 
     def test_motion_analyze_image_rejects_non_image_suffix(self):
         response = client.post(
@@ -160,3 +340,182 @@ class TestMotionAnalyzeImageEndpoint:
         )
 
         assert response.status_code == 422
+
+    def test_motion_analyze_image_enforces_server_side_size_limit(self, monkeypatch):
+        from app.tools import pose_estimator
+
+        monkeypatch.setattr(pose_estimator, "MAX_IMAGE_BYTES", 8)
+        response = client.post(
+            "/motion/analyze-image",
+            files={"file": ("pose.png", io.BytesIO(b"x" * 9), "image/png")},
+        )
+
+        assert response.status_code == 413
+        assert "too large" in response.json()["detail"]
+
+
+class TestMotionAnalyzeVideoEndpoint:
+    def test_motion_analyze_video_returns_pose_sequence_summary(self, monkeypatch):
+        from app.tools import pose_estimator
+
+        def fake_estimate_pose_from_video_path(path, source_name=None, **kwargs):
+            sequence = PoseSequence(
+                keypoints=np.zeros((12, 33, 3), dtype=np.float32),
+                fps=10.0,
+                source_type="video",
+                pose_model="mediapipe_pose",
+                joint_schema="mediapipe_33",
+                confidence=np.ones((12, 33), dtype=np.float32) * 0.9,
+                metadata={
+                    "sampled_frames": 15,
+                    "valid_frames": 12,
+                    "valid_frame_ratio": 0.8,
+                },
+            )
+            return ToolResult.ok(data=sequence)
+
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            fake_estimate_pose_from_video_path,
+        )
+        response = client.post(
+            "/motion/analyze-video",
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["source_type"] == "video"
+        assert data["frames"] == 12
+        assert data["joints"] == 33
+        assert data["fps"] == 10.0
+        assert data["sampled_frames"] == 15
+        assert data["valid_frame_ratio"] == 0.8
+        assert data["confidence_summary"]["mean"] == 0.9
+        assert data["reference"] is None
+        assert data["metrics"] is None
+        assert data["execution"] == [
+            {
+                "component": "motion",
+                "mode": "mediapipe_video",
+                "degraded": False,
+                "detail": "",
+            }
+        ]
+
+    def test_motion_analyze_video_rejects_unsupported_suffix(self):
+        response = client.post(
+            "/motion/analyze-video",
+            files={"file": ("squat.txt", io.BytesIO(b"bad"), "text/plain")},
+        )
+        assert response.status_code == 422
+
+    def test_motion_video_compares_with_schema_compatible_reference(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+        from app.tools import pose_estimator
+
+        keypoints = np.random.RandomState(7).randn(12, 33, 3).astype(np.float32)
+        sequence = PoseSequence(
+            keypoints=keypoints,
+            fps=10.0,
+            source_type="video",
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            confidence=np.ones((12, 33), dtype=np.float32) * 0.95,
+            metadata={
+                "sampled_frames": 12,
+                "valid_frames": 12,
+                "valid_frame_ratio": 1.0,
+            },
+        )
+        reference_path = tmp_path / "squat_standard.npz"
+        np.savez_compressed(reference_path, **pose_sequence_to_npz_payload(sequence))
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            lambda *args, **kwargs: ToolResult.ok(data=sequence),
+        )
+
+        response = client.post(
+            "/motion/analyze-video",
+            data={"reference_name": "squat_standard"},
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["reference"] == "squat_standard"
+        assert data["metrics"]["dtw_distance"] == 0.0
+        assert data["metrics"]["cosine_similarity"] > 0.99
+        assert data["execution"][0]["mode"] == "mediapipe_video_similarity"
+        assert "统计接近程度" in data["warnings"][-1]
+
+    def test_motion_video_rejects_incompatible_reference(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+        from app.tools import pose_estimator
+
+        user_sequence = PoseSequence(
+            keypoints=np.random.randn(8, 33, 3).astype(np.float32),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            metadata={"sampled_frames": 8, "valid_frame_ratio": 1.0},
+        )
+        np.savez_compressed(
+            tmp_path / "legacy_squat.npz",
+            keypoints=np.random.randn(8, 17, 3).astype(np.float32),
+        )
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            lambda *args, **kwargs: ToolResult.ok(data=user_sequence),
+        )
+
+        response = client.post(
+            "/motion/analyze-video",
+            data={"reference_name": "legacy_squat"},
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 422
+        assert "joint_schema mismatch" in response.json()["detail"]
+
+    def test_motion_references_marks_legacy_fixture_incompatible(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+
+        np.savez_compressed(
+            tmp_path / "legacy_squat.npz",
+            keypoints=np.random.randn(8, 17, 3).astype(np.float32),
+        )
+        compatible = PoseSequence(
+            keypoints=np.random.randn(8, 33, 3).astype(np.float32),
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+        )
+        np.savez_compressed(
+            tmp_path / "squat_standard.npz",
+            **pose_sequence_to_npz_payload(compatible),
+        )
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+
+        response = client.get("/motion/references")
+
+        assert response.status_code == 200
+        references = {item["name"]: item for item in response.json()["references"]}
+        assert references["legacy_squat"]["compatible_with_video"] is False
+        assert references["squat_standard"]["compatible_with_video"] is True
+        assert references["squat_standard"]["coordinate_space"] == "unknown"

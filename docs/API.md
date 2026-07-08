@@ -12,7 +12,7 @@ http://127.0.0.1:8000
 
 | 方法 | 路径 | 说明 | 状态 |
 |---|---|---|---|
-| GET | `/health` | 健康检查 | 已实现 |
+| GET | `/health` | 进程存活检查，不检查依赖 readiness | 已实现 |
 | POST | `/chat` | 非流式对话 | 已实现 |
 | POST | `/chat/stream` | SSE 流式对话 | 已实现 |
 | WebSocket | `/chat/ws` | WebSocket 流式对话 | 已实现 |
@@ -21,8 +21,10 @@ http://127.0.0.1:8000
 | GET | `/ui` | Web UI 静态页面 | 已实现 |
 | POST | `/motion/analyze` | 上传 `.npz` 做独立动作分析，可选标准动作对比 | 已实现 |
 | POST | `/motion/analyze-image` | 上传图片做单帧静态姿态提取和摘要 | 已实现 |
+| POST | `/motion/analyze-video` | 上传短视频并生成多帧姿态序列摘要 | 已实现 |
+| GET | `/motion/references` | 列出标准动作及其视频 schema 兼容状态 | 已实现 |
 
-## 2. 健康检查
+## 2. 进程存活检查
 
 ```http
 GET /health
@@ -42,6 +44,15 @@ GET /health
 ```bash
 curl http://127.0.0.1:8000/health
 ```
+
+该接口只说明 FastAPI 进程能够响应，不检查 Qwen 模型、Embedding、Milvus、MediaPipe、Tavily 或 MCP Server。部署时应另建 readiness/依赖状态接口。
+
+## 安全与身份边界
+
+- 当前 API 没有登录鉴权和请求限流，仅适合绑定本机地址进行开发演示。
+- `user_id` 是客户端提供的会话键，不是经过验证的用户身份；历史查询和清空接口没有所有权校验。
+- 会话历史只保存在当前 Python 进程内，重启丢失，多 worker/多实例之间不共享，并且当前没有会话键 TTL。
+- CORS 当前允许任意来源。公网部署前必须配置来源白名单、HTTPS/WSS、认证授权、用户级访问控制、限流和安全错误响应。
 
 ## 3. 非流式对话
 
@@ -73,11 +84,27 @@ Content-Type: application/json
   "user_id": "u1",
   "intent": "motion",
   "reply": "...",
-  "sources": []
+  "sources": [],
+  "warnings": [],
+  "execution": [
+    {"component": "motion", "mode": "guidance_only", "degraded": true, "detail": "No uploaded pose data was available"},
+    {"component": "llm", "mode": "local_qwen", "degraded": false, "detail": ""}
+  ]
 }
 ```
 
-`sources` 字段已保留在响应模型中，但当前 `/chat` 构造响应时尚未把 RouterState 的内部 `_sources` 回填，因此现版本通常返回空列表。Search 子图已收集 Tavily URL，并在回答 Prompt 中要求来源编号；“结构化来源公开透传”和逐条 citation 校验仍是后续项。
+`sources` 返回执行链路收集并去重后的来源标识：Search 使用 URL，Chat/Diet RAG 使用知识库 `source` 字段（当前本地知识库为文件名，例如 `fitness_basics.txt`）。Prompt 中的 `[RefN]` 证据块会同时写入来源标识，客户端因此能看到本次使用了哪些知识文件；逐句 citation 与正文引用关系校验仍是后续项。`warnings` 返回组合执行、工具调用或降级过程中产生的非致命提示。`execution` 公开本次请求实际使用的依赖与模式，客户端据此区分真实执行和 mock/fallback；该字段不会包含 Token、服务命令、文件路径或原始异常。
+
+`execution` 元素结构：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `component` | string | `llm`、`rag`、`search`、`mcp` 或 `motion` |
+| `mode` | string | 实际模式，例如 `local_qwen`、`milvus`、`memory_fallback`、`tavily`、`mock` |
+| `degraded` | boolean | 是否使用 mock、fallback 或低能力降级路径 |
+| `detail` | string | 对外安全的简短原因，无补充时为空字符串 |
+
+Diet 请求会先把模型输出解析为结构化画像。身高只接受 80–250cm，体重只接受 20–400kg，性别和目标使用受控枚举；JSON 缺失、字段越界或类型不合法时不会直接信任原始文本，而是使用未知画像继续给通用建议，并在 `warnings` 中加入 `diet_profile_fallback:*`。
 
 命令：
 
@@ -101,7 +128,7 @@ Accept: text/event-stream
 
 ```text
 event: meta
-data: {"intent":"diet"}
+data: {"intent":"diet","sources":[],"warnings":[],"execution":[{"component":"rag","mode":"milvus","degraded":false,"detail":""},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
 
 data: 减脂
 
@@ -115,9 +142,11 @@ data: {}
 
 | 事件 | 说明 |
 |---|---|
-| `meta` | 首个事件，返回识别到的 intent |
+| `meta` | 首个事件，返回 intent、sources、warnings 和 execution 执行轨迹 |
 | 默认 `data` | LLM token 文本 |
 | `done` | 生成结束 |
+
+实现说明：LangGraph 的同步准备阶段通过工作线程执行；本地 LLM 的同步 token 生成器也通过线程到 asyncio queue 桥接，再由 SSE async iterator 逐 token 输出。这样不会阻塞 FastAPI 事件循环，但不会提高模型本身的并行吞吐，单进程生成仍受共享模型锁串行控制。
 
 命令：
 
@@ -145,7 +174,7 @@ ws://127.0.0.1:8000/chat/ws
 服务端返回：
 
 ```json
-{"type":"meta","intent":"mcp"}
+{"type":"meta","intent":"mcp","sources":[],"warnings":[],"execution":[{"component":"mcp","mode":"mock","degraded":true,"detail":"MCP demo mode configured"},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
 {"type":"token","text":"番茄炒蛋"}
 {"type":"token","text":"..."}
 {"type":"done"}
@@ -154,13 +183,15 @@ ws://127.0.0.1:8000/chat/ws
 错误返回：
 
 ```json
-{"type":"error","message":"Missing user_id or message"}
+{"type":"error","code":"INVALID_REQUEST","message":"user_id must be a 1-64 character string and message must be a 1-4096 character string"}
 ```
 
 说明：
 
 - WebSocket 接口适合微信小程序或需要双向连接的客户端。
 - 当前实现为一次连接处理一条用户消息，发送完成后服务端关闭连接。
+- WebSocket 与 HTTP/SSE 复用同一输入约束：`user_id` 为 1-64 字符串，`message` 为 1-4096 字符串；非法 JSON 返回 `Invalid JSON`，字段非法返回 `INVALID_REQUEST`。
+- LangGraph 同步准备阶段运行在工作线程中；本地 LLM 的同步 token 生成器通过共享的 asyncio queue 桥接到 WebSocket，每个 token 生成后立即发送，不再先收集完整列表。
 
 ## 6. 获取对话历史
 
@@ -225,12 +256,13 @@ http://127.0.0.1:8000/ui
 
 ## 9. 动作上传分析
 
-当前对外开放的动作分析接口包括两个入口：
+当前对外开放的动作分析接口包括三个入口：
 
 - `/motion/analyze`：上传 `.npz` 姿态序列，支持可选标准动作库对比。
 - `/motion/analyze-image`：上传图片，提取单帧人体姿态并返回静态姿态摘要。
+- `/motion/analyze-video`：上传短视频，受控抽帧生成 `PoseSequence`；可选兼容标准动作并执行相似度分析。
 
-注意：图片接口只能分析单帧静态姿态，不能判断完整动作节奏、轨迹、发力顺序或多次重复稳定性；视频上传接口尚未开放。
+注意：图片接口只能分析单帧静态姿态；视频接口已经接通标准样本相似度，但仍不包含动作周期切分、关键点平滑和动作专项纠错，因此相似度不能直接等同于专业动作质量评分。
 
 ```http
 POST /motion/analyze
@@ -246,7 +278,7 @@ Content-Type: multipart/form-data
 
 不传 `reference_name` 时，接口只校验和加载上传的姿态数据，返回帧数、关键点数量等基础信息。
 
-传入 `reference_name` 时，接口会从 `config.motion_library_dir` 中查找同名标准动作，并返回 DTW 距离、余弦相似度、形状差异和整体评价。
+传入 `reference_name` 时，接口会从 `config.motion_library_dir` 中查找同名标准动作，并返回 DTW 距离、余弦相似度、形状差异和整体评价。当前 `shape_difference` 的准确定义是：复用 FastDTW 时间对齐路径，计算对应帧逐关节欧氏距离后取全局均值；它比旧版单帧整体范数更能反映关节结构差异，但仍不能定位具体错误关节。
 
 `.npz` 姿态数据说明：
 
@@ -303,7 +335,7 @@ Content-Type: multipart/form-data
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `file` | file | 是 | 图片文件，支持 `.jpg`、`.jpeg`、`.png` |
+| `file` | file | 是 | 图片文件，支持 `.jpg`、`.jpeg`、`.png`，最大 10MB |
 
 处理流程：
 
@@ -333,9 +365,14 @@ Content-Type: multipart/form-data
   "warnings": [
     "单张图片只能分析静态姿态，不能判断动作节奏、轨迹或发力顺序。"
   ],
+  "execution": [
+    {"component": "motion", "mode": "mediapipe_image", "degraded": false, "detail": ""}
+  ],
   "message": "图片姿态已提取为 PoseSequence。当前返回静态姿态摘要；完整动作标准性判断需要视频序列或标准动作库对比。"
 }
 ```
+
+`execution` 明确表示该结果由 MediaPipe 图片姿态链路真实产生；接口不存在 mock 图片分析，模型或依赖缺失时直接返回 `503`。
 
 命令：
 
@@ -348,10 +385,108 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 
 | 状态码 | 场景 |
 |---|---|
+| 413 | 图片超过 10MB；限制由后端分块读取时强制执行，不只依赖客户端校验 |
 | 422 | 文件为空、格式不支持、图片无法解码、未检测到人体姿态 |
 | 503 | Pillow、MediaPipe 或 `pose_landmarker.task` 模型文件缺失 |
 
-## 11. 意图路由规则
+## 11. 视频姿态序列提取
+
+```http
+POST /motion/analyze-video
+Content-Type: multipart/form-data
+```
+
+请求字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file` | file | 是 | 最大 30 MB 的 `.mp4`、`.mov` 或 `.avi` 短视频 |
+| `reference_name` | string | 否 | `/motion/references` 返回的兼容标准动作名称，最长 64 字符 |
+
+当前处理流程：
+
+```text
+视频上传
+  -> 临时文件（请求结束后删除）
+  -> OpenCV 解码并按约 10 FPS 抽帧
+  -> MediaPipe VIDEO 模式
+  -> 最多处理 300 个采样帧
+  -> PoseSequence(T=N, J=33, C=3)
+  -> 可选加载同 pose_model / joint_schema 标准 PoseSequence
+  -> 已知 coordinate_space 不一致时拒绝比较
+  -> 髋中心归一化 -> FastDTW + 余弦相似度 + DTW 对齐逐关节平均距离
+  -> 返回有效帧率、置信度和可选相似度指标
+```
+
+响应示例：
+
+```json
+{
+  "filename": "squat.mp4",
+  "source_type": "video",
+  "frames": 15,
+  "joints": 33,
+  "fps": 7.5,
+  "pose_model": "mediapipe_pose",
+  "joint_schema": "mediapipe_33",
+  "sampled_frames": 15,
+  "valid_frame_ratio": 1.0,
+  "confidence_summary": {"mean": 0.9926, "min": 0.9579, "max": 1.0},
+  "reference": "squat_standard",
+  "metrics": {
+    "dtw_distance": 0.18,
+    "cosine_similarity": 0.91,
+    "shape_difference": 0.12,
+    "labels": {"dtw": "优秀", "cosine": "优秀", "shape": "优秀"},
+    "overall_verdict": "动作与标准高度一致，三个维度均为优秀。"
+  },
+  "warnings": [
+    "相似度仅表示与所选标准样本的统计接近程度，不等同于专业教练的动作质量诊断。"
+  ],
+  "execution": [
+    {"component": "motion", "mode": "mediapipe_video_similarity", "degraded": false, "detail": ""}
+  ],
+  "message": "视频已转换为 PoseSequence，并完成与标准动作的相似度分析。"
+}
+```
+
+不传 `reference_name` 时，`reference` 和 `metrics` 为 `null`，执行模式为 `mediapipe_video`。传入兼容参考时，执行模式为 `mediapipe_video_similarity`。`frames` 是检测到姿态的有效帧数，`sampled_frames` 是实际送入姿态估计的抽样帧数，二者不能混为一谈。
+
+标准动作查询：
+
+```http
+GET /motion/references
+```
+
+```json
+{
+  "references": [
+    {
+      "name": "squat_standard",
+      "frames": 42,
+      "joints": 33,
+      "pose_model": "mediapipe_pose",
+      "joint_schema": "mediapipe_33",
+      "coordinate_space": "world",
+      "compatible_with_video": true,
+      "reason": ""
+    }
+  ]
+}
+```
+
+早期 `data/motions/squat.npz` 是 17 关节、无 schema 的 legacy 占位数据，会被标记为不兼容，不能用于 MediaPipe 33 点视频评分。新构建的标准动作还会保存 `coordinate_space`；用户与参考均声明坐标空间且值不一致时返回 422。旧文件缺少该字段时保留兼容，但结果边界必须显式说明。
+
+错误：
+
+| 状态码 | 场景 |
+|---|---|
+| 413 | 视频超过 30 MB |
+| 422 | 后缀不支持、无法解码、未检测到人体或参考动作 schema/model 不兼容 |
+| 404 | `reference_name` 在标准动作库中不存在 |
+| 503 | OpenCV、MediaPipe 或 `pose_landmarker.task` 缺失 |
+
+## 12. 意图路由规则
 
 当前 Router 使用“加权规则 + 确定性歧义处理 + 语义样例 fallback + 可选本地 LLM classifier”。系统会扫描所有 intent 的短语和组合规则，识别顺序词、否定约束、跨域计划、plan-vs-motion、diet-vs-recipe 等 ambiguity signals；低置信或指定 review signal 才允许尝试 LLM。真实 Qwen provider 已接入，但 `LLM_ROUTER_ENABLED` 默认关闭。即使开启，LLM 也必须通过严格 JSON、合法 intent、非澄清、最低置信度，并且置信度高于当前规则才允许覆盖。
 
@@ -369,15 +504,16 @@ curl -X POST http://127.0.0.1:8000/motion/analyze-image \
 
 Phase 4 的执行层只允许四种两步组合：`search -> diet`、`search -> chat`、`motion -> chat`、`motion -> diet`。其他 route plan、需要澄清的请求仍只执行主意图。多步结果由 final synthesis 合并；部分子图失败时保留成功结果，全部失败时返回错误文本。SSE 和 WebSocket 对多步请求仍只进行一次最终流式生成，公开协议没有新增字段。
 
-## 12. 状态码
+## 13. 状态码
 
 | 状态码 | 说明 |
 |---|---|
 | 200 | 成功 |
 | 422 | 请求参数校验失败，例如 `user_id` 或 `message` 为空/超长 |
+| 413 | 上传图片或视频超过后端大小限制 |
 | 500 | 服务内部错误，例如模型加载失败、子图执行异常 |
 
-## 13. 快速启动
+## 14. 快速启动
 
 ```bash
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000

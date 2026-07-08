@@ -4,7 +4,7 @@ from typing import Literal
 
 from langgraph.graph import StateGraph, END
 
-from app.graph.state import RouterState
+from app.graph.state import RouterState, record_execution
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,13 @@ def parse_node(state: RouterState) -> RouterState:
 
     state["_tools_to_call"] = tools_to_call  # type: ignore
     state["_parse_done"] = True  # type: ignore
+    record_execution(
+        state,
+        "motion",
+        "npz_analysis" if tools_to_call else "guidance_only",
+        degraded=not bool(tools_to_call),
+        detail="No uploaded pose data was available" if not tools_to_call else "",
+    )
     return state
 
 

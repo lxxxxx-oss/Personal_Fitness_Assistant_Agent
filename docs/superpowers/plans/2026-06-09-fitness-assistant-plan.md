@@ -1,5 +1,7 @@
 # 健身智能助手 Agent — 实施计划
 
+> 归档说明：这是项目启动阶段的任务拆解，复选框不再代表当前完成度。当前状态统一查看 [../../README.md](../../README.md)。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 构建一个基于 LangGraph 的多任务健身智能助手，支持联网搜索、3D 动作分析、饮食推荐、RAG 知识问答，通过 FastAPI 提供服务。

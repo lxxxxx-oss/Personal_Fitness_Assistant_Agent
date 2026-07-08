@@ -30,6 +30,26 @@ Component({
       type: Boolean,
       value: false,
     },
+    sources: {
+      type: Array,
+      value: [],
+    },
+    warnings: {
+      type: Array,
+      value: [],
+    },
+    execution: {
+      type: Array,
+      value: [],
+    },
+    imagePath: {
+      type: String,
+      value: '',
+    },
+    videoPath: {
+      type: String,
+      value: '',
+    },
     msgId: {
       type: String,
       value: '',
@@ -69,6 +89,14 @@ Component({
     _stripThinkTags(text) {
       if (!text) return '';
       return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    },
+
+    previewImage() {
+      if (!this.properties.imagePath) return;
+      wx.previewImage({
+        current: this.properties.imagePath,
+        urls: [this.properties.imagePath],
+      });
     },
 
     _formatTime(ts) {

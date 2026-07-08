@@ -158,6 +158,14 @@ class TestMCPSubgraphFallback:
         assert state["_mcp_configured_command"] == "missing-howtocook-mcp"
         assert "missing-howtocook-mcp" in state["_mcp_fallback_reason"]
         assert state["_mcp_tools"]
+        assert state["_execution"] == [
+            {
+                "component": "mcp",
+                "mode": "mock",
+                "degraded": True,
+                "detail": "MCP server unavailable; using demo tool data",
+            }
+        ]
 
         mcp_subgraph._mcp_client = None
         mcp_subgraph._mcp_configured_command = None

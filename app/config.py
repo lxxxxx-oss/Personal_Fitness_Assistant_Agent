@@ -19,6 +19,10 @@ def _get_float_env(name: str, default: float) -> float:
     value = os.getenv(name)
     if value is None or value == "":
         return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 def _get_bool_env(name: str, default: bool) -> bool:

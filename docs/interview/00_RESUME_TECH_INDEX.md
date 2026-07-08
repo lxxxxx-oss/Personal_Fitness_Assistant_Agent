@@ -12,7 +12,7 @@
 
 | 技术点 | 它是什么 | 在简历项目里的作用 | 怎么用 | 类似方案 | 为什么选择 / 怎么讲取舍 |
 |---|---|---|---|---|---|
-| Python | 通用后端和 AI 工程语言，生态里有大量模型、向量检索、数值计算库。 | 作为健身 Agent 后端主语言，承接 LangGraph、RAG、Motion、MCP Client 等模块。 | 写 API、Agent 编排、向量化、NumPy 动作算法、工具调用和测试脚本。 | Java、Go、Node.js。 | AI 生态最成熟，原型效率高；生产化时性能瓶颈模块可拆服务或用更高性能实现。 |
+| Python | 通用后端和 AI 工程语言，拥有成熟的模型、向量检索和数值计算生态。 | 作为健身 Agent 后端主语言，承接 LangGraph、RAG、Motion、MCP Client 等模块。 | 编写 API、Agent 编排、向量化、NumPy 动作算法、工具调用和测试脚本。 | Java、Go、Node.js。 | AI 生态完整、集成效率高；性能敏感模块可进一步拆分为独立服务。 |
 | LLM | 大语言模型，擅长自然语言理解、规划、总结和表达。 | 负责理解用户意图、生成回答、改写搜索 query、解释动作分析指标。 | 不让 LLM 单独决定所有结果，而是让它结合 RAG、搜索、数值算法和工具结果输出。 | 传统规则系统、分类模型、模板系统。 | LLM 适合语言层任务，但不擅长精确计算和事实更新，所以必须结合工具。 |
 | Agent | 会根据任务选择流程、工具和状态的大模型应用。 | 把健身问答、联网搜索、动作分析、饮食/菜谱工具调用组织成一个系统。 | 用户请求先进入 Router，再进入 Chat/RAG、Search、Motion、MCPTool 等子工作流。 | 单 Prompt 应用、传统后端规则系统、完全自主规划 Agent。 | 比单 Prompt 更可控，比完全自主 Agent 更稳定，适合健康类场景。 |
 | LangGraph | 用图结构编排 Agent 流程的框架。 | 让多任务 Agent 的节点、状态、边显式化。 | 用 StateGraph 维护统一状态，Router 决定流向不同子工作流。 | 手写 if/else、LangChain Chain、AutoGen、CrewAI。 | 比 if/else 更清晰，比开放式多 Agent 更受控，方便讲架构和扩展。 |
@@ -23,27 +23,31 @@
 | Sentence-Transformers | 把文本编码成向量的语义模型库。 | 把健身知识 chunk 和用户问题转成 embedding。 | 文档和 query 都编码为向量，用 COSINE 做语义相似度检索。 | OpenAI Embeddings、bge、e5、Jina Embeddings。 | 本地可运行、成本低、适合原型；生产化可替换更强 embedding 模型。 |
 | sentence-aware 分块 | 尽量按句子边界切分文本，而不是粗暴按字符截断。 | 让 RAG chunk 更完整，避免把一句话或一个知识点切碎。 | 先按句子/段落切，再控制 chunk 长度和 overlap。 | 固定长度切分、Markdown 结构切分、语义分块。 | 比固定字符切分更适合中文知识文档，原型成本低。 |
 | embedding | 文本或数据的向量表示。 | 让“减脂晚餐怎么吃”和相关知识片段能通过语义相似度匹配。 | 文档入库时生成 embedding，查询时也生成 embedding，再做近邻搜索。 | 关键词倒排索引、人工标签。 | embedding 能处理同义表达，但要通过评测验证召回质量。 |
-| Milvus | 向量数据库，负责存储向量并做近似最近邻检索。 | 项目已支持可选 Milvus RAG 后端，默认 Memory 保持轻量可运行。 | chunk + embedding + source 写入 Collection，通过 IVF_FLAT + COSINE 检索 Top-K；服务不可用时 fallback 到 MemoryRetriever。 | FAISS、Chroma、Qdrant、Elasticsearch/OpenSearch。 | Milvus 更适合讲生产化向量检索、索引参数、召回和延迟权衡；保留 Memory fallback 体现演示稳定性。 |
+| Milvus | 向量数据库，负责持久化向量并执行近似最近邻检索。 | 承载健身知识 RAG 的向量存储与检索。 | chunk、embedding、source 写入 Collection，使用 IVF_FLAT + COSINE 检索 Top-K，并通过 nlist/nprobe 平衡召回与延迟。 | FAISS、Chroma、Qdrant、Elasticsearch/OpenSearch。 | 相比纯内存方案，Milvus 更适合持久化、索引管理和后续扩展；Retriever 接口保持上层无感。 |
 | IVF_FLAT / ANN | IVF_FLAT 是一种近似最近邻索引；ANN 指近似最近邻搜索。 | 在 Milvus 方案中提升大规模向量检索效率。 | nlist 控制分桶，nprobe 控制查询多少桶，在召回和延迟间取舍。 | HNSW、FLAT、DiskANN。 | IVF_FLAT 好解释、适合面试讲清参数含义；不是回答质量的充分条件。 |
 | COSINE 相似度 | 衡量两个向量方向是否相近的指标。 | 用于 query 与知识 chunk 的语义匹配。 | 对 embedding 归一化后计算余弦相似度，选 Top-K。 | L2 距离、内积 IP。 | 文本语义更关注方向，COSINE 是常用选择；最终要用 Recall@K 验证。 |
-| 阈值过滤 / 去重 / 排序 | RAG 检索后的后处理链路。 | 减少无关片段、重复片段进入 Prompt。 | 低于相似度阈值丢弃，相同来源或高度重复内容去重，再按分数排序。 | reranker、规则过滤、人工标签。 | 原型阶段性价比高；生产化可引入 reranker 提升精度。 |
+| 阈值过滤 / 去重 / 来源透传 | RAG 检索后的处理链路。 | 减少无关片段并保留回答依据。 | 低于阈值的结果丢弃；召回内容与 source 组成 `[RefN]` 证据块，去重后的 source 同时进入 API metadata。 | reranker、规则过滤、人工标签。 | 当前完成来源标识可追溯，不等于逐句 citation 已验证；生产化可引入 reranker 和 citation verifier。 |
 | Tavily | 面向 LLM 应用的联网搜索 API。 | 负责最新健身信息、外部资料和时效性问题。 | Query Understanding -> Tavily Search -> Answer Synthesis。 | Bing Search API、SerpAPI、直接爬虫。 | Tavily 易接入且结果结构化，适合个人项目展示搜索链路。 |
 | Query Understanding / query rewrite | 把用户口语问题改写成更适合检索或搜索的查询。 | 提升 Tavily 搜索召回质量。 | 提取核心实体、时间、目标和约束，生成搜索 query。 | 直接用原始问题、关键词抽取、LLM classifier。 | 原始问题常有口语和上下文，改写能提升稳定性，但要记录原 query 防止丢约束。 |
 | Answer Synthesis | 把多个检索或搜索结果综合成最终回答。 | 让搜索结果变成结构化、可读、有来源约束的回答。 | 输入 title/content/url，输出总结、建议和来源。 | 直接返回搜索列表、模板拼接。 | 用户需要答案而不是结果列表，但要避免编造来源。 |
-| Motion | 动作分析模块。 | 支撑 3D 动作相似度分析和动作指导亮点。 | 输入姿态序列，计算归一化、关节角、DTW、余弦相似度和形状差异。 | 只用 LLM 看图、规则阈值、训练动作分类模型。 | 没有大规模标注数据时，姿态关键点 + 相似度算法最适合原型验证。 |
-| 3D 人体姿态关键点 | 人体关节在每一帧的三维坐标。 | 把视频/图片中的人体动作转成可计算数据。 | 表示成 `(T, J, 3)`，T 是帧数，J 是关节点数，3 是 x/y/z。 | 2D 关键点、IMU 传感器、骨骼动作捕捉。 | 3D 比 2D 更能表达空间姿态，但对姿态估计模型和数据质量有要求。 |
-| `.npz` | NumPy 的压缩数组文件格式。 | 原型阶段承载姿态关键点序列。 | 把关键点数组和元数据保存为 npz，Motion 模块读取后分析。 | JSON、CSV、Parquet、数据库。 | npz 适合本地数值数组原型；真实用户上传应扩展为图片/视频 -> 姿态估计 -> PoseSequence。 |
+| 结构化画像校验 | 把 LLM 提取结果转换为受约束的数据模型。 | Diet 在检索和生成前处理身高、体重、性别、目标和偏好。 | 从模型文本提取 JSON，用 Pydantic 校验范围、枚举和长度；失败时使用未知画像并记录 warning。 | 直接使用 LLM 字符串、正则提取、Function Calling。 | 避免错误或恶意模型输出直接污染检索和推荐；仍需用户确认与隐私治理。 |
+| Motion | 动作分析模块。 | 支撑姿态序列相似度分析和动作指导亮点。 | 独立媒体 API 将图片/视频转成 PoseSequence，并做归一化、DTW、余弦和 DTW 对齐逐关节平均距离；对话 Motion 子图负责文本规划与 `.npz` 工具链。 | 只用 LLM 看图、规则阈值、训练动作分类模型。 | 没有大规模标注数据时，成熟姿态模型 + 可解释数值算法最适合原型验证；当前媒体 API 尚未作为附件接入 `/chat`。 |
+| MediaPipe Pose | Google 提供的预训练人体姿态估计方案。 | 把普通图片或视频帧转换为人体关键点，补齐 Motion 的媒体输入层。 | 图片使用 IMAGE 模式；视频由 OpenCV 抽帧后使用 VIDEO 模式和递增时间戳推理，输出 33 个关键点。 | MoveNet、RTMPose、YOLO-Pose、OpenPose。 | 本地运行、接入成本低且无需自行训练；复杂遮挡和专项精度不足时再替换模型。 |
+| PoseSequence | Motion 内部统一姿态数据契约。 | 隔离媒体输入、姿态模型和下游分析算法，避免下游绑定 MediaPipe。 | 保存 `(T,J,C)` keypoints、fps、source_type、pose_model、joint_schema、confidence 和 metadata。 | 直接传 ndarray、模型原始结果、逐帧 JSON。 | 统一契约便于测试、持久化和替换上游模型，也兼容 `.npz`。 |
+| OpenCV 视频抽帧 | 视频解码和帧采样工具。 | 控制视频推理量，把短视频转换成有限帧序列。 | 当前默认目标约 10 FPS、最多 300 个采样帧，并统计有效姿态帧比例。 | FFmpeg、PyAV、逐帧全量推理。 | OpenCV 接入简单；限量采样可以控制延迟和资源，生产化再补异步任务和硬件加速。 |
+| 3D 人体姿态关键点 | 人体关节在每一帧的三维坐标。 | 把视频/图片中的人体动作转成可计算数据。 | 表示成 `(T, J, 3)`，T 是帧数，J 是关节点数，3 是 x/y/z；真实视频链路已验证 `mediapipe_33`。 | 2D 关键点、IMU 传感器、骨骼动作捕捉。 | 3D 比 2D 更能表达空间姿态，但对姿态估计模型、视角和数据质量有要求。 |
+| `.npz` | NumPy 的压缩数组文件格式。 | 承载姿态关键点序列、标准动作和离线评测数据。 | 把 PoseSequence 的关键点与元数据落盘，Motion 模块读取后分析；普通用户可直接上传图片/视频。 | JSON、CSV、Parquet、数据库。 | `.npz` 适合本地数值数组和标准库，不再要求普通用户手工准备。 |
 | NumPy | Python 数值计算库。 | 实现姿态归一化、角度计算、相似度指标。 | 用数组运算处理关键点序列。 | PyTorch、TensorFlow、纯 Python。 | NumPy 轻量、稳定，适合无训练的确定性算法；训练模型时再用 PyTorch。 |
 | 姿态归一化 | 消除身高、站位、尺度差异对姿态比较的影响。 | 让动作相似度更关注动作本身。 | 中心化、尺度归一化、必要时做方向对齐。 | 原始坐标直接比较、相机标定、多视角重建。 | 原型阶段必要且成本低；生产化还要处理视角、遮挡和置信度。 |
-| 关节角度 | 由三个关键点计算出的身体关节弯曲角。 | 让动作反馈更可解释，例如膝盖、髋部、肘部角度。 | 用向量夹角计算关节角，再和标准动作范围比较。 | 直接比较坐标、训练分类器。 | 角度比坐标更符合健身动作语言，便于生成指导建议。 |
+| 关节角度 | 由三个关键点计算出的身体关节弯曲角。 | 后续让动作反馈落到膝、髋、肘等局部结构。 | 当前已实现通用三点夹角函数，但尚未接入公开媒体响应，也没有动作类型到关键关节和标准范围的映射。 | 直接比较坐标、训练分类器。 | 角度比坐标更符合健身动作语言；当前只能讲“算法原语已实现、专项规则待接入”。 |
 | FastDTW / DTW 距离 | 比较两段时间序列相似度的算法，允许速度不同。 | 比较用户动作和标准动作的时序相似度。 | 对姿态序列或特征序列做时间对齐，输出距离。 | 标准 DTW、Soft-DTW、动作阶段切分。 | FastDTW 复杂度更低，适合原型；标准 DTW 更准确但更慢。 |
 | 余弦相似度 | 衡量两个向量方向是否一致。 | 衡量归一化姿态特征整体方向是否相似。 | 把姿态或特征展开为向量后计算 cosine。 | L2 距离、皮尔逊相关。 | 和 RAG 中 COSINE 类似，直观且容易解释。 |
-| 形状差异 | 衡量人体结构或轨迹形态的平均差异。 | 补充 DTW 和 cosine，说明动作姿态哪里不像。 | 逐帧比较关键点相对结构或骨架形状。 | Procrustes 分析、骨长约束、关节角规则。 | 多指标组合比单一分数更容易解释动作问题。 |
-| ReAct | Reasoning + Acting，先推理、再行动、再观察。 | Motion 子图的 think -> parse -> tool -> check 状态流。 | LLM 先判断任务，再解析参数，调用动作分析工具，检查结果。 | Function Calling、Plan-and-Execute、Chain-of-Thought。 | 受控 ReAct 既能体现工具调用，又避免开放式循环失控。 |
-| MCP | Model Context Protocol，模型应用连接外部工具的标准协议。 | 支撑外部菜谱/工具调用能力。 | Client 通过 JSON-RPC 与 MCP Server 完成 initialize、tools/list、tools/call。 | 直接 HTTP API、LangChain Tools、OpenAPI function calling。 | MCP 更适合展示标准化工具接入、schema、权限和降级治理。 |
-| JSON-RPC | 一种用 JSON 表达请求、响应和 id 匹配的远程调用协议。 | MCP Client 与 Server 通信的基础形式。 | 通过 stdio 发送包含 method、params、id 的 JSON 消息，按 id 匹配响应。 | REST、gRPC、WebSocket 自定义协议。 | 简单、轻量、适合本地进程工具通信。 |
+| 形状差异 | 时间对齐后对应关节位置的平均距离。 | 补充 DTW 和 cosine，衡量对齐后的全身结构偏差。 | 复用 FastDTW 路径，对每对对应帧计算逐关节欧氏距离，再取全局均值。 | Procrustes 分析、骨长约束、关节角规则。 | 当前只能说明总体偏差，不能回答具体哪个关节错误；阈值也需要正式样本校准。 |
+| ReAct-inspired 状态流 | 借鉴 Reasoning + Acting，把推理、参数解析、工具执行和检查拆开。 | Motion 子图的 `think -> parse -> tool -> check`。 | 当前每次请求按固定边执行一次，不会根据观察结果回到 think/parse 继续自主规划。 | Function Calling、Plan-and-Execute、完整 ReAct 循环。 | 分阶段状态流便于观察和测试；准确口径是“借鉴 ReAct”，不是多轮自主 Agent。 |
+| MCP | Model Context Protocol，模型应用连接外部工具的标准协议。 | 支撑外部菜谱/工具调用能力。 | 轻量 Client 已通过 JSON-RPC 发出 initialize、tools/list、tools/call，并解析首个 text content block；默认使用 mock。 | 直接 HTTP API、LangChain Tools、OpenAPI function calling。 | 当前没有完成响应 ID 校验、inputSchema 参数校验和真实 Server 兼容性验收，准确口径是“协议主链路原型”。 |
+| JSON-RPC | 一种用 JSON 表达请求、响应和 id 的远程调用协议。 | MCP Client 与 Server 通信的基础形式。 | 当前请求会生成 UUID，但实现按 stdout 下一行读取响应，没有核对响应 id；只适合串行原型。 | REST、gRPC、WebSocket 自定义协议。 | 生产化需要 id 匹配、并发请求表、通知语义和协议错误校验。 |
 | subprocess / stdio | 启动子进程并用标准输入输出通信。 | 本地拉起 MCP Server 并交换 JSON-RPC 消息。 | Python 启动 server command，stdin 写请求，stdout 读响应。 | HTTP 服务、消息队列、Unix Socket。 | 本地工具接入轻量，适合演示；生产化要补隔离、超时和权限。 |
-| Sliding Window Memory | 只保留最近 N 轮对话的短期记忆。 | 让不同任务共享最近上下文，例如减脂目标。 | 用 deque 保存最近 6 轮，每次请求注入统一状态。 | 全量历史、摘要记忆、向量长期记忆。 | 简单可控，成本低；不是长期画像，生产化要考虑隐私和持久化。 |
+| Sliding Window Memory | 只保留最近 N 轮对话的短期记忆。 | 控制历史长度并为 Chat 多轮问答提供上下文。 | deque 按 `user_id` 最多保存 6 轮；当前只有 Chat 读取，并只注入最后 6 条消息（约 3 轮）。 | 全量历史、摘要记忆、向量长期记忆。 | 简单可控，但尚未实现 Search、Diet、Motion、MCP 的跨子图记忆消费；生产化还要考虑认证、隐私和持久化。 |
 | collections.deque | Python 双端队列。 | 实现固定容量滑动窗口。 | append 新消息，超过容量自动或手动淘汰旧消息。 | list、queue.Queue、Redis List。 | 两端操作 O(1)，比 list 头删更适合滑动窗口。 |
 | Docker | 容器化工具。 | 体现项目部署意识，减少环境差异。 | 把后端依赖、启动方式、模型挂载、环境变量组织起来。 | 本地 venv/conda、Docker Compose、Kubernetes。 | 比纯本地脚本更可交付；个人项目不用夸大成生产集群。 |
 

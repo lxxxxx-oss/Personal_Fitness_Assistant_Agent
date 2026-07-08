@@ -13,9 +13,9 @@
 | 健身知识问答 | 本地知识库 RAG 检索后由 LLM 生成回答 |
 | 联网搜索 | Tavily 搜索、来源整理和 mock 降级 |
 | 饮食与菜谱建议 | Diet 负责用户画像、营养检索和饮食建议；MCPTool 负责外部菜谱工具发现与调用 |
-| 动作分析 | `.npz` 姿态序列分析，以及图片单帧静态姿态摘要 |
+| 动作分析 | 独立媒体 API 将图片/视频转为 PoseSequence，视频可选择同 schema 标准动作执行 FastDTW 与多指标相似度分析；对话中的 Motion 子图负责文本规划、`.npz` 工具调用与结果解释 |
 
-项目面试展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、RAG/Search 数据增强，以及记忆、流式输出和失败降级。RAG 已支持 Memory/Milvus 双后端：默认使用 Sentence-Transformers + NumPy 内存向量检索保证轻量可运行；设置 `RETRIEVER_BACKEND=milvus` 后可使用 Milvus Collection、IVF_FLAT 和 COSINE 检索。
+项目展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、Milvus RAG/Search 数据增强，以及记忆、流式输出和失败降级。
 
 ## 2. 系统架构
 
@@ -38,8 +38,8 @@
 | 后端 | FastAPI、Pydantic、uvicorn |
 | 图编排 | LangGraph、StateGraph、条件边、子图嵌套 |
 | LLM | Qwen3-0.6B、HuggingFace Transformers 本地加载 |
-| 检索 | Sentence-Transformers + Memory/Milvus 双后端；默认 NumPy COSINE 检索，Milvus 模式支持 Collection、IVF_FLAT、COSINE 和 fallback |
-| 姿态算法 | NumPy、SciPy、FastDTW、Pillow；MediaPipe 为图片姿态估计可选依赖 |
+| 检索 | Sentence-Transformers + Milvus IVF_FLAT/COSINE；支持幂等 upsert、来源字段与内存降级 |
+| 姿态算法 | NumPy、SciPy、FastDTW、Pillow、OpenCV；MediaPipe 为图片/视频姿态估计可选依赖 |
 | 工具协议 | subprocess + stdio JSON-RPC 2.0 MCP Client，支持真实 Server 与 mock fallback |
 | 前端 | Web UI、微信小程序原生 WXML/WXSS/JS |
 | 测试 | pytest、Router 离线评测、专项验收记录 |
@@ -49,18 +49,18 @@
 | 模块 | 当前状态 |
 |---|---|
 | Router | Phase 4 已完成：保留 Phase 3 hybrid classifier，增加多意图观测、四种白名单两步组合、错误隔离和结果合成；真实 Qwen classifier 因收益不足默认关闭 |
-| Chat RAG | 已完成共享知识库检索、记忆注入和 Memory/Milvus 双后端切换 |
+| Chat RAG | 已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传和 Chat 记忆注入；逐句 citation 校验与真实效果基线待补 |
 | Search | 已完成 Tavily 接入和 mock 降级 |
-| Diet | 已完成画像提取、营养 RAG 和建议生成 |
-| Motion | 子图、算法、`PoseSequence`、姿态估计适配器、`.npz` 接口和图片静态接口已完成；标准动作库和视频时序入口待补 |
-| MCP | Client、initialize 握手、`tools/list`、`tools/call`、content 解析和 MCP 子图已完成；默认 mock，真实 Server 需显式配置与联调 |
-| Memory | 已完成滑动窗口记忆，默认保留 6 轮并按 `user_id` 隔离 |
-| 流式接口 | SSE 和 WebSocket 已完成 |
+| Diet | 已完成 Pydantic 结构化画像解析、身高体重范围/枚举校验、非法输出 warning 降级、营养 RAG 和建议生成 |
+| Motion | 独立图片/视频 API、PoseSequence、标准视频构建脚本、schema 安全比较及小程序参考选择已完成；媒体上传尚未作为附件进入 `/chat` Router，关节角专项规则、平滑、周期切分和正式样本集待补 |
+| MCP | 轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析；默认 mock，尚未校验响应 ID、按 inputSchema 验参或完成真实 Server 兼容性验收 |
+| Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前只有 Chat 子图读取历史，且 Prompt 注入最后 6 条消息（约 3 轮），跨子图记忆消费待补 |
+| 异步接口 | HTTP/SSE/WebSocket 的同步 LangGraph 阶段通过 `asyncio.to_thread` 执行；SSE 与 WebSocket 共用线程到 asyncio queue 桥接逐 token 输出，避免阻塞事件循环；模型生成锁仍保证同进程串行推理 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
-| 微信小程序 | 代码基本完成，端到端联调未完成 |
+| 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `120 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `155 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -70,12 +70,22 @@
 | 本地 LLM 重复加载可能 OOM | 进程级模型缓存、首次加载锁和生成串行化 | 拆成独立模型推理服务 |
 | Embedding 首次加载依赖网络 | 加载失败时降级为关键词匹配 | 固化模型资产并建设向量服务 |
 | Tavily 未配置或调用失败 | 未配置 key 时返回 mock；真实调用失败时返回可处理错误并记录降级 warning | 增加超时、重试、熔断和可观测性 |
+| Diet 画像来自 LLM | JSON 解析后通过 Pydantic 校验；非法、越界或非对象输出降级为空画像并产生 warning | 增加多轮补全、用户确认和敏感画像治理 |
+| mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
 | MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
-| Milvus RAG 运行边界 | 已支持可选 Milvus 后端；默认仍用 Memory 保证轻量演示，Milvus 服务不可用时自动 fallback | 补真实 Milvus 集成验收、Recall@K、MRR、P95 延迟和来源覆盖率评测 |
-| Motion 缺标准动作库 | 支持 `.npz` 和图片静态分析，不伪造完整动作判断 | 补标准动作数据、视频抽帧和时序分析 |
+| Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入、知识来源标识透传和容器配置已完成 | 补真实冒烟、Recall@K、MRR、生成忠实度与 P95 延迟基线 |
+| Motion 缺正式标准样本集 | 已提供标准视频构建脚本和同 schema 相似度链路；legacy 17 点占位数据会被拒绝 | 采集同视角标准动作、教练标注、周期切分和专项规则 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
-| 小程序 SSE 存在端侧差异 | `wx.request enableChunked`，可降级到非流式接口 | 完成真机和不同基础库版本验收 |
+| 小程序 WebSocket 存在端侧与网络差异 | 建连或执行失败时降级到非流式接口 | 完成真机、弱网和不同基础库版本验收 |
 | Docker 模型路径跨机器 | 配置支持环境变量覆盖 | 使用平台无关镜像和模型服务 |
+| 服务没有认证与限流 | 当前只绑定本机地址用于开发演示；`user_id` 不是身份凭证 | 接入认证授权、用户级访问控制、限流和审计 |
+| 会话仅在进程内 | `_sessions` 按用户键保存，重启丢失且没有用户键淘汰 | 使用带 TTL 的 Redis/数据库，并提供删除与隐私治理 |
+| CORS 与错误边界偏宽 | CORS 允许任意来源，部分内部异常可能进入 500 detail | 配置来源白名单、统一安全错误响应和日志脱敏 |
+| `/health` 只证明进程存活 | 固定返回版本，不探测模型、检索或外部工具 | 拆分 liveness 与 readiness，并展示依赖级状态 |
+
+### 本地原型安全声明
+
+当前 API 没有登录鉴权、租户隔离或请求限流，`user_id` 只是客户端提供的会话键。知道某个 `user_id` 的调用方可以读取或清空对应内存历史；CORS 也允许任意浏览器来源。项目默认监听 `127.0.0.1`，只适合本地开发和面试演示，不应直接暴露到公网。生产化前必须补认证授权、HTTPS、来源白名单、会话 TTL/持久化、上传与请求限流、错误脱敏和审计日志。
 
 ## 5. 对外接口
 
@@ -83,7 +93,7 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/health` | 健康检查 |
+| GET | `/health` | 进程存活检查，不检查外部依赖 readiness |
 | POST | `/chat` | 非流式对话 |
 | POST | `/chat/stream` | SSE 流式对话 |
 | WebSocket | `/chat/ws` | WebSocket 流式对话 |
@@ -92,6 +102,8 @@
 | GET | `/ui` | Web UI |
 | POST | `/motion/analyze` | 上传 `.npz`，可选标准动作对比 |
 | POST | `/motion/analyze-image` | 上传图片并生成单帧静态姿态摘要 |
+| POST | `/motion/analyze-video` | 上传短视频并生成多帧姿态序列摘要 |
+| GET | `/motion/references` | 查看标准动作及视频比较兼容状态 |
 
 ## 6. 快速运行
 
@@ -104,10 +116,10 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 启动后访问：
 
-- 健康检查：`http://127.0.0.1:8000/health`
+- 进程存活检查：`http://127.0.0.1:8000/health`
 - Web UI：`http://127.0.0.1:8000/ui`
 
-Motion 图片分析需要额外安装 `requirements-motion.txt` 并准备 `data/models/pose_landmarker.task`。完整安装、配置、测试、Router eval、Docker 和小程序联调命令见 [RUNBOOK.md](./RUNBOOK.md)。
+Motion 图片/视频分析需要额外安装 `requirements-motion.txt` 并准备 `data/models/pose_landmarker.task`。完整安装、配置、测试、Router eval、Docker 和小程序联调命令见 [RUNBOOK.md](./RUNBOOK.md)。
 
 ## 7. 关键目录
 
@@ -128,10 +140,10 @@ docs/superpowers/            早期方案与规格
 ## 8. 下一步优先级
 
 1. 为 RAG 建立标准问答与检索评测集，补 Recall@K、MRR 和来源覆盖率。
-2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 实现视频抽帧到 `PoseSequence` 的时序分析入口，并扩充标准动作库。
+2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 补关键点平滑、动作周期切分、正式标准样本集和专项纠错规则。
 3. 完成真实 MCP Server 的稳定性、超时、Schema、进程生命周期和权限联调。
-4. 补全 Search 的结构化来源透传和 citation 校验。
-5. 为 Milvus RAG 补真实服务集成测试，建立 Recall@K、MRR、来源覆盖率和 P95 延迟基线。
+4. 补全 Search 的逐条 citation 与正文引用关系校验。
+5. 完成 Milvus 真实服务冒烟，并建立检索质量与延迟基线。
 6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。
 7. 积累真实多意图样本与组合成功率，再决定是否扩充 Router 白名单。
 

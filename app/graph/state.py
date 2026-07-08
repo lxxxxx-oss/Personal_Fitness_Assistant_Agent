@@ -2,6 +2,27 @@
 from typing import Any, Dict, List, Optional, TypedDict
 
 
+def record_execution(
+    state: "RouterState",
+    component: str,
+    mode: str,
+    *,
+    degraded: bool = False,
+    detail: str = "",
+) -> None:
+    """Append a public-safe execution trace without leaking credentials."""
+    item: Dict[str, Any] = {
+        "component": component,
+        "mode": mode,
+        "degraded": degraded,
+    }
+    if detail:
+        item["detail"] = detail
+    trace = state.setdefault("_execution", [])
+    if item not in trace:
+        trace.append(item)
+
+
 class RouterState(TypedDict, total=False):
     """Router-level global state shared across all subgraphs.
 
@@ -33,3 +54,4 @@ class RouterState(TypedDict, total=False):
     _active_intent: str
     _route_results: List[Dict[str, Any]]
     _route_execution_warnings: List[str]
+    _execution: List[Dict[str, Any]]

@@ -1,5 +1,7 @@
 # 健身智能助手 — 微信小程序实施计划
 
+> 这是早期任务拆解，复选框不再作为当前进度依据。实际完成度统一查看 [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md)。
+
 本计划中的 `mcp` 菜谱页面和验收项对应当前代码。产品层可以与 Diet 共用“饮食与菜谱”入口，但 intent 标签继续反映实际执行路径。
 
 > **关联文档:** [小程序设计规范](./DESIGN.md) | [后端 API 文档](../API.md) | [后端实施计划](../superpowers/plans/2026-06-09-fitness-assistant-plan.md)

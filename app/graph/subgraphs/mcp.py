@@ -5,7 +5,7 @@ from typing import Optional
 
 from langgraph.graph import StateGraph, END
 
-from app.graph.state import RouterState
+from app.graph.state import RouterState, record_execution
 from app.tools.mcp_client import MCPClient
 
 logger = logging.getLogger(__name__)
@@ -53,6 +53,18 @@ def discover_tools_node(state: RouterState) -> RouterState:
     state["_mcp_configured_command"] = _mcp_configured_command  # type: ignore
     if _mcp_fallback_reason:
         state["_mcp_fallback_reason"] = _mcp_fallback_reason  # type: ignore
+    is_mock = client.server_command == "mock"
+    record_execution(
+        state,
+        "mcp",
+        "mock" if is_mock else "server",
+        degraded=is_mock,
+        detail=(
+            "MCP server unavailable; using demo tool data"
+            if _mcp_fallback_reason
+            else ("MCP demo mode configured" if is_mock else "")
+        ),
+    )
     logger.info(f"MCP tools available: {[t['name'] for t in (result.data or [])]}")
     return state
 

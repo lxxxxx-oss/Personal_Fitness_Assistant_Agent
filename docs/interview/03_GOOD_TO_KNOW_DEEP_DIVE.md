@@ -1,6 +1,6 @@
 # P2 了解即可：深挖与白板防守
 
-这份文档用于面试官继续追问实现细节时兜底。注意：面试官通常看不到你的代码，所以这里不是背文件路径，而是准备白板级解释。
+这份文档用于二面或交叉面继续追问实现细节时展开。目标是能够脱离代码，用白板讲清数据流、状态变化、关键参数和异常路径。
 
 回答深挖问题时按这个结构：
 
@@ -91,7 +91,7 @@ PoseSequence
 
 为什么这样设计：
 
-> 不管上游来自 `.npz`、图片还是未来的视频，最后都应该变成统一姿态序列。这样 Motion 算法层不依赖某一个姿态估计模型。
+> 不管上游来自 `.npz`、图片还是视频，最后都变成统一姿态序列。当前真实图片和最小视频链路已经验证，因此 Motion 算法层不依赖某一个姿态估计模型或输入格式。
 
 ### 3.2 动作相似度流程
 
@@ -122,22 +122,28 @@ PoseSequence
 不能做：完整动作轨迹、节奏、重复稳定性
 ```
 
-视频路线：
+当前视频最小链路：
 
 ```text
 video
   -> frame sampling
-  -> pose estimation per frame
-  -> confidence filtering
-  -> interpolation
+  -> MediaPipe VIDEO pose estimation
   -> PoseSequence(T > 1)
+  -> confidence summary + valid frame ratio
+```
+
+下一阶段：
+
+```text
+PoseSequence(T > 1)
+  -> smoothing + missing-frame interpolation
   -> phase segmentation
   -> similarity + rule feedback
 ```
 
 面试口径：
 
-> 我不会说单张图片能完整判断动作标准。完整动作判断需要视频序列、标准动作库、阶段识别和阈值标定。当前项目先验证姿态序列和相似度算法链路，这是性价比更高的原型路线。
+> 我不会把“视频能上传”说成“动作标准性已经能准确判断”。当前图片和短视频都能真实转换为 PoseSequence，视频链路还设置了 30 MB、约 10 FPS、最多 300 个采样帧等资源边界；完整动作判断仍需要平滑、标准动作库、阶段识别和阈值标定。
 
 ## 4. RAG 与 Milvus 深挖
 
@@ -147,7 +153,7 @@ video
 documents
   -> sentence-aware chunk
   -> Sentence-Transformer embedding
-  -> vector store / Milvus target
+  -> Milvus Collection upsert
   -> COSINE search
   -> threshold + Top-K
   -> dedup + ranking
@@ -157,22 +163,27 @@ documents
 
 ### 4.2 Milvus 在哪里发挥作用
 
-Milvus 主要替换的是向量存储和近似最近邻检索层：
+Milvus 承担向量持久化和近似最近邻检索层：
 
 ```text
-原型层：in-memory vectors
-生产层：Milvus Collection + index + search params
+content hash -> deterministic INT64 id
+chunk + embedding + source -> upsert
+IVF_FLAT index -> COSINE search
+nlist / nprobe -> recall-latency tradeoff
 ```
 
-Collection 可以包含：
+当前核心 Collection 字段：
 
 - `id`
-- `chunk_text`
-- `embedding`
+- `content`
+- `vector`
 - `source`
-- `topic`
-- `version`
-- `created_at`
+
+工程细节：
+
+- 相同 chunk 使用稳定主键，重复加载通过 upsert 保持幂等。
+- Collection 已存在时校验向量维度，并检查向量索引是否存在。
+- 检索失败可以按配置切换内存 Retriever，并记录 fallback 原因。
 
 ### 4.3 IVF_FLAT 怎么讲
 
@@ -249,15 +260,13 @@ Query Understanding
 - Search 返回结构化结果。
 - Synthesis 把来源和要点组织成用户能读懂的回答。
 
-### 6.2 来源边界
+### 6.2 来源约束与演进
 
-可以说：
+面试表达：
 
 > 搜索结果的标题、摘要和 URL 会进入回答链路，回答生成时会受到来源约束。
 
-不要夸大：
-
-> 不要说已经完成逐句 citation verifier。生产化还要做引用校验、来源可信度分级和结构化返回。
+> 当前完成的是 source grounding：标题、摘要和 URL 以编号证据块进入合成阶段。进一步优化会增加逐句 citation verifier、来源可信度分级和前端结构化引用展示。
 
 ## 7. Memory 深挖
 
@@ -284,14 +293,14 @@ old message pop left
 
 ## 8. 测试与评测深挖
 
-测试能证明：
+当前工程证据：
 
 - Router 规则没有回归。
 - API 契约能跑通。
 - 工具错误能被处理。
 - Motion/RAG/MCP 的核心函数有保护。
 
-测试不能证明：
+需要独立效果评测的部分：
 
 - 真实 LLM 回答质量。
 - 真实 Tavily 来源可靠性。
@@ -300,7 +309,7 @@ old message pop left
 
 面试口径：
 
-> 测试和 eval 是工程回归证据，不是生产效果证明。生产化还需要真实数据集、人工标注和线上日志闭环。
+> 自动化测试负责防回归，专项 eval 负责衡量策略效果，真实数据和线上日志负责验证泛化能力。三者解决的问题不同，不能用单一测试数字代替全部质量结论。
 
 ## 9. 生产化升级路线
 
@@ -308,8 +317,8 @@ old message pop left
 
 1. 建立 RAG 问答评测集和 Motion 标准动作数据。
 2. 把 Router 线上误判样本沉淀成新 eval。
-3. 接入 Milvus，并用 Recall@K 和 P95 latency 对比原型基线。
-4. 视频 Motion：抽帧、姿态估计、动作阶段划分、规则反馈。
+3. 为 Milvus 建立 Recall@K、MRR 和 P95 latency 基线，并调优 nlist/nprobe。
+4. 视频 Motion：关键点平滑、动作阶段划分、标准动作库和规则反馈。
 5. MCP：真实 Server 部署、schema validation、权限、超时、审计。
 6. Tavily：来源可信度、citation 校验、缓存和熔断。
 7. Memory：Redis/PostgreSQL 持久化、认证和隐私治理。

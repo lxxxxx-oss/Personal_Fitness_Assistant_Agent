@@ -9,11 +9,44 @@
   </view>
 
   <!-- 消息内容 -->
+  <image
+    class="motion-image"
+    wx:if="{{imagePath}}"
+    src="{{imagePath}}"
+    mode="widthFix"
+    bindtap="previewImage"
+  />
+  <video
+    class="motion-video"
+    wx:if="{{videoPath}}"
+    src="{{videoPath}}"
+    controls
+    show-center-play-btn
+    object-fit="contain"
+  />
   <view class="bubble {{role}} {{isError ? 'error-bubble' : ''}}">
     <text class="content" wx:if="{{!isStreaming}}" selectable>{{displayContent}}</text>
     <text class="content streaming" wx:else>
       {{displayContent}}<text class="cursor">▊</text>
     </text>
+  </view>
+
+  <view class="execution-row" wx:if="{{role === 'assistant' && execution.length}}">
+    <text
+      class="execution-chip {{item.degraded ? 'degraded' : 'real'}}"
+      wx:for="{{execution}}"
+      wx:key="component"
+    >{{item.component}} · {{item.mode}}</text>
+  </view>
+
+  <view class="metadata-card warning-card" wx:if="{{role === 'assistant' && warnings.length}}">
+    <view class="metadata-title">⚠️ 运行提示</view>
+    <text class="metadata-item" wx:for="{{warnings}}" wx:key="*this" selectable>{{item}}</text>
+  </view>
+
+  <view class="metadata-card source-card" wx:if="{{role === 'assistant' && sources.length}}">
+    <view class="metadata-title">📚 参考来源</view>
+    <text class="metadata-item" wx:for="{{sources}}" wx:key="*this" selectable>{{index + 1}}. {{item}}</text>
   </view>
 
   <!-- 时间戳 -->

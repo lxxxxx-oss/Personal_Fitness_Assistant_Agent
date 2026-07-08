@@ -8,11 +8,11 @@ Numerical similarity scores are statistical comparisons, not quality guarantees.
 
 import logging
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from app.tools.pose_sequence import pose_sequence_from_npz
+from app.tools.pose_sequence import PoseSequence, pose_sequence_from_npz
 from app.tools.types import ToolResult, ErrorCode
 
 logger = logging.getLogger(__name__)
@@ -30,11 +30,16 @@ COS_EXCELLENT = 0.85
 SHAPE_EXCELLENT = 0.2
 
 
-def normalize_pose(keypoints: np.ndarray) -> np.ndarray:
-    """Normalize pose: center at hip (index 0), scale to unit size.
+def normalize_pose(
+    keypoints: np.ndarray,
+    center_indices: Optional[Tuple[int, int]] = None,
+) -> np.ndarray:
+    """Normalize pose around a configured center and scale to unit size.
 
     Args:
         keypoints: (N, 3) array for a single frame.
+        center_indices: Optional left/right hip indices. Legacy callers use
+            keypoint 0 as the center.
 
     Returns:
         (N, 3) normalized keypoints.
@@ -56,7 +61,18 @@ def normalize_pose(keypoints: np.ndarray) -> np.ndarray:
     if np.allclose(keypoints, 0.0):
         raise ValueError("keypoints is all zeros, cannot normalize")
 
-    center = keypoints[0].copy()
+    if center_indices is None:
+        center = keypoints[0].copy()
+    else:
+        left_index, right_index = center_indices
+        if (
+            min(left_index, right_index) < 0
+            or max(left_index, right_index) >= keypoints.shape[0]
+        ):
+            raise ValueError(
+                f"center_indices {center_indices} exceed {keypoints.shape[0]} keypoints"
+            )
+        center = (keypoints[left_index] + keypoints[right_index]) / 2.0
     centered = keypoints - center
     distances = np.linalg.norm(centered, axis=1)
     scale = np.mean(distances)
@@ -95,14 +111,14 @@ def compute_joint_angles(
     return float(np.arccos(cos_angle))
 
 
-def load_npz_pose(npz_path: str) -> ToolResult:
-    """Load .npz format 3D pose data.
+def load_npz_pose_sequence(npz_path: str) -> ToolResult:
+    """Load a validated PoseSequence while preserving schema metadata.
 
     Args:
         npz_path: path to .npz file.
 
     Returns:
-        ToolResult with data = (T, J, 3) numpy array on success.
+        ToolResult with data = PoseSequence on success.
     """
     if not isinstance(npz_path, str) or not npz_path.strip():
         return ToolResult.fail(
@@ -118,7 +134,8 @@ def load_npz_pose(npz_path: str) -> ToolResult:
         )
 
     try:
-        data = np.load(npz_path)
+        with np.load(npz_path, allow_pickle=False) as data:
+            sequence_result = pose_sequence_from_npz(data)
     except Exception as e:
         return ToolResult.fail(
             ErrorCode.INVALID_PARAM,
@@ -126,13 +143,25 @@ def load_npz_pose(npz_path: str) -> ToolResult:
             meta={"path": npz_path},
         )
 
-    sequence_result = pose_sequence_from_npz(data)
     if not sequence_result.ok:
         return ToolResult.fail(
             sequence_result.error_code or ErrorCode.INVALID_PARAM,
             sequence_result.error_message or f"Invalid pose data in '{npz_path}'",
             meta={"path": npz_path, **sequence_result.meta},
         )
+
+    return ToolResult.ok(
+        data=sequence_result.data,
+        path=npz_path,
+        pose_sequence=sequence_result.data.summary(),
+    )
+
+
+def load_npz_pose(npz_path: str) -> ToolResult:
+    """Load .npz pose data as the legacy (T, J, 3) analysis array."""
+    sequence_result = load_npz_pose_sequence(npz_path)
+    if not sequence_result.ok:
+        return sequence_result
 
     sequence = sequence_result.data
     try:
@@ -154,7 +183,12 @@ def load_npz_pose(npz_path: str) -> ToolResult:
     )
 
 
-def compute_similarity(seq1: np.ndarray, seq2: np.ndarray) -> ToolResult:
+def compute_similarity(
+    seq1: np.ndarray,
+    seq2: np.ndarray,
+    *,
+    center_indices: Optional[Tuple[int, int]] = None,
+) -> ToolResult:
     """Compute multi-dimensional similarity between two motion sequences.
 
     Args:
@@ -186,18 +220,28 @@ def compute_similarity(seq1: np.ndarray, seq2: np.ndarray) -> ToolResult:
                 ErrorCode.INVALID_PARAM,
                 f"'{name}' must have shape (T, J, 3), got {seq.shape}",
             )
+    if seq1.shape[1:] != seq2.shape[1:]:
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "Motion sequences must use the same joint count and coordinate dimensions, "
+            f"got {seq1.shape[1:]} vs {seq2.shape[1:]}",
+        )
 
     try:
         # Normalize each frame
-        seq1_norm = np.array([normalize_pose(f) for f in seq1])
-        seq2_norm = np.array([normalize_pose(f) for f in seq2])
+        seq1_norm = np.array([
+            normalize_pose(frame, center_indices=center_indices) for frame in seq1
+        ])
+        seq2_norm = np.array([
+            normalize_pose(frame, center_indices=center_indices) for frame in seq2
+        ])
 
         from scipy.spatial.distance import euclidean
         from fastdtw import fastdtw
 
         flat1 = seq1_norm.reshape(seq1_norm.shape[0], -1)
         flat2 = seq2_norm.reshape(seq2_norm.shape[0], -1)
-        dtw_dist, _ = fastdtw(flat1, flat2, dist=euclidean)
+        dtw_dist, alignment_path = fastdtw(flat1, flat2, dist=euclidean)
         max_len = max(len(flat1), len(flat2))
         dtw_normalized = dtw_dist / max_len
 
@@ -208,23 +252,15 @@ def compute_similarity(seq1: np.ndarray, seq2: np.ndarray) -> ToolResult:
             / (np.linalg.norm(vec1) * np.linalg.norm(vec2) + 1e-8)
         )
 
-        shape1 = np.array([np.linalg.norm(f - f[0]) for f in seq1_norm])
-        shape2 = np.array([np.linalg.norm(f - f[0]) for f in seq2_norm])
-        if len(shape1) != len(shape2):
-            target_len = max(len(shape1), len(shape2))
-            shape1_interp = np.interp(
-                np.linspace(0, 1, target_len),
-                np.linspace(0, 1, len(shape1)),
-                shape1,
-            )
-            shape2_interp = np.interp(
-                np.linspace(0, 1, target_len),
-                np.linspace(0, 1, len(shape2)),
-                shape2,
-            )
-            shape_diff = float(np.mean(np.abs(shape1_interp - shape2_interp)))
-        else:
-            shape_diff = float(np.mean(np.abs(shape1 - shape2)))
+        # Reuse the temporal alignment produced by FastDTW, then measure the
+        # mean Euclidean distance between corresponding joints. The previous
+        # implementation compared one Frobenius norm per frame, which could
+        # hide large joint-level changes behind a similar global magnitude.
+        aligned_joint_distances = [
+            np.linalg.norm(seq1_norm[left] - seq2_norm[right], axis=1)
+            for left, right in alignment_path
+        ]
+        shape_diff = float(np.mean(aligned_joint_distances))
     except Exception as e:
         return ToolResult.fail(
             ErrorCode.INTERNAL_ERROR,
@@ -266,7 +302,80 @@ def compute_similarity(seq1: np.ndarray, seq2: np.ndarray) -> ToolResult:
             },
             "overall_verdict": overall,
         },
+        shape_difference_definition="dtw_aligned_mean_joint_distance",
     )
+
+
+_SCHEMA_HIP_INDICES: Dict[str, Tuple[int, int]] = {
+    "mediapipe_33": (23, 24),
+    "coco_17": (11, 12),
+}
+
+
+def compute_pose_sequence_similarity(
+    user_sequence: PoseSequence,
+    reference_sequence: PoseSequence,
+) -> ToolResult:
+    """Compare schema-compatible PoseSequence objects using hip-centered metrics."""
+    if not isinstance(user_sequence, PoseSequence) or not isinstance(
+        reference_sequence, PoseSequence
+    ):
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "user_sequence and reference_sequence must be PoseSequence objects",
+        )
+    if user_sequence.joint_schema != reference_sequence.joint_schema:
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "PoseSequence joint_schema mismatch: "
+            f"{user_sequence.joint_schema} vs {reference_sequence.joint_schema}",
+        )
+    if user_sequence.pose_model != reference_sequence.pose_model:
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "PoseSequence pose_model mismatch: "
+            f"{user_sequence.pose_model} vs {reference_sequence.pose_model}",
+        )
+    user_coordinate_space = str(
+        user_sequence.metadata.get("coordinate_space") or ""
+    )
+    reference_coordinate_space = str(
+        reference_sequence.metadata.get("coordinate_space") or ""
+    )
+    if (
+        user_coordinate_space
+        and reference_coordinate_space
+        and user_coordinate_space != reference_coordinate_space
+    ):
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "PoseSequence coordinate_space mismatch: "
+            f"{user_coordinate_space} vs {reference_coordinate_space}",
+        )
+    center_indices = _SCHEMA_HIP_INDICES.get(user_sequence.joint_schema)
+    if center_indices is None:
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "Unsupported joint_schema for schema-aware comparison: "
+            f"{user_sequence.joint_schema}",
+        )
+    result = compute_similarity(
+        user_sequence.analysis_keypoints(),
+        reference_sequence.analysis_keypoints(),
+        center_indices=center_indices,
+    )
+    if result.ok:
+        result.meta.update(
+            {
+                "joint_schema": user_sequence.joint_schema,
+                "pose_model": user_sequence.pose_model,
+                "normalization": "hip_center_mean_scale",
+                "coordinate_space": user_coordinate_space
+                or reference_coordinate_space
+                or "unknown",
+            }
+        )
+    return result
 
 
 def list_motion_library(library_dir: str) -> ToolResult:
