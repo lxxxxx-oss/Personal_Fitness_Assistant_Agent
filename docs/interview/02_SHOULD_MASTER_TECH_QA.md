@@ -165,13 +165,13 @@
 
 **推荐回答**
 
-> 我实现的是轻量 MCP Client：通过 subprocess 启动外部 Server，用 stdin/stdout 传 JSON-RPC；连接时做 initialize 握手，之后支持工具发现和工具调用；请求用 id 匹配响应，并把 content block 解析成结构化结果。错误会包装成统一结果，方便子图降级。
+> 我实现的是轻量 MCP Client 原型：通过 subprocess 启动配置中的 Server，用 stdin/stdout 发送 JSON-RPC，覆盖 initialize、工具发现、工具调用和首个 text content block 解析。当前请求虽然生成 id，但仍按 stdout 下一行读取响应，没有核对响应 id；真实 Server 兼容性也尚未完成，所以不能说已经是并发安全的完整 MCP SDK。
 
 ### Q17：MCP 工具由 LLM 调用安全吗？
 
 **推荐回答**
 
-> 不能让 LLM 随便执行任意命令。Server 命令应该来自配置，不接受用户输入拼接；工具名必须来自工具发现结果；参数需要 schema 校验；生产化还要加 allowlist、超时、进程隔离、权限控制和审计日志。我的思路是让 LLM 只在受控工具空间里选择动作。
+> 当前已经做到 Server 命令只来自配置、不接受用户输入拼接，并给请求增加超时与 mock fallback；但工具执行层尚未强制校验“工具名属于发现结果”，也没有根据 inputSchema 验证参数。生产化必须补 allowlist、schema 校验、进程隔离、权限控制和审计，不能把目标设计说成当前能力。
 
 ### Q18：为什么需要 fallback？
 
@@ -255,7 +255,7 @@
 
 **推荐回答**
 
-> 我会从可验证的数据流讲：Router 有 66 条常规和 36 条困难样本回归；Milvus 有明确 Schema、索引和幂等写入；Motion 能从真实媒体生成 PoseSequence 并执行数值对比；MCP 有完整 JSON-RPC 生命周期；Search 把结构化来源注入合成。每个技术点都有输入、处理、输出和异常路径，不是只出现在技术栈里。
+> 我会从可验证的数据流讲：Router 有 66 条常规和 36 条困难样本回归；Milvus 已有 Schema、索引和幂等写入代码，但真实质量基线待补；Motion 有真实媒体冒烟和数值对比；MCP 已实现串行协议主链路与 mock fallback，但真实 Server 兼容性待验收；Search 能把结构化来源注入合成。这样既讲实现，也把验证层级说清楚。
 
 ## 10. 最短复习清单
 

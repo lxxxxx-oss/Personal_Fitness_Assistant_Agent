@@ -13,7 +13,7 @@
 - Web UI 对话等待状态和 Motion 图片上传入口。
 - 面试/演示用手工体验语句。
 
-自动化测试的当前总结果以 [../README.md](../README.md) 中“当前测试结果”为准；本目录用于记录测试过程和验收依据。
+自动化测试的当前总结果以 [../README.md](../README.md) 中“当前测试结果”为准；本目录用于记录测试过程和验收依据。默认 pytest 会 mock LLM 生成和 SentenceTransformer 编码，真实模型与真实 Milvus 不属于默认通过数，MediaPipe 真实媒体链路通过单独冒烟记录证明。
 
 ## 验收矩阵
 

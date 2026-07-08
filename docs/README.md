@@ -53,14 +53,14 @@
 | Search | 已完成 Tavily 接入和 mock 降级 |
 | Diet | 已完成画像提取、营养 RAG 和建议生成 |
 | Motion | 独立图片/视频 API、PoseSequence、标准视频构建脚本、schema 安全比较及小程序参考选择已完成；媒体上传尚未作为附件进入 `/chat` Router，关节角专项规则、平滑、周期切分和正式样本集待补 |
-| MCP | Client、initialize 握手、`tools/list`、`tools/call`、content 解析和 MCP 子图已完成；默认 mock，真实 Server 需显式配置与联调 |
+| MCP | 轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析；默认 mock，尚未校验响应 ID、按 inputSchema 验参或完成真实 Server 兼容性验收 |
 | Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前只有 Chat 子图读取历史，且 Prompt 注入最后 6 条消息（约 3 轮），跨子图记忆消费待补 |
 | 流式接口 | SSE 和 WebSocket 已完成；WebSocket 通过线程到 asyncio queue 桥接实现真实逐 token 发送 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `145 passed, 2 skipped, 1 warning`。warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响当前行为。专项验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `145 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 

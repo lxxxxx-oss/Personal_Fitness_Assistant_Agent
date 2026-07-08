@@ -43,8 +43,8 @@
 | 余弦相似度 | 衡量两个向量方向是否一致。 | 衡量归一化姿态特征整体方向是否相似。 | 把姿态或特征展开为向量后计算 cosine。 | L2 距离、皮尔逊相关。 | 和 RAG 中 COSINE 类似，直观且容易解释。 |
 | 形状差异 | 衡量人体结构或轨迹形态的平均差异。 | 补充 DTW 和 cosine，说明动作姿态哪里不像。 | 逐帧比较关键点相对结构或骨架形状。 | Procrustes 分析、骨长约束、关节角规则。 | 多指标组合比单一分数更容易解释动作问题。 |
 | ReAct-inspired 状态流 | 借鉴 Reasoning + Acting，把推理、参数解析、工具执行和检查拆开。 | Motion 子图的 `think -> parse -> tool -> check`。 | 当前每次请求按固定边执行一次，不会根据观察结果回到 think/parse 继续自主规划。 | Function Calling、Plan-and-Execute、完整 ReAct 循环。 | 分阶段状态流便于观察和测试；准确口径是“借鉴 ReAct”，不是多轮自主 Agent。 |
-| MCP | Model Context Protocol，模型应用连接外部工具的标准协议。 | 支撑外部菜谱/工具调用能力。 | Client 通过 JSON-RPC 与 MCP Server 完成 initialize、tools/list、tools/call。 | 直接 HTTP API、LangChain Tools、OpenAPI function calling。 | MCP 更适合展示标准化工具接入、schema、权限和降级治理。 |
-| JSON-RPC | 一种用 JSON 表达请求、响应和 id 匹配的远程调用协议。 | MCP Client 与 Server 通信的基础形式。 | 通过 stdio 发送包含 method、params、id 的 JSON 消息，按 id 匹配响应。 | REST、gRPC、WebSocket 自定义协议。 | 简单、轻量、适合本地进程工具通信。 |
+| MCP | Model Context Protocol，模型应用连接外部工具的标准协议。 | 支撑外部菜谱/工具调用能力。 | 轻量 Client 已通过 JSON-RPC 发出 initialize、tools/list、tools/call，并解析首个 text content block；默认使用 mock。 | 直接 HTTP API、LangChain Tools、OpenAPI function calling。 | 当前没有完成响应 ID 校验、inputSchema 参数校验和真实 Server 兼容性验收，准确口径是“协议主链路原型”。 |
+| JSON-RPC | 一种用 JSON 表达请求、响应和 id 的远程调用协议。 | MCP Client 与 Server 通信的基础形式。 | 当前请求会生成 UUID，但实现按 stdout 下一行读取响应，没有核对响应 id；只适合串行原型。 | REST、gRPC、WebSocket 自定义协议。 | 生产化需要 id 匹配、并发请求表、通知语义和协议错误校验。 |
 | subprocess / stdio | 启动子进程并用标准输入输出通信。 | 本地拉起 MCP Server 并交换 JSON-RPC 消息。 | Python 启动 server command，stdin 写请求，stdout 读响应。 | HTTP 服务、消息队列、Unix Socket。 | 本地工具接入轻量，适合演示；生产化要补隔离、超时和权限。 |
 | Sliding Window Memory | 只保留最近 N 轮对话的短期记忆。 | 控制历史长度并为 Chat 多轮问答提供上下文。 | deque 按 `user_id` 最多保存 6 轮；当前只有 Chat 读取，并只注入最后 6 条消息（约 3 轮）。 | 全量历史、摘要记忆、向量长期记忆。 | 简单可控，但尚未实现 Search、Diet、Motion、MCP 的跨子图记忆消费；生产化还要考虑认证、隐私和持久化。 |
 | collections.deque | Python 双端队列。 | 实现固定容量滑动窗口。 | append 新消息，超过容量自动或手动淘汰旧消息。 | list、queue.Queue、Redis List。 | 两端操作 O(1)，比 list 头删更适合滑动窗口。 |

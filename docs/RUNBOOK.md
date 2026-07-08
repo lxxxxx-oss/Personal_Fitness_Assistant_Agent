@@ -132,6 +132,12 @@ curl.exe -X DELETE http://127.0.0.1:8000/chat/u1/history
 python -m pytest tests/ -q
 ```
 
+默认自动化测试的边界：
+
+- `tests/conftest.py` 会替换本地 LLM 生成和 SentenceTransformer 编码，避免测试依赖模型文件或网络下载。
+- 本地真实模型测试在模型不存在时跳过；真实 Milvus 集成测试只有设置 `MILVUS_TEST_URI` 后才运行。
+- 因此总通过数用于说明代码与协议回归，不等于真实回答质量、检索召回率或生产依赖可用性；真实 MediaPipe、Qwen Router A/B 和 Milvus 需分别看专项记录。
+
 如果缺少 pytest：
 
 ```powershell
@@ -213,6 +219,7 @@ docker compose up --build
 
 - `docker-compose.yml` 挂载了 Windows 本地模型路径，换机器时需要调整。
 - `app/config.py` 支持 `MODEL_PATH`、`MODEL_DEVICE` 等环境变量覆盖。
+- 当前 Dockerfile 只安装 `requirements.txt`，没有安装 `requirements-motion.txt`，Compose 也没有挂载 `pose_landmarker.task`；容器内图片/视频 Motion 接口当前会返回 503。
 - Docker 文件已经提供，但完整构建和启动仍待验证。
 
 ## 8. 配置速查
@@ -229,7 +236,7 @@ docker compose up --build
 | `embedding_model` | Sentence-Transformer 模型名 |
 | `tavily_api_key` | Tavily API Key，默认读取环境变量 |
 | `motion_library_dir` | 标准动作库目录 |
-| `react_max_iterations` | Motion ReAct 最大迭代次数 |
+| `react_max_iterations` | 为 Motion 迭代上限预留的配置；当前图按固定边执行一次，不构成多轮 ReAct 循环 |
 | `mcp_server_command` | MCP Server 命令，默认 `mock`；真实 server 失败后降级到 mock |
 | `api_host` / `api_port` | 后端服务地址和端口 |
 

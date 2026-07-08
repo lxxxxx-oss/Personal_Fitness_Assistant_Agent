@@ -16,7 +16,7 @@
 | Milvus RAG | 把中文知识切块、编码、幂等写入 Milvus，再做 ANN 检索和后处理 | Schema、IVF_FLAT、COSINE、nlist/nprobe、Top-K、source |
 | Motion | 独立媒体 API 把图片/视频统一成 PoseSequence，再执行原型级时序和相似度计算 | MediaPipe、OpenCV、33 点、FastDTW、有效帧率；关节角专项规则待接入 |
 | Search | 查询改写、Tavily 检索、来源约束合成三阶段拆分 | title/content/url、source grounding、错误分类 |
-| MCP | 自实现 Client 完成 Server 生命周期、工具发现和调用 | subprocess、stdio、JSON-RPC、initialize、tools/list、tools/call |
+| MCP | 自实现轻量 Client 打通串行协议主链路和 mock fallback | subprocess、stdio、JSON-RPC；响应 ID、schema 校验和真实 Server 兼容性待补 |
 
 ## 三个最能体现工程能力的点
 
