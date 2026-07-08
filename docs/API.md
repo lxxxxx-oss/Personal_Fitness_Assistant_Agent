@@ -104,6 +104,8 @@ Content-Type: application/json
 | `degraded` | boolean | 是否使用 mock、fallback 或低能力降级路径 |
 | `detail` | string | 对外安全的简短原因，无补充时为空字符串 |
 
+Diet 请求会先把模型输出解析为结构化画像。身高只接受 80–250cm，体重只接受 20–400kg，性别和目标使用受控枚举；JSON 缺失、字段越界或类型不合法时不会直接信任原始文本，而是使用未知画像继续给通用建议，并在 `warnings` 中加入 `diet_profile_fallback:*`。
+
 命令：
 
 ```bash

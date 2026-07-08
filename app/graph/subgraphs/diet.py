@@ -1,13 +1,71 @@
 """Diet subgraph — RAG-enhanced personalized diet recommendations."""
+import json
 import logging
+from typing import Any, Literal, Optional, Tuple
 
 from langgraph.graph import StateGraph, END
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.graph.state import RouterState, record_execution
 from app.graph.subgraphs.rag_context import build_rag_context
 from app.tools.retriever import get_shared_retriever
 
 logger = logging.getLogger(__name__)
+
+
+class DietProfile(BaseModel):
+    """Validated, bounded profile extracted from one diet request."""
+
+    height_cm: Optional[float] = Field(default=None, ge=80, le=250)
+    weight_kg: Optional[float] = Field(default=None, ge=20, le=400)
+    gender: Literal["男", "女", "未知"] = "未知"
+    goal: Literal["减脂", "增肌", "保持", "未知"] = "未知"
+    preferences: str = Field(default="未知", max_length=500)
+
+    @field_validator("height_cm", "weight_kg", mode="before")
+    @classmethod
+    def normalize_optional_number(cls, value: Any) -> Any:
+        if value is None or str(value).strip().lower() in {"", "未知", "unknown", "null"}:
+            return None
+        return value
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def normalize_gender(cls, value: Any) -> str:
+        normalized = str(value or "未知").strip()
+        return {"男性": "男", "女性": "女"}.get(normalized, normalized)
+
+    @field_validator("goal", mode="before")
+    @classmethod
+    def normalize_goal(cls, value: Any) -> str:
+        normalized = str(value or "未知").strip()
+        return {"减重": "减脂", "维持": "保持"}.get(normalized, normalized)
+
+    @field_validator("preferences", mode="before")
+    @classmethod
+    def normalize_preferences(cls, value: Any) -> str:
+        if value is None:
+            return "未知"
+        if isinstance(value, list):
+            return "、".join(str(item) for item in value)
+        return str(value).strip() or "未知"
+
+
+def parse_diet_profile(profile_text: str) -> Tuple[DietProfile, Optional[str]]:
+    """Parse one LLM JSON object or return a safe unknown profile."""
+    if not isinstance(profile_text, str):
+        return DietProfile(), "profile_output_not_text"
+    start = profile_text.find("{")
+    end = profile_text.rfind("}")
+    if start < 0 or end < start:
+        return DietProfile(), "profile_json_missing"
+    try:
+        raw = json.loads(profile_text[start:end + 1])
+        if not isinstance(raw, dict):
+            return DietProfile(), "profile_json_not_object"
+        return DietProfile.model_validate(raw), None
+    except (json.JSONDecodeError, ValidationError, TypeError, ValueError):
+        return DietProfile(), "profile_validation_failed"
 
 
 def extract_profile_node(state: RouterState) -> RouterState:
@@ -26,14 +84,14 @@ def extract_profile_node(state: RouterState) -> RouterState:
 - preferences: 饮食偏好 (如不吃猪肉、素食等，没有则写"无")
 
 # 格式要求
-只输出 JSON，不要任何解释文字。
+只输出 JSON，不要任何解释文字。未知的数值字段使用 null。
 
 # 示例
 用户输入: "我身高170体重80公斤，男性，想减脂"
 输出: {{"height_cm": 170, "weight_kg": 80, "gender": "男", "goal": "减脂", "preferences": "无"}}
 
 用户输入: "我是素食者，想增肌但不知道吃什么"
-输出: {{"height_cm": "未知", "weight_kg": "未知", "gender": "未知", "goal": "增肌", "preferences": "素食"}}
+输出: {{"height_cm": null, "weight_kg": null, "gender": "未知", "goal": "增肌", "preferences": "素食"}}
 
 用户输入: {state['user_input']}
 输出:"""
@@ -45,14 +103,20 @@ def extract_profile_node(state: RouterState) -> RouterState:
         temperature=0.2,
     )
     profile_text = llm.generate(prompt)
-    state["_user_profile"] = profile_text  # type: ignore
+    profile, warning = parse_diet_profile(profile_text)
+    state["_user_profile"] = profile.model_dump()  # type: ignore
+    if warning:
+        state.setdefault("_route_execution_warnings", []).append(
+            f"diet_profile_fallback:{warning}"
+        )
     return state
 
 
 def retrieve_nutrition_node(state: RouterState) -> RouterState:
     """RAG retrieval: search shared nutrition knowledge base."""
     retriever = get_shared_retriever()
-    query = f"{state['user_input']} {state.get('_user_profile', '')}"
+    profile = state.get("_user_profile", {})
+    query = f"{state['user_input']} {json.dumps(profile, ensure_ascii=False)}"
     result = retriever.search(query, top_k=5, threshold=0.3)
     state["_retrieved"] = result.data if result.ok else []  # type: ignore
     backend = str(result.meta.get("backend") or "memory")
@@ -86,7 +150,7 @@ def recommend_node(state: RouterState) -> RouterState:
     from app.config import config
     from app.llm.loader import LLMLoader
 
-    profile = state.get("_user_profile", "")
+    profile = state.get("_user_profile", {})
     retrieved = state.get("_retrieved", [])  # type: ignore
     context_text, sources = build_rag_context(retrieved)
     state["_sources"] = sources  # type: ignore
@@ -106,7 +170,7 @@ def recommend_node(state: RouterState) -> RouterState:
 4. **安全提醒**：不推荐极端饮食（如极低热量、单一食物减肥法）。有基础疾病的用户建议咨询医生。
 
 # 用户画像
-{profile or "用户未提供个人信息"}
+{json.dumps(profile, ensure_ascii=False) if profile else "用户未提供个人信息"}
 
 # 营养知识参考
 {context_text or "暂无参考资料"}

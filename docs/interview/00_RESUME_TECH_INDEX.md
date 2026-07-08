@@ -30,6 +30,7 @@
 | Tavily | 面向 LLM 应用的联网搜索 API。 | 负责最新健身信息、外部资料和时效性问题。 | Query Understanding -> Tavily Search -> Answer Synthesis。 | Bing Search API、SerpAPI、直接爬虫。 | Tavily 易接入且结果结构化，适合个人项目展示搜索链路。 |
 | Query Understanding / query rewrite | 把用户口语问题改写成更适合检索或搜索的查询。 | 提升 Tavily 搜索召回质量。 | 提取核心实体、时间、目标和约束，生成搜索 query。 | 直接用原始问题、关键词抽取、LLM classifier。 | 原始问题常有口语和上下文，改写能提升稳定性，但要记录原 query 防止丢约束。 |
 | Answer Synthesis | 把多个检索或搜索结果综合成最终回答。 | 让搜索结果变成结构化、可读、有来源约束的回答。 | 输入 title/content/url，输出总结、建议和来源。 | 直接返回搜索列表、模板拼接。 | 用户需要答案而不是结果列表，但要避免编造来源。 |
+| 结构化画像校验 | 把 LLM 提取结果转换为受约束的数据模型。 | Diet 在检索和生成前处理身高、体重、性别、目标和偏好。 | 从模型文本提取 JSON，用 Pydantic 校验范围、枚举和长度；失败时使用未知画像并记录 warning。 | 直接使用 LLM 字符串、正则提取、Function Calling。 | 避免错误或恶意模型输出直接污染检索和推荐；仍需用户确认与隐私治理。 |
 | Motion | 动作分析模块。 | 支撑姿态序列相似度分析和动作指导亮点。 | 独立媒体 API 将图片/视频转成 PoseSequence，并做归一化、DTW、余弦和 DTW 对齐逐关节平均距离；对话 Motion 子图负责文本规划与 `.npz` 工具链。 | 只用 LLM 看图、规则阈值、训练动作分类模型。 | 没有大规模标注数据时，成熟姿态模型 + 可解释数值算法最适合原型验证；当前媒体 API 尚未作为附件接入 `/chat`。 |
 | MediaPipe Pose | Google 提供的预训练人体姿态估计方案。 | 把普通图片或视频帧转换为人体关键点，补齐 Motion 的媒体输入层。 | 图片使用 IMAGE 模式；视频由 OpenCV 抽帧后使用 VIDEO 模式和递增时间戳推理，输出 33 个关键点。 | MoveNet、RTMPose、YOLO-Pose、OpenPose。 | 本地运行、接入成本低且无需自行训练；复杂遮挡和专项精度不足时再替换模型。 |
 | PoseSequence | Motion 内部统一姿态数据契约。 | 隔离媒体输入、姿态模型和下游分析算法，避免下游绑定 MediaPipe。 | 保存 `(T,J,C)` keypoints、fps、source_type、pose_model、joint_schema、confidence 和 metadata。 | 直接传 ndarray、模型原始结果、逐帧 JSON。 | 统一契约便于测试、持久化和替换上游模型，也兼容 `.npz`。 |

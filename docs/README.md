@@ -51,7 +51,7 @@
 | Router | Phase 4 已完成：保留 Phase 3 hybrid classifier，增加多意图观测、四种白名单两步组合、错误隔离和结果合成；真实 Qwen classifier 因收益不足默认关闭 |
 | Chat RAG | 已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传和 Chat 记忆注入；逐句 citation 校验与真实效果基线待补 |
 | Search | 已完成 Tavily 接入和 mock 降级 |
-| Diet | 已完成画像提取、营养 RAG 和建议生成 |
+| Diet | 已完成 Pydantic 结构化画像解析、身高体重范围/枚举校验、非法输出 warning 降级、营养 RAG 和建议生成 |
 | Motion | 独立图片/视频 API、PoseSequence、标准视频构建脚本、schema 安全比较及小程序参考选择已完成；媒体上传尚未作为附件进入 `/chat` Router，关节角专项规则、平滑、周期切分和正式样本集待补 |
 | MCP | 轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析；默认 mock，尚未校验响应 ID、按 inputSchema 验参或完成真实 Server 兼容性验收 |
 | Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前只有 Chat 子图读取历史，且 Prompt 注入最后 6 条消息（约 3 轮），跨子图记忆消费待补 |
@@ -60,7 +60,7 @@
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `151 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `155 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -70,6 +70,7 @@
 | 本地 LLM 重复加载可能 OOM | 进程级模型缓存、首次加载锁和生成串行化 | 拆成独立模型推理服务 |
 | Embedding 首次加载依赖网络 | 加载失败时降级为关键词匹配 | 固化模型资产并建设向量服务 |
 | Tavily 未配置或调用失败 | 未配置 key 时返回 mock；真实调用失败时返回可处理错误并记录降级 warning | 增加超时、重试、熔断和可观测性 |
+| Diet 画像来自 LLM | JSON 解析后通过 Pydantic 校验；非法、越界或非对象输出降级为空画像并产生 warning | 增加多轮补全、用户确认和敏感画像治理 |
 | mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
 | MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
 | Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入、知识来源标识透传和容器配置已完成 | 补真实冒烟、Recall@K、MRR、生成忠实度与 P95 延迟基线 |

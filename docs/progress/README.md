@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-08 | [Diet 结构化画像校验](./2026-07-08-diet-profile-validation.md) | Pydantic 校验画像范围与枚举，非法 LLM 输出安全降级并公开 warning |
 | 2026-07-08 | [同步 LangGraph 与流式生成异步桥接](./2026-07-08-async-graph-and-stream-bridge.md) | 三种协议在线程执行同步图，SSE/WS 共用非阻塞 token queue |
 | 2026-07-08 | [RAG 来源透传闭环](./2026-07-08-rag-source-propagation.md) | Chat/Diet 共用编号证据格式，并将知识来源透传到三种协议 |
 | 2026-07-08 | [Motion 指标语义与坐标空间加固](./2026-07-08-motion-metric-semantics-hardening.md) | 形状差异改为 DTW 对齐逐关节距离，并拒绝已知坐标空间冲突 |

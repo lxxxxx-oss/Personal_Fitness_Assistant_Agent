@@ -37,7 +37,7 @@ def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
 def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():
     state = {
         "user_input": "减脂怎么吃？",
-        "_user_profile": '{"goal":"减脂"}',
+        "_user_profile": {"goal": "减脂"},
         "_streaming": True,
         "_retrieved": [
             {"content": "优先选择营养密度高的食物。", "source": "nutrition.txt"},
