@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-09 | [ToolRegistry 阶段总结](./2026-07-09-tool-registry-stage-summary.md) | 收束 Search、Knowledge/RAG、MCP execute 已接入状态，并标记 Motion compare 暂缓 |
 | 2026-07-09 | [MCP 接入 ToolRegistry](./2026-07-09-mcp-tool-registry-integration.md) | MCP `execute_tool_node` 通过 `mcp.call_tool` 接入 Registry，并完成全量回归 |
 | 2026-07-09 | [Motion/MCP Registry 迁移评估](./2026-07-09-motion-mcp-registry-migration-evaluation.md) | 形成先 MCP execute、后 Motion compare 的顺序；MCP execute 已在后续步骤完成 |
 | 2026-07-09 | [Knowledge 接入 ToolRegistry](./2026-07-09-knowledge-tool-registry-integration.md) | Chat/Diet 的 RAG 检索通过 `knowledge.retrieve` 接入 Registry，并完成全量回归 |
@@ -22,7 +23,6 @@
 | 2026-07-08 | [同步 LangGraph 与流式生成异步桥接](./2026-07-08-async-graph-and-stream-bridge.md) | 三种协议在线程执行同步图，SSE/WS 共用非阻塞 token queue |
 | 2026-07-08 | [RAG 来源透传闭环](./2026-07-08-rag-source-propagation.md) | Chat/Diet 共用编号证据格式，并将知识来源透传到三种协议 |
 | 2026-07-08 | [Motion 指标语义与坐标空间加固](./2026-07-08-motion-metric-semantics-hardening.md) | 形状差异改为 DTW 对齐逐关节距离，并拒绝已知坐标空间冲突 |
-| 2026-07-08 | [本地原型安全与部署边界](./2026-07-08-local-prototype-security-boundary.md) | 明确无鉴权、CORS、内存会话和 liveness/readiness 边界 |
 
 ## 维护方式
 

@@ -74,7 +74,7 @@ Results:
 - Registry `timeout_seconds` is still policy metadata; actual subprocess/read timeout remains inside `MCPClient`.
 - Real server `inputSchema` deep validation, discovered-tool allowlist, response ID matching, and process isolation remain production hardening items.
 
-## Next Steps
+## Deferred Candidate
 
-- Consider routing Motion standard pose comparison through `motion.compare_pose`.
+- Motion standard pose comparison through `motion.compare_pose` remains a later candidate, but the current ToolRegistry stage is paused.
 - Keep Motion media upload and pose estimation controlled by FastAPI/API boundaries.

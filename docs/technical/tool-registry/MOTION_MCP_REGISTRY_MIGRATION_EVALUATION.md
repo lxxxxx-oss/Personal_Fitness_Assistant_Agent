@@ -148,4 +148,4 @@ MCP execute 已完成接入，但完整 Motion 仍暂不迁移，原因是：
 - 媒体上传、模型文件缺失、视频解码和临时文件清理更适合留在 API 层。
 - `motion.compare_pose` 只覆盖标准动作比较，不应被包装成整个 Motion 能力。
 
-下一步如果继续实施，优先评估 **Motion 标准动作比较接入 Registry**。
+当前阶段已暂停继续迁移。后续如果重新启动工具治理，再评估 **Motion 标准动作比较接入 Registry**。
