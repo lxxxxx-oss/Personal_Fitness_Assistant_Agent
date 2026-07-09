@@ -115,6 +115,21 @@ ToolRegistry.execute(name, args, context)
 - Registry 已有最小原型，但不是生产级工具平台。
 - 主链路稳定优先，接入顺序要从低风险工具开始。
 
+### 5.1 Motion/MCP 为什么不一次性迁移？
+
+如果面试官继续追问“既然你有 ToolRegistry，为什么 Motion 和 MCP 还没全部走它”，可以这样答：
+
+> 我没有为了统一而强行把所有工具一次性塞进 Registry。Search 和 Knowledge/RAG 的输入输出主要是文本、检索结果和结构化列表，风险低，所以我先迁移它们，证明 Registry 的 schema、权限、审计、retry 和 fallback 链路可行。Motion 和 MCP 的边界更复杂：Motion 有图片/视频上传、临时文件、MediaPipe 模型、`PoseSequence`、标准动作库和数值比较；MCP 有 subprocess、JSON-RPC、真实 server 兼容性和工具发现结果校验。所以我的策略是先评估再迁移。下一步优先迁移 MCP 的工具执行点，因为它天然是 `tool_name + arguments -> ToolResult`；Motion 只考虑先迁移标准动作比较这段算法内核，媒体上传和姿态估计继续由 FastAPI/API 层控制。
+
+这不是回避实现，而是工程边界控制：
+
+- **MCP execute 更适合先迁移**：`execute_tool_node` 已经拿到 `tool_name` 和 `arguments`，可以直接调用 `ToolRegistry.execute("mcp.call_tool", ...)`，收益是权限、审计和执行元数据统一。
+- **Motion compare 适合后迁移**：`PoseSequence -> PoseSequence` 的标准动作比较输入输出清晰，可以接入 `motion.compare_pose`。
+- **Motion 媒体入口暂不迁移**：上传文件、模型文件缺失、视频解码、临时文件清理和 HTTP 错误码更适合由 API 层直接控制。
+- **准确口径**：Registry 已注册 `motion.compare_pose` 和 `mcp.call_tool` 代表工具，但主链路尚未强制走 Registry，不能说 Motion/MCP 已完整迁移。
+
+细节版设计记录见：`docs/technical/tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md`。
+
 ## 6. 如果面试官继续追问
 
 ### Q：新增一个工具的完整流程是什么？

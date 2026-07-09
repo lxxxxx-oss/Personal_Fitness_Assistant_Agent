@@ -35,8 +35,10 @@ pytest -q
 
 The minimal registry prototype is usable as a side-channel tool governance layer. It does not yet replace the main LangGraph subgraph tool calls.
 
+Current status note: this was the 2026-07-08 prototype state. Search and Knowledge/RAG were later connected to registry execution. Motion and MCP remain direct-call paths, with a later migration evaluation recorded in `docs/technical/tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md`.
+
 ## Remaining Risk
 
 - `timeout_seconds` is policy metadata only in this prototype.
-- Search, Motion, Knowledge, and MCP subgraphs are not yet migrated to call through the registry.
+- At this prototype step, Search, Motion, Knowledge, and MCP subgraphs were not yet migrated to call through the registry.
 - MCP real server `inputSchema` validation remains a production hardening item.

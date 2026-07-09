@@ -28,8 +28,10 @@ pytest -q
 
 Search is the first real subgraph path connected to `ToolRegistry`. The integration preserves existing Search behavior while proving the registry can govern a live subgraph tool call.
 
+Current status note: this document records the state immediately after Search migration. Knowledge/RAG was later migrated through `knowledge.retrieve`; Motion and MCP remain direct-call paths pending the migration order evaluation.
+
 ## Remaining Risk
 
 - Registry observability was minimal at this step; later `2026-07-09-tool-registry-observability.md` added `execution_id`, `duration_ms`, and richer audit fields.
-- Motion, Knowledge, and MCP have not been migrated to registry execution.
+- At this Search-only step, Motion, Knowledge, and MCP had not been migrated to registry execution.
 - `timeout_seconds` is still policy metadata rather than hard cancellation.

@@ -33,7 +33,7 @@ Current status:
 Router -> Search subgraph -> ToolRegistry -> search.tavily -> TavilySearchTool
 ```
 
-Other subgraphs still call their tools directly.
+At this Search-only step, other subgraphs still called their tools directly. Current status has advanced: Knowledge/RAG now also uses `knowledge.retrieve` through Registry; Motion and MCP remain direct-call paths pending the migration order evaluation.
 
 ## Verification
 

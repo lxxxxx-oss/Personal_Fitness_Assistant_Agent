@@ -74,7 +74,7 @@
 | Diet 画像来自 LLM | JSON 解析后通过 Pydantic 校验；非法、越界或非对象输出降级为空画像并产生 warning | 增加多轮补全、用户确认和敏感画像治理 |
 | mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
 | Chat/Diet 容易被问是否重复 | 统一解释为 Knowledge 能力域：对外保留兼容意图，对内按 `general_qa` 和 `diet_advice` 分链路 | 后续继续沉淀结构化用户画像和更细粒度 Answer Benchmark |
-| 工具系统容易被问是否只是函数调用 | 已补最小 `ToolSpec + ToolRegistry` 原型，统一管理 schema、权限、超时字段、有限重试、fallback、`execution_id`、`duration_ms` 和审计；Search 与 Knowledge/RAG 已接入；MCP 是外部协议补充，不代表全部工具系统 | 下一步谨慎评估 Motion/MCP 的迁移顺序 |
+| 工具系统容易被问是否只是函数调用 | 已补最小 `ToolSpec + ToolRegistry` 原型，统一管理 schema、权限、超时字段、有限重试、fallback、`execution_id`、`duration_ms` 和审计；Search 与 Knowledge/RAG 已接入；已完成 Motion/MCP 迁移评估，明确先 MCP execute、后 Motion compare | 先把 MCP `execute_tool_node` 接入 Registry，再评估 Motion 标准动作比较接入 |
 | MCP 与 Diet 同属饮食域 | MCP 明确定位为工具协议补充，不是饮食主链路；Diet/Knowledge 负责营养建议，MCP 负责外部工具适配 | 补真实 Server 的权限、Schema、进程生命周期和审计治理 |
 | Milvus 效果评测 | 已完成真实链路效果评测，证明 Collection、写入、检索、source 透传和 API 主链路可用 | 扩大 Recall@K、MRR、生成忠实度与 P95 延迟基线规模 |
 | Motion 标准动作教练系统 | 已形成图片/视频 -> PoseSequence -> 标准动作对比 -> 教练式反馈闭环 | 扩充正式标准样本集、周期切分、专项规则和教练标注 |
@@ -144,7 +144,7 @@ docs/superpowers/            早期方案与规格
 
 1. 扩充 RAG 标准问答与检索评测集，扩大 Recall@K、MRR 和来源覆盖率样本规模。
 2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 扩充标准动作样本库、关键点平滑、动作周期切分和专项纠错规则。
-3. 评估 Motion 或 MCP 是否适合接入 `ToolRegistry`；MCP 作为外部工具协议补充纳入统一工具治理口径。
+3. 按 [Motion/MCP Registry 迁移评估](./technical/tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md) 先把 MCP `execute_tool_node` 接入 `ToolRegistry`，再评估 Motion 标准动作比较是否接入 Registry。
 4. 补全 Search 的逐条 citation 与正文引用关系校验。
 5. 在已完成 Milvus 真实链路效果评测基础上，扩大检索质量与延迟基线。
 6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。
