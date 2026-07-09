@@ -4,7 +4,7 @@
 
 ## 1. 一句话口径
 
-> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`。
+> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`。每次 Registry 调用都会产生 `execution_id` 和 `duration_ms`，fallback 会复用同一个 `execution_id` 并标出 `fallback_from`。
 
 ## 2. 工具系统和 MCP 的区别
 
@@ -12,7 +12,7 @@
 |---|---|---|---|
 | 内部工具系统 | 项目自己定义和调用的确定性能力集合 | SearchTool、Retriever、MotionTool、PoseEstimator、MCPClient 等 | 主线是“工具契约 + 受控执行 + 统一结果回传” |
 | MCP | 外部工具发现和调用的标准协议 | 作为 `MCPTool` 子链路的一种外部协议适配 | 只是工具协议补充，不是整个工具系统本身 |
-| ToolRegistry | 工具元数据和执行治理中心 | 已落地最小原型，Search 子图已接入，尚未全面接管所有子图 | 用于统一注册、发现、校验、权限、执行、审计 |
+| ToolRegistry | 工具元数据和执行治理中心 | 已落地最小原型，Search 子图已接入，尚未全面接管所有子图 | 用于统一注册、发现、校验、权限、执行、审计和基础观测 |
 
 面试时不要把 MCP 当成全部工具系统。更稳的说法是：
 
@@ -98,8 +98,8 @@ ToolRegistry.execute(name, args, context)
   -> run executor with timeout
   -> if retryable: bounded retry
   -> if still failed and fallback_tool exists: fallback
-  -> return ToolResult
-  -> write audit log
+  -> ToolResult.meta 写入 execution_id/duration_ms/attempts
+  -> audit log 写入 execution_id/duration_ms/fallback_from
 ```
 
 这个设计的关键是：**Registry 不负责业务规划，业务规划仍由 Router 和 LangGraph 子图负责。Registry 只负责工具治理。**
@@ -131,4 +131,4 @@ ToolRegistry.execute(name, args, context)
 
 ### Q：最小版本先做什么？
 
-> 最小版本已经先注册了 Retriever、SearchTool、Motion compare、MCPClient 四类代表工具，并统一了 `ToolSpec` 元数据、参数校验、权限检查、有限重试、fallback 和 audit log。它不做复杂动态规划，也不让 LLM 任意发现和调用工具，仍保持 Router/子图控制执行顺序。目前 Search 子图已经接入 Registry，下一步更适合补 `execution_id`、`duration_ms` 等可观测性字段。
+> 最小版本已经先注册了 Retriever、SearchTool、Motion compare、MCPClient 四类代表工具，并统一了 `ToolSpec` 元数据、参数校验、权限检查、有限重试、fallback 和 audit log。它不做复杂动态规划，也不让 LLM 任意发现和调用工具，仍保持 Router/子图控制执行顺序。目前 Search 子图已经接入 Registry，Registry 结果和 audit log 也已经包含 `execution_id`、`duration_ms`、attempts 和 fallback 归因。

@@ -30,6 +30,6 @@ Search is the first real subgraph path connected to `ToolRegistry`. The integrat
 
 ## Remaining Risk
 
-- Registry observability is still minimal.
+- Registry observability was minimal at this step; later `2026-07-09-tool-registry-observability.md` added `execution_id`, `duration_ms`, and richer audit fields.
 - Motion, Knowledge, and MCP have not been migrated to registry execution.
 - `timeout_seconds` is still policy metadata rather than hard cancellation.

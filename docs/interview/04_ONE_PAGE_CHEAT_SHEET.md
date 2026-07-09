@@ -16,7 +16,7 @@
 | Milvus RAG | 把中文知识切块、编码、幂等写入 Milvus，再做 ANN 检索和后处理 | Schema、IVF_FLAT、COSINE、nlist/nprobe、Top-K、source |
 | Motion | 独立媒体 API 把图片/视频统一成 PoseSequence，再执行原型级时序和相似度计算 | MediaPipe、OpenCV、33 点、FastDTW、有效帧率；关节角专项规则待接入 |
 | Search | 查询改写、Tavily 检索、来源约束合成三阶段拆分 | title/content/url、source grounding、错误分类 |
-| 工具系统 | 内部工具先统一职责、schema、权限、executor 和 ToolResult，再把 MCP 作为外部协议补充 | ToolResult、ErrorCode、ToolSpec、ToolRegistry、timeout、fallback、audit |
+| 工具系统 | 内部工具先统一职责、schema、权限、executor 和 ToolResult，再把 MCP 作为外部协议补充 | ToolResult、ErrorCode、ToolSpec、ToolRegistry、execution_id、duration_ms、fallback、audit |
 | MCP | 作为工具协议补充，自实现轻量 Client 打通串行协议主链路和 mock fallback | subprocess、stdio、JSON-RPC；响应 ID、schema 校验和真实 Server 兼容性可继续增强 |
 
 ## 三个最能体现工程能力的点
@@ -47,7 +47,7 @@
 
 ### 工具系统和 MCP 是一回事吗？
 
-> 不是。工具系统是项目内部对确定性能力的治理方式，包括输入 schema、权限、执行器、`ToolResult/ErrorCode` 和失败降级；MCP 只是外部工具接入的一种协议补充。后续最小 ToolRegistry 会把工具注册、参数校验、超时、重试、fallback 和审计集中起来。
+> 不是。工具系统是项目内部对确定性能力的治理方式，包括输入 schema、权限、执行器、`ToolResult/ErrorCode` 和失败降级；MCP 只是外部工具接入的一种协议补充。当前最小 ToolRegistry 已接入 Search，并记录 `execution_id`、`duration_ms`、attempts、fallback 和 audit 信息。
 
 ### Milvus 做了什么？
 

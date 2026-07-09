@@ -7,8 +7,10 @@ and normalizes every outcome as ToolResult.
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.tools.types import ErrorCode, ToolResult
 
@@ -89,7 +91,16 @@ class ToolRegistry:
         args: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
-        return self._execute(name, args or {}, context or {}, visited=())
+        context = context or {}
+        execution_id = str(context.get("execution_id") or uuid.uuid4())
+        return self._execute(
+            name,
+            args or {},
+            context,
+            visited=(),
+            execution_id=execution_id,
+            fallback_from=None,
+        )
 
     def _execute(
         self,
@@ -97,7 +108,10 @@ class ToolRegistry:
         args: Dict[str, Any],
         context: Dict[str, Any],
         visited: Tuple[str, ...],
+        execution_id: str,
+        fallback_from: Optional[str],
     ) -> ToolResult:
+        started = time.perf_counter()
         try:
             spec = self.get(name)
         except KeyError:
@@ -106,18 +120,39 @@ class ToolRegistry:
                 f"Tool is not registered: {name}",
                 tool_name=name,
             )
-            self._audit(name, result, attempts=0)
-            return result
+            return self._finalize(
+                name=name,
+                spec=None,
+                result=result,
+                started=started,
+                attempts=0,
+                execution_id=execution_id,
+                fallback_from=fallback_from,
+            )
 
         validation = self.validate_args(spec, args)
         if not validation.ok:
-            self._audit(name, validation, attempts=0)
-            return validation
+            return self._finalize(
+                name=name,
+                spec=spec,
+                result=validation,
+                started=started,
+                attempts=0,
+                execution_id=execution_id,
+                fallback_from=fallback_from,
+            )
 
         permission = self.check_permission(spec, context)
         if not permission.ok:
-            self._audit(name, permission, attempts=0)
-            return permission
+            return self._finalize(
+                name=name,
+                spec=spec,
+                result=permission,
+                started=started,
+                attempts=0,
+                execution_id=execution_id,
+                fallback_from=fallback_from,
+            )
 
         attempts = 0
         result: Optional[ToolResult] = None
@@ -131,15 +166,15 @@ class ToolRegistry:
                 break
 
         assert result is not None
-        result.meta.update(
-            {
-                "tool_name": spec.name,
-                "permission": spec.permission,
-                "attempts": attempts,
-                "timeout_seconds": spec.timeout_seconds,
-            }
+        result = self._finalize(
+            name=name,
+            spec=spec,
+            result=result,
+            started=started,
+            attempts=attempts,
+            execution_id=execution_id,
+            fallback_from=fallback_from,
         )
-        self._audit(name, result, attempts=attempts)
 
         if (
             not result.ok
@@ -152,18 +187,66 @@ class ToolRegistry:
                 args,
                 context,
                 visited=visited + (spec.name,),
+                execution_id=execution_id,
+                fallback_from=spec.name,
             )
-            fallback.meta.update({"fallback_from": spec.name})
             return fallback
         return result
 
-    def _audit(self, name: str, result: ToolResult, attempts: int) -> None:
+    def _finalize(
+        self,
+        name: str,
+        spec: Optional[ToolSpec],
+        result: ToolResult,
+        started: float,
+        attempts: int,
+        execution_id: str,
+        fallback_from: Optional[str],
+    ) -> ToolResult:
+        duration_ms = round((time.perf_counter() - started) * 1000, 3)
+        result.meta.update(
+            {
+                "execution_id": execution_id,
+                "tool_name": spec.name if spec else name,
+                "permission": spec.permission if spec else None,
+                "attempts": attempts,
+                "timeout_seconds": spec.timeout_seconds if spec else None,
+                "duration_ms": duration_ms,
+            }
+        )
+        if fallback_from:
+            result.meta["fallback_from"] = fallback_from
+        self._audit(
+            name=name,
+            result=result,
+            attempts=attempts,
+            execution_id=execution_id,
+            duration_ms=duration_ms,
+            permission=spec.permission if spec else None,
+            fallback_from=fallback_from,
+        )
+        return result
+
+    def _audit(
+        self,
+        name: str,
+        result: ToolResult,
+        attempts: int,
+        execution_id: str,
+        duration_ms: float,
+        permission: Optional[str],
+        fallback_from: Optional[str],
+    ) -> None:
         self.audit_log.append(
             {
+                "execution_id": execution_id,
                 "tool_name": name,
+                "permission": permission,
                 "ok": result.ok,
                 "error_code": result.error_code,
                 "attempts": attempts,
+                "duration_ms": duration_ms,
+                "fallback_from": fallback_from,
             }
         )
 

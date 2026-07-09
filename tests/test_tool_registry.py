@@ -39,7 +39,11 @@ def test_register_and_execute_success():
     assert result.data == "squat"
     assert result.meta["tool_name"] == "test.echo"
     assert result.meta["permission"] == "read_only"
+    assert result.meta["execution_id"]
+    assert result.meta["duration_ms"] >= 0
     assert registry.audit_log[-1]["ok"] is True
+    assert registry.audit_log[-1]["execution_id"] == result.meta["execution_id"]
+    assert registry.audit_log[-1]["duration_ms"] >= 0
 
 
 def test_duplicate_register_raises():
@@ -58,6 +62,8 @@ def test_missing_tool_returns_data_not_found():
 
     assert not result.ok
     assert result.error_code == ErrorCode.DATA_NOT_FOUND
+    assert result.meta["execution_id"]
+    assert result.meta["duration_ms"] >= 0
 
 
 def test_schema_validation_rejects_missing_required_param():
@@ -140,7 +146,26 @@ def test_retry_and_fallback_are_bounded():
     assert result.ok
     assert result.data == "fallback"
     assert result.meta["fallback_from"] == "test.primary"
+    assert result.meta["execution_id"]
     assert calls["primary"] == 2
+    assert registry.audit_log[0]["execution_id"] == result.meta["execution_id"]
+    assert registry.audit_log[1]["execution_id"] == result.meta["execution_id"]
+    assert registry.audit_log[1]["fallback_from"] == "test.primary"
+
+
+def test_context_execution_id_is_reused_in_meta_and_audit():
+    registry = ToolRegistry()
+    registry.register(_echo_spec())
+
+    result = registry.execute(
+        "test.echo",
+        {"query": "squat"},
+        context={"execution_id": "fixed-exec-id"},
+    )
+
+    assert result.ok
+    assert result.meta["execution_id"] == "fixed-exec-id"
+    assert registry.audit_log[-1]["execution_id"] == "fixed-exec-id"
 
 
 def test_default_registry_exposes_representative_tools():

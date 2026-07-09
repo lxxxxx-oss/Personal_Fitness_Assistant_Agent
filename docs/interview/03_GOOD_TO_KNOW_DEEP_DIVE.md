@@ -251,7 +251,7 @@ ToolRegistry
   validate_args(spec, args)
   check_permission(spec, context)
   execute(name, args, context)
-  audit(result)
+  audit(result: execution_id, duration_ms, attempts, fallback_from)
 ```
 
 执行链路：
@@ -265,12 +265,13 @@ execute
   -> bounded retry
   -> fallback if configured
   -> ToolResult
+  -> ToolResult.meta: execution_id, duration_ms, attempts, fallback_from
   -> audit log
 ```
 
 面试防守点：
 
-> ToolRegistry 不替代 LangGraph。LangGraph 管任务流程，ToolRegistry 管具体工具执行治理。ToolRegistry 也不等于 MCP。MCP 是一种外部工具协议，MCPClient 可以作为一个工具被 Registry 管理。当前 Registry 已有最小代码原型、单元测试，并已接入 Search 子图，但还没有全面接管所有子图调用。
+> ToolRegistry 不替代 LangGraph。LangGraph 管任务流程，ToolRegistry 管具体工具执行治理。ToolRegistry 也不等于 MCP。MCP 是一种外部工具协议，MCPClient 可以作为一个工具被 Registry 管理。当前 Registry 已有最小代码原型、单元测试，并已接入 Search 子图；每次调用会记录 execution_id、duration_ms、attempts 和 fallback 归因，但还没有全面接管所有子图调用。
 
 ### 5.3 MCP 调用链
 

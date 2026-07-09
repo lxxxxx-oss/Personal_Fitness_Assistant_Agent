@@ -71,7 +71,7 @@ pip install -r requirements-motion.txt
 当前自动化回归：
 
 ```text
-166 passed, 2 skipped, 1 warning
+167 passed, 2 skipped, 1 warning
 ```
 
 默认 pytest 会 mock 本地 LLM 与 SentenceTransformer，因此该数字主要证明代码、接口、算法和降级契约可回归。Milvus 另有真实链路效果评测记录，项目也保留真实 MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。

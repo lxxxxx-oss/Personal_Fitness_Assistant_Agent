@@ -57,6 +57,6 @@ Results:
 
 ## Next Steps
 
-- Add richer registry observability such as `execution_id` and `duration_ms`.
+- Registry observability was added later in `2026-07-09-tool-registry-observability.md`.
 - Consider gradually routing Knowledge retrieval through the registry after Search remains stable.
 - Keep Motion and MCP migrations conservative.
