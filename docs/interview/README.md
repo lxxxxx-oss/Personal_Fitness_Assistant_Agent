@@ -108,6 +108,6 @@
 
 - Chat/Diet 融合进 Knowledge：对外可以保留 `chat`、`diet` 兼容意图，对内统一为 Knowledge 能力域，内部区分 `general_qa` 与 `diet_advice`。
 - MCP 是工具协议补充：用于说明外部工具标准化接入，不把它讲成饮食主链路本身。
-- 工具系统主线优先于 MCP：先讲内部工具的职责、schema、权限、executor、`ToolResult` 回传，再讲 MCP 是外部工具协议补充；`ToolRegistry` 已有最小原型并已接入 Search 子图，且具备 `execution_id`、`duration_ms`、fallback 归因和 audit log，但不说成生产级工具平台或已全面接管所有工具。
+- 工具系统主线优先于 MCP：先讲内部工具的职责、schema、权限、executor、`ToolResult` 回传，再讲 MCP 是外部工具协议补充；`ToolRegistry` 已有最小原型并已接入 Search 与 Knowledge/RAG，且具备 `execution_id`、`duration_ms`、fallback 归因和 audit log，但不说成生产级工具平台或已全面接管所有工具。
 - Milvus 已完成真实链路效果评测：可以讲 Collection、写入、检索、source 透传和 API 主链路验证；后续是扩大 Recall@K、MRR、忠实度和延迟基线规模。
 - Motion 当前按完整标准动作教练系统表达：图片/视频进入 PoseSequence，与同 schema 标准动作做相似度比较并生成教练式反馈；后续重点是扩充样本库、专项规则和教练标注。

@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-09 | [Knowledge 接入 ToolRegistry](./2026-07-09-knowledge-tool-registry-integration.md) | Chat/Diet 的 RAG 检索通过 `knowledge.retrieve` 接入 Registry，并完成全量回归 |
 | 2026-07-09 | [ToolRegistry 可观测性](./2026-07-09-tool-registry-observability.md) | Registry 结果和 audit log 增加 `execution_id`、`duration_ms`、attempts 和 fallback 归因 |
 | 2026-07-09 | [Search 接入 ToolRegistry](./2026-07-09-search-tool-registry-integration.md) | Search 子图通过 `ToolRegistry.execute("search.tavily")` 调用工具，并完成全量回归 |
 | 2026-07-08 | [Diet 结构化画像校验](./2026-07-08-diet-profile-validation.md) | Pydantic 校验画像范围与枚举，非法 LLM 输出安全降级并公开 warning |
@@ -22,7 +23,6 @@
 | 2026-07-08 | [本地原型安全与部署边界](./2026-07-08-local-prototype-security-boundary.md) | 明确无鉴权、CORS、内存会话和 liveness/readiness 边界 |
 | 2026-07-08 | [GitHub 首屏与架构入口](./2026-07-08-root-readme-and-architecture.md) | 新增根 README，用 Mermaid 区分对话 Agent 与独立媒体 API |
 | 2026-07-08 | [测试与真实依赖边界审计](./2026-07-08-test-and-dependency-boundary-audit.md) | 区分 mock 自动化、真实依赖验收和 MCP 协议原型边界 |
-| 2026-07-08 | [API 输入边界加固](./2026-07-08-api-input-boundary-hardening.md) | 后端强制图片 10MB 上限，WebSocket 复用 HTTP 字段契约 |
 
 ## 维护方式
 

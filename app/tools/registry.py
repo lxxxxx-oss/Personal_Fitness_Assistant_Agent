@@ -287,8 +287,8 @@ def validate_input_schema(schema: Dict[str, Any], args: Dict[str, Any]) -> ToolR
 def build_default_tool_registry() -> ToolRegistry:
     """Create a registry with representative project tools.
 
-    The default registry is a side-channel governance entry point. Existing
-    LangGraph subgraphs do not depend on it yet.
+    Search and Knowledge/RAG use this registry in the main graph. Other
+    subgraphs can migrate gradually as their data and process boundaries allow.
     """
     from app.config import config
     from app.tools.mcp_client import MCPClient

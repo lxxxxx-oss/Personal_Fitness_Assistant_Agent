@@ -49,11 +49,11 @@
 | 模块 | 当前状态 |
 |---|---|
 | Router | Phase 4 已完成：保留 Phase 3 hybrid classifier，增加多意图观测、四种白名单两步组合、错误隔离和结果合成；真实 Qwen classifier 因收益不足默认关闭 |
-| Knowledge RAG | Chat/Diet 已融合为 Knowledge 能力域；已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传、记忆注入和真实链路效果评测 |
+| Knowledge RAG | Chat/Diet 已融合为 Knowledge 能力域；已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传、记忆注入和真实链路效果评测；Chat 与 Diet 的 RAG 检索已通过 `ToolRegistry` 的 `knowledge.retrieve` 执行 |
 | Search | 已完成 Tavily 接入、mock 降级，并作为第一个真实子图接入最小 `ToolRegistry`，通过 `search.tavily` 统一执行搜索工具 |
 | Knowledge-Diet | 作为 Knowledge 内部 `diet_advice` 链路，已完成 Pydantic 结构化画像解析、身高体重范围/枚举校验、非法输出 warning 降级、营养 RAG 和建议生成 |
 | Motion | 已按完整标准动作教练系统口径完成图片/视频输入、PoseSequence、标准视频构建脚本、schema 安全比较、小程序参考选择、相似度计算和教练式反馈 |
-| Tool System | 已落地最小 `ToolRegistry` 原型：`ToolSpec` 记录 name、description、input_schema、permission、executor、timeout、retry、fallback；Registry 支持注册、列出、schema 校验、权限检查、执行、有限重试、fallback、`execution_id`、`duration_ms` 和 audit log；Search 子图已接入 Registry，其他子图仍由 LangGraph 直接控制工具调用 |
+| Tool System | 已落地最小 `ToolRegistry` 原型：`ToolSpec` 记录 name、description、input_schema、permission、executor、timeout、retry、fallback；Registry 支持注册、列出、schema 校验、权限检查、执行、有限重试、fallback、`execution_id`、`duration_ms` 和 audit log；Search 与 Knowledge/RAG 已接入 Registry，Motion/MCP 仍由 LangGraph 直接控制工具调用 |
 | MCP | 定位为工具协议补充；轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析，默认 mock 用于演示稳定 |
 | Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前由 Knowledge 能力域消费最近 6 条消息（约 3 轮），用于普通问答和饮食建议的连续上下文；跨 Search、Motion、MCP 的长期记忆消费仍是后续增强项 |
 | 异步接口 | HTTP/SSE/WebSocket 的同步 LangGraph 阶段通过 `asyncio.to_thread` 执行；SSE 与 WebSocket 共用线程到 asyncio queue 桥接逐 token 输出，避免阻塞事件循环；模型生成锁仍保证同进程串行推理 |
@@ -61,7 +61,7 @@
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `167 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、工具治理、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `170 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、工具治理、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -74,7 +74,7 @@
 | Diet 画像来自 LLM | JSON 解析后通过 Pydantic 校验；非法、越界或非对象输出降级为空画像并产生 warning | 增加多轮补全、用户确认和敏感画像治理 |
 | mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
 | Chat/Diet 容易被问是否重复 | 统一解释为 Knowledge 能力域：对外保留兼容意图，对内按 `general_qa` 和 `diet_advice` 分链路 | 后续继续沉淀结构化用户画像和更细粒度 Answer Benchmark |
-| 工具系统容易被问是否只是函数调用 | 已补最小 `ToolSpec + ToolRegistry` 原型，统一管理 schema、权限、超时字段、有限重试、fallback、`execution_id`、`duration_ms` 和审计；Search 子图已作为第一个真实路径接入；MCP 是外部协议补充，不代表全部工具系统 | 下一步谨慎评估 Knowledge/Motion/MCP 的迁移顺序 |
+| 工具系统容易被问是否只是函数调用 | 已补最小 `ToolSpec + ToolRegistry` 原型，统一管理 schema、权限、超时字段、有限重试、fallback、`execution_id`、`duration_ms` 和审计；Search 与 Knowledge/RAG 已接入；MCP 是外部协议补充，不代表全部工具系统 | 下一步谨慎评估 Motion/MCP 的迁移顺序 |
 | MCP 与 Diet 同属饮食域 | MCP 明确定位为工具协议补充，不是饮食主链路；Diet/Knowledge 负责营养建议，MCP 负责外部工具适配 | 补真实 Server 的权限、Schema、进程生命周期和审计治理 |
 | Milvus 效果评测 | 已完成真实链路效果评测，证明 Collection、写入、检索、source 透传和 API 主链路可用 | 扩大 Recall@K、MRR、生成忠实度与 P95 延迟基线规模 |
 | Motion 标准动作教练系统 | 已形成图片/视频 -> PoseSequence -> 标准动作对比 -> 教练式反馈闭环 | 扩充正式标准样本集、周期切分、专项规则和教练标注 |
@@ -144,7 +144,7 @@ docs/superpowers/            早期方案与规格
 
 1. 扩充 RAG 标准问答与检索评测集，扩大 Recall@K、MRR 和来源覆盖率样本规模。
 2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 扩充标准动作样本库、关键点平滑、动作周期切分和专项纠错规则。
-3. 评估 Knowledge retrieval 是否适合接入 `ToolRegistry`；MCP 作为外部工具协议补充纳入统一工具治理口径。
+3. 评估 Motion 或 MCP 是否适合接入 `ToolRegistry`；MCP 作为外部工具协议补充纳入统一工具治理口径。
 4. 补全 Search 的逐条 citation 与正文引用关系校验。
 5. 在已完成 Milvus 真实链路效果评测基础上，扩大检索质量与延迟基线。
 6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。

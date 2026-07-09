@@ -4,17 +4,16 @@ import logging
 from langgraph.graph import StateGraph, END
 
 from app.graph.state import RouterState, record_execution
-from app.graph.subgraphs.rag_context import build_rag_context
-from app.tools.retriever import get_shared_retriever
+from app.graph.subgraphs.rag_context import build_rag_context, retrieve_knowledge
 
 logger = logging.getLogger(__name__)
 
 
 def retrieve_node(state: RouterState) -> RouterState:
     """Retrieve relevant documents from the shared knowledge base."""
-    retriever = get_shared_retriever()
-    result = retriever.search(state["user_input"], top_k=5, threshold=0.3)
-    state["_retrieved"] = result.data if result.ok else []  # type: ignore
+    result = retrieve_knowledge(state["user_input"], top_k=5, threshold=0.3)
+    retrieved = result.data if result.ok and result.data else []
+    state["_retrieved"] = retrieved  # type: ignore
     state["_retrieval_meta"] = result.meta  # type: ignore
     backend = str(result.meta.get("backend") or "memory")
     retrieval_mode = str(result.meta.get("mode") or "")
@@ -39,7 +38,7 @@ def retrieve_node(state: RouterState) -> RouterState:
             )
         ),
     )
-    logger.info(f"Retrieved {len(result.data)} chunks for: {state['user_input'][:50]}")
+    logger.info(f"Retrieved {len(retrieved)} chunks for: {state['user_input'][:50]}")
     return state
 
 

@@ -7,8 +7,7 @@ from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.graph.state import RouterState, record_execution
-from app.graph.subgraphs.rag_context import build_rag_context
-from app.tools.retriever import get_shared_retriever
+from app.graph.subgraphs.rag_context import build_rag_context, retrieve_knowledge
 
 logger = logging.getLogger(__name__)
 
@@ -114,11 +113,11 @@ def extract_profile_node(state: RouterState) -> RouterState:
 
 def retrieve_nutrition_node(state: RouterState) -> RouterState:
     """RAG retrieval: search shared nutrition knowledge base."""
-    retriever = get_shared_retriever()
     profile = state.get("_user_profile", {})
     query = f"{state['user_input']} {json.dumps(profile, ensure_ascii=False)}"
-    result = retriever.search(query, top_k=5, threshold=0.3)
-    state["_retrieved"] = result.data if result.ok else []  # type: ignore
+    result = retrieve_knowledge(query, top_k=5, threshold=0.3)
+    state["_retrieved"] = result.data if result.ok and result.data else []  # type: ignore
+    state["_retrieval_meta"] = result.meta  # type: ignore
     backend = str(result.meta.get("backend") or "memory")
     retrieval_mode = str(result.meta.get("mode") or "")
     fallback_from = result.meta.get("fallback_from")
