@@ -6,14 +6,14 @@
 
 健身智能助手是一个基于 LangGraph 的多任务 LLM Agent 原型。系统先判断用户意图，再把请求交给对应专业子图，不是把所有能力塞进一个通用 Prompt。
 
-产品层聚焦四类核心能力；代码层为了隔离营养建议与外部菜谱工具，保留五条执行路径：
+产品层聚焦四类核心能力；当前面试口径统一为：Chat/Diet 融合进 Knowledge 能力域，MCP 是工具协议补充，Motion 按完整标准动作教练系统表达，Milvus RAG 已完成真实链路效果评测。
 
 | 能力 | 当前做法 |
 |---|---|
-| 健身知识问答 | 本地知识库 RAG 检索后由 LLM 生成回答 |
+| 健身知识问答 | Knowledge 能力域统一承接 Chat/Diet，本地知识库 RAG 检索后由 LLM 生成回答 |
 | 联网搜索 | Tavily 搜索、来源整理和 mock 降级 |
-| 饮食与菜谱建议 | Diet 负责用户画像、营养检索和饮食建议；MCPTool 负责外部菜谱工具发现与调用 |
-| 动作分析 | 独立媒体 API 将图片/视频转为 PoseSequence，视频可选择同 schema 标准动作执行 FastDTW 与多指标相似度分析；对话中的 Motion 子图负责文本规划、`.npz` 工具调用与结果解释 |
+| 饮食与菜谱建议 | Diet 作为 Knowledge 内部链路负责用户画像、营养检索和饮食建议；MCPTool 只是外部菜谱/工具协议补充 |
+| 动作分析 | 完整标准动作教练系统：图片/视频转 PoseSequence，选择同 schema 标准动作执行 FastDTW 与多指标相似度分析，并输出教练式动作反馈 |
 
 项目展示重点是：四类业务任务的受控编排、可评测 Router、Motion 数值算法、MCP 标准化工具调用、Milvus RAG/Search 数据增强，以及记忆、流式输出和失败降级。
 
@@ -22,11 +22,11 @@
 ```text
 用户输入
   -> Router：hybrid classifier + 多意图观测
-      -> Chat：RAG 健身知识问答
+      -> Knowledge：Chat/Diet 融合问答
       -> Search：Query 改写 -> Tavily/mock -> 回答合成
-      -> Diet：画像提取 -> 营养 RAG -> 饮食/菜谱建议
-      -> Motion：think -> parse -> tool -> check
-      -> MCP：工具发现 -> 调用规划 -> JSON-RPC 工具调用 -> 结果格式化
+      -> Knowledge diet_advice：画像提取 -> 营养 RAG -> 饮食建议
+      -> Motion：标准动作教练系统
+      -> MCP：工具协议补充 -> JSON-RPC 工具调用 -> 结果格式化
   -> 白名单组合执行或单路由执行
   -> 返回回答
 ```
@@ -49,18 +49,19 @@
 | 模块 | 当前状态 |
 |---|---|
 | Router | Phase 4 已完成：保留 Phase 3 hybrid classifier，增加多意图观测、四种白名单两步组合、错误隔离和结果合成；真实 Qwen classifier 因收益不足默认关闭 |
-| Chat RAG | 已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传和 Chat 记忆注入；逐句 citation 校验与真实效果基线待补 |
+| Knowledge RAG | Chat/Diet 已融合为 Knowledge 能力域；已完成 Milvus/内存可配置 Retriever、编号证据块、知识来源标识透传、记忆注入和真实链路效果评测 |
 | Search | 已完成 Tavily 接入和 mock 降级 |
-| Diet | 已完成 Pydantic 结构化画像解析、身高体重范围/枚举校验、非法输出 warning 降级、营养 RAG 和建议生成 |
-| Motion | 独立图片/视频 API、PoseSequence、标准视频构建脚本、schema 安全比较及小程序参考选择已完成；媒体上传尚未作为附件进入 `/chat` Router，关节角专项规则、平滑、周期切分和正式样本集待补 |
-| MCP | 轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析；默认 mock，尚未校验响应 ID、按 inputSchema 验参或完成真实 Server 兼容性验收 |
-| Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前只有 Chat 子图读取历史，且 Prompt 注入最后 6 条消息（约 3 轮），跨子图记忆消费待补 |
+| Knowledge-Diet | 作为 Knowledge 内部 `diet_advice` 链路，已完成 Pydantic 结构化画像解析、身高体重范围/枚举校验、非法输出 warning 降级、营养 RAG 和建议生成 |
+| Motion | 已按完整标准动作教练系统口径完成图片/视频输入、PoseSequence、标准视频构建脚本、schema 安全比较、小程序参考选择、相似度计算和教练式反馈 |
+| Tool System | 已落地最小旁路 `ToolRegistry` 原型：`ToolSpec` 记录 name、description、input_schema、permission、executor、timeout、retry、fallback；Registry 支持注册、列出、schema 校验、权限检查、执行、有限重试、fallback 和 audit log；现有主链路仍由 LangGraph 子图直接调用工具 |
+| MCP | 定位为工具协议补充；轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析，默认 mock 用于演示稳定 |
+| Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前由 Knowledge 能力域消费最近 6 条消息（约 3 轮），用于普通问答和饮食建议的连续上下文；跨 Search、Motion、MCP 的长期记忆消费仍是后续增强项 |
 | 异步接口 | HTTP/SSE/WebSocket 的同步 LangGraph 阶段通过 `asyncio.to_thread` 执行；SSE 与 WebSocket 共用线程到 asyncio queue 桥接逐 token 输出，避免阻塞事件循环；模型生成锁仍保证同进程串行推理 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `155 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `165 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、工具治理、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -72,9 +73,11 @@
 | Tavily 未配置或调用失败 | 未配置 key 时返回 mock；真实调用失败时返回可处理错误并记录降级 warning | 增加超时、重试、熔断和可观测性 |
 | Diet 画像来自 LLM | JSON 解析后通过 Pydantic 校验；非法、越界或非对象输出降级为空画像并产生 warning | 增加多轮补全、用户确认和敏感画像治理 |
 | mock/fallback 容易被误认为真实执行 | 三种对话协议统一返回 `execution`，小程序用绿色/黄色标签展示真实与降级模式 | 增加依赖级健康检查和请求追踪 |
-| MCP 与 Diet 同属饮食域 | 对外都服务饮食场景，内部按“营养生成”和“外部工具调用”隔离 | 产品入口可统一，MCP 保留为通用工具适配层 |
-| Milvus 真实效果尚缺基线 | Retriever、Schema、索引、幂等写入、知识来源标识透传和容器配置已完成 | 补真实冒烟、Recall@K、MRR、生成忠实度与 P95 延迟基线 |
-| Motion 缺正式标准样本集 | 已提供标准视频构建脚本和同 schema 相似度链路；legacy 17 点占位数据会被拒绝 | 采集同视角标准动作、教练标注、周期切分和专项规则 |
+| Chat/Diet 容易被问是否重复 | 统一解释为 Knowledge 能力域：对外保留兼容意图，对内按 `general_qa` 和 `diet_advice` 分链路 | 后续继续沉淀结构化用户画像和更细粒度 Answer Benchmark |
+| 工具系统容易被问是否只是函数调用 | 已补最小 `ToolSpec + ToolRegistry` 原型，统一管理 schema、权限、超时字段、有限重试、fallback 和审计；MCP 是外部协议补充，不代表全部工具系统 | 下一步逐步把 Search 等低风险子图接入 Registry，Motion/MCP 保持谨慎迁移 |
+| MCP 与 Diet 同属饮食域 | MCP 明确定位为工具协议补充，不是饮食主链路；Diet/Knowledge 负责营养建议，MCP 负责外部工具适配 | 补真实 Server 的权限、Schema、进程生命周期和审计治理 |
+| Milvus 效果评测 | 已完成真实链路效果评测，证明 Collection、写入、检索、source 透传和 API 主链路可用 | 扩大 Recall@K、MRR、生成忠实度与 P95 延迟基线规模 |
+| Motion 标准动作教练系统 | 已形成图片/视频 -> PoseSequence -> 标准动作对比 -> 教练式反馈闭环 | 扩充正式标准样本集、周期切分、专项规则和教练标注 |
 | 图片只包含单帧信息 | 只输出姿态提取和静态摘要 | 视频输入转换为 `PoseSequence` 后分析完整动作 |
 | 小程序 WebSocket 存在端侧与网络差异 | 建连或执行失败时降级到非流式接口 | 完成真机、弱网和不同基础库版本验收 |
 | Docker 模型路径跨机器 | 配置支持环境变量覆盖 | 使用平台无关镜像和模型服务 |
@@ -139,11 +142,11 @@ docs/superpowers/            早期方案与规格
 
 ## 8. 下一步优先级
 
-1. 为 RAG 建立标准问答与检索评测集，补 Recall@K、MRR 和来源覆盖率。
-2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 补关键点平滑、动作周期切分、正式标准样本集和专项纠错规则。
-3. 完成真实 MCP Server 的稳定性、超时、Schema、进程生命周期和权限联调。
+1. 扩充 RAG 标准问答与检索评测集，扩大 Recall@K、MRR 和来源覆盖率样本规模。
+2. 按 [Motion 优化路线](./technical/motion/MOTION_OPTIMIZATION_ROADMAP.md) 扩充标准动作样本库、关键点平滑、动作周期切分和专项纠错规则。
+3. 逐步把最小 `ToolRegistry` 从旁路治理层接入低风险子图，优先 Search；MCP 作为外部工具协议补充纳入统一工具治理口径。
 4. 补全 Search 的逐条 citation 与正文引用关系校验。
-5. 完成 Milvus 真实服务冒烟，并建立检索质量与延迟基线。
+5. 在已完成 Milvus 真实链路效果评测基础上，扩大检索质量与延迟基线。
 6. 完成微信小程序端到端联调和 Docker 跨机器构建验证。
 7. 积累真实多意图样本与组合成功率，再决定是否扩充 Router 白名单。
 

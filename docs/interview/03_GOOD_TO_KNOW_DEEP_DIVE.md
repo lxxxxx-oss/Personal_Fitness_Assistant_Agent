@@ -18,11 +18,10 @@
 User
   -> FastAPI API Layer
   -> LangGraph Router / StateGraph
-       -> Chat RAG
+       -> Knowledge: Chat/Diet -> RAG/Milvus
        -> Search: Query Understanding -> Tavily -> Answer Synthesis
-       -> Diet / Recipe
-       -> Motion: Think -> Parse -> Tool -> Check
-       -> MCPTool: Discover -> Plan -> Execute -> Format
+       -> Motion: Media -> PoseSequence -> Standard Compare -> Coaching Feedback
+       -> MCPTool: Protocol Supplement -> Discover -> Execute -> Format
   -> Memory: last 6 turns
   -> Response / Streaming
 ```
@@ -213,9 +212,67 @@ Generation:
 
 > 我不会只说“接了 Milvus”。真正的 RAG 优化要先有评测集，再比较 chunk、Top-K、threshold、reranker 和向量库配置。
 
-## 5. MCP 深挖
+## 5. 工具系统与 MCP 深挖
 
-### 5.1 MCP 调用链
+### 5.1 内部工具系统调用链
+
+```text
+LangGraph 子图
+  -> 选择领域工具
+  -> 校验输入参数 / 数据契约
+  -> 执行 Search、Retriever、Motion、PoseEstimator 或 MCPClient
+  -> ToolResult(ok/data/error_code/error_message/meta)
+  -> 写回 RouterState
+  -> LLM 解释结构化结果
+```
+
+关键口径：
+
+- 内部工具系统先解决“工具怎么被安全、稳定、可观察地执行”。
+- MCP 只是一类外部工具协议补充，不等于整个工具系统。
+- 当前最小 `ToolRegistry` 已作为旁路治理层落地，但主业务子图仍按原有方式直接调用工具。
+
+### 5.2 最小 ToolRegistry 白板
+
+```text
+ToolSpec
+  name
+  description
+  input_schema
+  permission
+  executor
+  timeout_seconds
+  max_retries
+  fallback_tool
+
+ToolRegistry
+  register(spec)
+  list_tools(scope)
+  validate_args(spec, args)
+  check_permission(spec, context)
+  execute(name, args, context)
+  audit(result)
+```
+
+执行链路：
+
+```text
+execute
+  -> get spec
+  -> schema validation
+  -> permission check
+  -> executor with timeout
+  -> bounded retry
+  -> fallback if configured
+  -> ToolResult
+  -> audit log
+```
+
+面试防守点：
+
+> ToolRegistry 不替代 LangGraph。LangGraph 管任务流程，ToolRegistry 管具体工具执行治理。ToolRegistry 也不等于 MCP。MCP 是一种外部工具协议，MCPClient 可以作为一个工具被 Registry 管理。当前 Registry 已有最小代码原型和单元测试，但还没有全面接管子图调用。
+
+### 5.3 MCP 调用链
 
 ```text
 Agent
@@ -229,11 +286,11 @@ Agent
   -> ToolResult
 ```
 
-### 5.2 为什么用 stdio
+### 5.4 为什么用 stdio
 
 > 对本地工具和 CLI Server 来说，stdio 不需要额外监听端口，适合原型和本地集成。缺点是进程生命周期、阻塞读写和 stderr 管理更复杂。生产化远程工具更适合 HTTP transport、鉴权和连接池。
 
-### 5.3 安全边界
+### 5.5 安全边界
 
 不能让 LLM 任意执行系统命令。需要：
 

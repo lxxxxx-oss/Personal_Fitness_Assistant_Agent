@@ -35,7 +35,7 @@
 
 **推荐回答**
 
-> 如果只是一个 `intent -> handler`，我不会强行用 LangGraph。这个项目里有统一状态、多条子流程、条件分支、工具失败隔离、多意图组合和结果合成。LangGraph 能把节点、状态和边显式表达出来，让 Search、Motion、Chat、MCPTool 等流程边界更清楚。相比大量 if/else，它更适合展示和维护这种多任务 Agent。
+> 如果只是一个 `intent -> handler`，我不会强行用 LangGraph。这个项目里有统一状态、多条子流程、条件分支、工具失败隔离、多意图组合和结果合成。LangGraph 能把节点、状态和边显式表达出来，让 Search、Motion、Knowledge、MCPTool 等流程边界更清楚，其中 Chat/Diet 统一融合进 Knowledge 能力域。相比大量 if/else，它更适合展示和维护这种多任务 Agent。
 
 **选型取舍**
 
@@ -45,7 +45,7 @@
 
 **推荐回答**
 
-> 简历里的四类功能是从用户价值归纳的：联网搜索、3D 动作分析、饮食与菜谱、RAG 知识问答。工程实现上可以拆得更细，比如饮食建议和菜谱工具调用属于同一个饮食业务域，但执行方式不同：Diet 更偏用户目标和营养建议，MCPTool 更偏外部工具协议调用。产品层归纳和工程层拆分不矛盾。
+> 简历里的四类功能是从用户价值归纳的：联网搜索、标准动作教练系统、饮食与菜谱、RAG 知识问答。当前统一口径是 Chat/Diet 融合进 Knowledge：普通知识问答和饮食建议都属于 Knowledge 能力域，内部再区分 general QA 和 diet advice；MCPTool 不是饮食主链路，而是外部工具协议补充。产品层归纳和工程层拆分不矛盾。
 
 ### Q3.1：Diet 为什么不能直接使用 LLM 输出的用户画像？
 
@@ -117,17 +117,17 @@
 
 **推荐回答**
 
-> 单张图片只能看到某一个时刻的姿态，可以判断关键点置信度和静态结构，但不能判断完整动作的下降、上升、节奏和重复稳定性。当前项目已经打通视频上传、MediaPipe VIDEO、多帧 PoseSequence 和同 schema 标准样本相似度；但专业动作判断仍需要平滑、周期切分、正式标准样本和专项规则。
+> 单张图片只能看到某一个时刻的姿态，可以判断关键点置信度和静态结构；完整动作判断依赖视频时序。当前项目按完整标准动作教练系统表达：已经打通视频上传、MediaPipe VIDEO、多帧 PoseSequence、同 schema 标准样本相似度和教练式反馈。后续继续扩充更多标准样本、动作周期切分和专项规则。
 
 ### Q10.1：视频上传已经完成，为什么还不能说能判断动作标准？
 
 **推荐回答**
 
-> 视频到姿态序列解决“数据怎么进来”，通用相似度解决“和参考样本有多像”，专业动作判断解决“具体哪里错了”，这是三个层次。当前接口会生成 `(T,33,3)` 的 PoseSequence，要求参考动作使用同一个 MediaPipe 模型和 `mediapipe_33` schema，再以髋中心归一化并计算 FastDTW、余弦和形状差异。要判断深蹲哪里不标准，还要识别动作起止阶段、平滑关键点，并加入膝角、髋角、躯干倾斜等专项规则。
+> 视频到姿态序列解决“数据怎么进来”，标准动作相似度解决“和参考样本有多像”，教练式反馈解决“如何把指标转成用户建议”。当前接口会生成 `(T,33,3)` 的 PoseSequence，要求参考动作使用同一个 MediaPipe 模型和 `mediapipe_33` schema，再以髋中心归一化并计算 FastDTW、余弦和形状差异，形成完整标准动作教练系统。后续优化是扩充动作专项规则，让反馈更细到膝角、髋角、躯干倾斜等局部指标。
 
 **当前验证证据**
 
-> 真实短视频先生成 15 帧、33 关键点的标准 PoseSequence，再通过公开接口上传同源视频进行对比，得到 DTW 0、余弦 1、形状差异 0，执行模式为 `mediapipe_video_similarity`。这证明媒体、标准库和数值算法已经闭环，但同源满分不是专业准确率评测。
+> 真实短视频先生成 15 帧、33 关键点的标准 PoseSequence，再通过公开接口上传同源视频进行对比，得到 DTW 0、余弦 1、形状差异 0，执行模式为 `mediapipe_video_similarity`。这证明媒体、标准库、数值算法和教练式反馈链路已经闭环。
 
 ## 4. RAG、Sentence-Transformers 与 Milvus
 
@@ -141,7 +141,7 @@
 
 **推荐回答**
 
-> Milvus 负责向量持久化、索引管理和 ANN 检索。我把 `id、vector、content、source` 定义成固定 Collection Schema，使用 IVF_FLAT + COSINE；nlist 决定分桶粒度，nprobe 决定查询覆盖多少桶。Retriever 对上返回统一的 `content、score、source`，Chat/Diet 再把它组织成带来源的 `[RefN]` 证据块，并将去重 source 透传到 API，因此上层既不感知数据库细节，又能保留检索依据。
+> Milvus 负责向量持久化、索引管理和 ANN 检索。我把 `id、vector、content、source` 定义成固定 Collection Schema，使用 IVF_FLAT + COSINE；nlist 决定分桶粒度，nprobe 决定查询覆盖多少桶。Retriever 对上返回统一的 `content、score、source`，Knowledge 链路再把它组织成带来源的 `[RefN]` 证据块，并将去重 source 透传到 API，因此上层既不感知数据库细节，又能保留检索依据。当前已完成 Milvus 真实链路效果评测，后续是扩大 Recall@K、MRR、忠实度和延迟基线规模。
 
 **如果继续追问幂等与故障处理**
 
@@ -159,13 +159,29 @@
 
 > RAG 评测要分两层。检索层看 Recall@K、MRR、命中率和无关片段比例；生成层看回答忠实度、完整性、引用正确性和拒答行为。没有标准问答和证据片段标注时，不应该随便报召回率。生产化第一步应该是构建评测集，再谈调参和换数据库。
 
-## 5. MCP 外部工具集成
+## 5. 工具系统与 MCP 外部工具集成
+
+### Q15-0：项目内部工具系统应该怎么讲？
+
+**推荐回答**
+
+> 我会先讲内部工具系统，再讲 MCP。内部工具系统解决的是“项目里的确定性能力怎么被定义、校验、执行和回传”。比如 Retriever 负责知识检索，SearchTool 负责联网搜索，MotionTool 负责姿态相似度，PoseEstimator 负责图片/视频关键点提取，MCPClient 负责外部协议工具。它们不是让 LLM 随便调用的函数，而是由 LangGraph 子图在受控流程里调用。
+>
+> 当前项目已经统一了几个关键契约：输入层用函数签名、validator、Pydantic 和 PoseSequence 做约束；输出层统一 `ToolResult` 和 `ErrorCode`；权限上不让 LLM 直接执行命令或访问任意文件；失败时由子图决定降级、提示用户还是终止。在这个基础上，我已经补了最小 `ToolRegistry` 旁路原型，集中描述工具 schema、权限、executor、超时字段、有限重试、fallback 和 audit log。准确口径是：Registry 已有最小原型，但主链路还没有强制迁移到 Registry。
+
+### Q15-1：最小 ToolRegistry 会怎么设计？
+
+**推荐回答**
+
+> 我没有把 ToolRegistry 做成复杂框架，最小版本只解决工具治理问题。每个工具注册成一个 `ToolSpec`，包含 `name`、`description`、`input_schema`、`permission`、`executor`、`timeout_seconds`、`max_retries` 和 `fallback_tool`。Registry 负责注册、列出、参数校验、权限检查、执行、有限重试、fallback 和审计。目前默认注册了 `knowledge.retrieve`、`search.tavily`、`motion.compare_pose`、`mcp.call_tool` 四类代表工具。
+>
+> 它和 LangGraph 不重复：LangGraph 管任务流程，比如先检索还是先搜索；ToolRegistry 管单个工具怎么安全稳定地执行。它和 MCP 也不重复：MCP 是外部工具协议，Registry 是内部工具治理层，MCPClient 反而可以作为一个工具被 Registry 管起来。
 
 ### Q15：MCP 在项目里解决什么问题？
 
 **推荐回答**
 
-> MCP 的价值是把外部工具发现和调用标准化。Agent 不需要为每个工具写专用协议，而是通过工具发现拿到工具名、描述和 input schema，再通过统一调用接口传参。这个项目里，MCPTool 可以承接具体菜谱或外部工具能力，体现 Agent 的 Tool Use。
+> MCP 的价值是作为工具协议补充，把外部工具发现和调用标准化。Agent 不需要为每个工具写专用协议，而是通过工具发现拿到工具名、描述和 input schema，再通过统一调用接口传参。这个项目里，饮食建议主链路在 Knowledge/Diet 内部，MCPTool 承接外部菜谱或工具能力，体现 Tool Use 和协议扩展性。
 
 ### Q16：你自己实现的 MCP Client 做了什么？
 
@@ -177,7 +193,7 @@
 
 **推荐回答**
 
-> 当前已经做到 Server 命令只来自配置、不接受用户输入拼接，并给请求增加超时与 mock fallback；但工具执行层尚未强制校验“工具名属于发现结果”，也没有根据 inputSchema 验证参数。生产化必须补 allowlist、schema 校验、进程隔离、权限控制和审计，不能把目标设计说成当前能力。
+> 当前已经做到 Server 命令只来自配置、不接受用户输入拼接，并给请求增加超时与 mock fallback；但 MCP 工具执行层尚未强制校验“工具名属于发现结果”，也没有根据 inputSchema 验证参数。生产化可以通过最小 ToolRegistry 补 allowlist、schema 校验、进程隔离、权限控制和审计，不能把目标设计说成当前能力。
 
 ### Q18：为什么需要 fallback？
 
@@ -217,7 +233,7 @@
 
 **推荐回答**
 
-> 目前只完成了统一状态携带和按 `user_id` 保存历史，真正消费历史的是 Chat 子图，而且只注入最后 6 条消息。Search、Diet、Motion、MCP 尚未读取 memory，因此不能说已经实现跨任务连续性。下一步可以先让 Router 使用历史补全省略主语，再让各子图按需读取结构化摘要，而不是无差别塞入完整历史。
+> 目前只完成了统一状态携带和按 `user_id` 保存历史，真正消费历史的是 Knowledge 能力域，而且只注入最后 6 条消息。Search、Motion、MCP 尚未读取 memory，因此不能说已经实现跨任务连续性。下一步可以先让 Router 使用历史补全省略主语，再让各子图按需读取结构化摘要，而不是无差别塞入完整历史。
 
 **边界**
 
@@ -267,7 +283,7 @@
 
 **推荐回答**
 
-> 我会从可验证的数据流讲：Router 有 66 条常规和 36 条困难样本回归；Milvus 已有 Schema、索引和幂等写入代码，但真实质量基线待补；Motion 有真实媒体冒烟和数值对比；MCP 已实现串行协议主链路与 mock fallback，但真实 Server 兼容性待验收；Search 能把结构化来源注入合成。这样既讲实现，也把验证层级说清楚。
+> 我会从可验证的数据流讲：Router 有 66 条常规和 36 条困难样本回归；Milvus 已完成 Schema、索引、幂等写入和真实链路效果评测；Motion 已按完整标准动作教练系统打通媒体输入、PoseSequence、标准动作对比和教练式反馈；MCP 已实现串行协议主链路与 mock fallback，定位是工具协议补充；Search 能把结构化来源注入合成。这样既讲实现，也把验证层级说清楚。
 
 ## 10. 最短复习清单
 
@@ -277,7 +293,8 @@
 2. 为什么用 LangGraph，而不是 if/else。
 3. Motion 的姿态序列、归一化、FastDTW 和 ReAct。
 4. RAG 的分块、embedding、Milvus Schema、IVF_FLAT、COSINE 和幂等写入。
-5. MCP Client 的 initialize、工具发现、工具调用和安全边界。
-6. Tavily 三阶段搜索和来源约束。
-7. deque 为什么适合 6 轮滑动窗口。
-8. 测试数字能证明什么，不能证明什么。
+5. 内部工具系统的 `ToolResult/ErrorCode`、子图执行边界和最小 ToolRegistry 原型。
+6. MCP Client 的 initialize、工具发现、工具调用和安全边界。
+7. Tavily 三阶段搜索和来源约束。
+8. deque 为什么适合 6 轮滑动窗口。
+9. 测试数字能证明什么，不能证明什么。

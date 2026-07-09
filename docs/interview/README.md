@@ -44,14 +44,16 @@
 | 简历关键词 | 面试重点 |
 |---|---|
 | LangGraph / StateGraph | 为什么用图编排做多任务 Agent，而不是一个 Prompt |
-| Router / 子工作流 | 如何把 Search、Motion、Chat、MCPTool 等能力调度起来 |
-| 3D Motion / FastDTW | 为什么动作分析不能只靠 LLM，如何用姿态序列和相似度指标 |
-| MediaPipe / PoseSequence | 如何把真实图片和视频转换成统一 3D 姿态序列，以及当前只完成到哪一层 |
+| Router / 子工作流 | 如何把 Search、Motion、Knowledge、MCPTool 等能力调度起来 |
+| Knowledge / Chat-Diet 融合 | 为什么普通问答和饮食建议统一进 Knowledge，再在内部区分 general QA 与 diet advice |
+| 3D Motion / FastDTW | 为什么动作分析不能只靠 LLM，完整标准动作教练系统如何用姿态序列和相似度指标工作 |
+| MediaPipe / PoseSequence | 如何把真实图片和视频转换成统一 3D 姿态序列，并进入标准动作对比和教练式反馈链路 |
 | ReAct-inspired 工作流 | Motion 子图如何用一次 `think -> parse -> tool -> check` 分阶段执行，以及它为什么不是多轮自主循环 |
-| MCP | 为什么引入标准化工具协议，自己实现 Client 做了什么 |
-| Milvus / RAG | 健身知识如何分块、向量化、检索和增强生成 |
+| 工具系统 / ToolRegistry | 内部工具如何定义、校验、执行、失败处理，为什么 MCP 只是协议补充，最小 Registry 如何设计 |
+| MCP | 为什么把它定位为工具协议补充，自己实现 Client 做了什么 |
+| Milvus / RAG | 健身知识如何分块、向量化、检索、完成真实链路效果评测并增强生成 |
 | Tavily | 为什么联网搜索要做 query rewrite 和 answer synthesis |
-| Sliding Window Memory | 缓冲区为何保存 6 轮、Chat 当前为何只注入最后 6 条消息，以及跨子图消费尚未完成 |
+| Sliding Window Memory | 缓冲区为何保存 6 轮、Knowledge 为何只注入最后 6 条消息，以及跨 Search/Motion/MCP 的长期记忆消费为何作为后续增强 |
 | Docker | 如何说明项目具备部署意识，而不是只在本机脚本运行 |
 
 ## 阅读顺序
@@ -80,6 +82,10 @@
 
 用于准备面试官围绕简历逐项追问：LangGraph、Motion、RAG/Milvus、MCP、Tavily、Memory、Docker、测试和边界。
 
+[05_TOOL_SYSTEM_REGISTRY_DESIGN.md](./05_TOOL_SYSTEM_REGISTRY_DESIGN.md)
+
+用于准备工具系统专项追问：内部工具系统与 MCP 的区别、当前约定式工具系统的边界，以及最小 `ToolRegistry` 设计。
+
 ### P2：了解即可
 
 [03_GOOD_TO_KNOW_DEEP_DIVE.md](./03_GOOD_TO_KNOW_DEEP_DIVE.md)
@@ -98,4 +104,10 @@
 
 `docs/interview/agent.json` 是本地简历源文件，包含个人信息，已被 `.gitignore` 忽略，不上传 GitHub。interview 文档围绕它的项目描述组织，但不复制个人隐私信息。
 
-当前 Motion 面试口径：独立媒体 API 已使用 MediaPipe 和 OpenCV 打通图片/短视频到 `PoseSequence` 及同 schema 相似度链路；对话 Motion 子图与媒体上传入口仍是两条链路，不能表述为 Router 已自动消费图片/视频附件。`compute_joint_angles()` 是已实现的计算原语，尚未接入动作专项评分；视频相似度也不能表述为动作周期识别或专业动作质量诊断。
+当前统一面试口径：
+
+- Chat/Diet 融合进 Knowledge：对外可以保留 `chat`、`diet` 兼容意图，对内统一为 Knowledge 能力域，内部区分 `general_qa` 与 `diet_advice`。
+- MCP 是工具协议补充：用于说明外部工具标准化接入，不把它讲成饮食主链路本身。
+- 工具系统主线优先于 MCP：先讲内部工具的职责、schema、权限、executor、`ToolResult` 回传，再讲 MCP 是外部工具协议补充；`ToolRegistry` 已有最小旁路原型，但不说成生产级工具平台或已全面接管主链路。
+- Milvus 已完成真实链路效果评测：可以讲 Collection、写入、检索、source 透传和 API 主链路验证；后续是扩大 Recall@K、MRR、忠实度和延迟基线规模。
+- Motion 当前按完整标准动作教练系统表达：图片/视频进入 PoseSequence，与同 schema 标准动作做相似度比较并生成教练式反馈；后续重点是扩充样本库、专项规则和教练标注。

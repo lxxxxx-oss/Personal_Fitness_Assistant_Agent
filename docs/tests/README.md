@@ -20,6 +20,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| ToolRegistry 原型 | [2026-07-08-tool-registry-prototype.md](./2026-07-08-tool-registry-prototype.md) | 最小 Registry 完成注册、schema 校验、权限、执行、retry、fallback 和 audit log 测试；仍是旁路治理层 |
 | Diet 画像校验 | [2026-07-08-diet-profile-validation.md](./2026-07-08-diet-profile-validation.md) | LLM JSON 经过范围/枚举校验，非法输出降级并公开 warning |
 | 异步图与流式桥接 | [2026-07-08-async-graph-and-stream-bridge.md](./2026-07-08-async-graph-and-stream-bridge.md) | 同步 graph 不阻塞事件循环；SSE/WS 共用线程到 queue token 桥接 |
 | RAG 来源透传 | [2026-07-08-rag-source-propagation.md](./2026-07-08-rag-source-propagation.md) | Chat/Diet 证据块包含来源，API 返回去重知识来源标识 |

@@ -30,6 +30,12 @@ from app.tools.motion_tool import (
     list_motion_library,
 )
 from app.tools.mcp_client import MCPClient
+from app.tools.registry import (
+    ToolRegistry,
+    ToolSpec,
+    build_default_tool_registry,
+    validate_input_schema,
+)
 
 __all__ = [
     "ToolResult",
@@ -57,4 +63,8 @@ __all__ = [
     "compute_pose_sequence_similarity",
     "list_motion_library",
     "MCPClient",
+    "ToolRegistry",
+    "ToolSpec",
+    "build_default_tool_registry",
+    "validate_input_schema",
 ]
