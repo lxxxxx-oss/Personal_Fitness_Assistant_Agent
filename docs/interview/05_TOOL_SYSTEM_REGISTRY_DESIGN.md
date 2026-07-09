@@ -4,7 +4,7 @@
 
 ## 1. 一句话口径
 
-> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 旁路原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log。
+> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`。
 
 ## 2. 工具系统和 MCP 的区别
 
@@ -12,7 +12,7 @@
 |---|---|---|---|
 | 内部工具系统 | 项目自己定义和调用的确定性能力集合 | SearchTool、Retriever、MotionTool、PoseEstimator、MCPClient 等 | 主线是“工具契约 + 受控执行 + 统一结果回传” |
 | MCP | 外部工具发现和调用的标准协议 | 作为 `MCPTool` 子链路的一种外部协议适配 | 只是工具协议补充，不是整个工具系统本身 |
-| ToolRegistry | 工具元数据和执行治理中心 | 已落地最小旁路原型，尚未全面接管主链路 | 用于统一注册、发现、校验、权限、执行、审计 |
+| ToolRegistry | 工具元数据和执行治理中心 | 已落地最小原型，Search 子图已接入，尚未全面接管所有子图 | 用于统一注册、发现、校验、权限、执行、审计 |
 
 面试时不要把 MCP 当成全部工具系统。更稳的说法是：
 
@@ -41,7 +41,7 @@
 当前还没有完全统一的部分：
 
 - 内部工具不是让 LLM 动态发现后自由选择，而是由 Router 和子图控制调用。
-- 现有主链路还没有强制改走 `ToolRegistry`，Registry 当前是旁路治理层。
+- Search 子图已经通过 `ToolRegistry` 调用 `search.tavily`，但其他子图还没有强制改走 Registry。
 - 权限、超时、重试和审计已有最小 Registry 入口，但还没有覆盖所有子图调用。
 - MCP 的 `inputSchema` 校验和真实 Server 兼容性仍属于后续增强。
 
@@ -108,7 +108,7 @@ ToolRegistry.execute(name, args, context)
 
 面试时可以这样回答：
 
-> 我现在只把 ToolRegistry 做到最小旁路原型，因为当前工具形态差异很大：Retriever 是长期实例，Search 依赖网络和 mock fallback，Motion 处理文件和 NumPy 姿态序列，MCPClient 涉及子进程和 JSON-RPC。如果一下子强行替换所有子图调用，会引入适配风险，不一定提升核心链路。当前更合理的做法是先落地 `ToolSpec + ToolRegistry`，证明 schema、权限、执行、重试、fallback 和审计这条治理链路可行，再从 Search 这类低风险子图开始逐步接入。
+> 我现在只把 ToolRegistry 做到最小可用原型，并先接入 Search 子图，因为当前工具形态差异很大：Retriever 是长期实例，Motion 处理文件和 NumPy 姿态序列，MCPClient 涉及子进程和 JSON-RPC。如果一下子强行替换所有子图调用，会引入适配风险，不一定提升核心链路。当前更合理的做法是先用 Search 证明 `ToolSpec + ToolRegistry` 的 schema、权限、执行、重试、fallback 和审计链路可行，再谨慎迁移其他工具。
 
 这句话要体现两个点：
 
@@ -131,4 +131,4 @@ ToolRegistry.execute(name, args, context)
 
 ### Q：最小版本先做什么？
 
-> 最小版本已经先注册了 Retriever、SearchTool、Motion compare、MCPClient 四类代表工具，并统一了 `ToolSpec` 元数据、参数校验、权限检查、有限重试、fallback 和 audit log。它不做复杂动态规划，也不让 LLM 任意发现和调用工具，仍保持 Router/子图控制执行顺序。下一步最适合先把 Search 子图接入 Registry。
+> 最小版本已经先注册了 Retriever、SearchTool、Motion compare、MCPClient 四类代表工具，并统一了 `ToolSpec` 元数据、参数校验、权限检查、有限重试、fallback 和 audit log。它不做复杂动态规划，也不让 LLM 任意发现和调用工具，仍保持 Router/子图控制执行顺序。目前 Search 子图已经接入 Registry，下一步更适合补 `execution_id`、`duration_ms` 等可观测性字段。

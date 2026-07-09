@@ -13,6 +13,7 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-09 | [Search 接入 ToolRegistry](./2026-07-09-search-tool-registry-integration.md) | Search 子图通过 `ToolRegistry.execute("search.tavily")` 调用工具，并完成全量回归 |
 | 2026-07-08 | [Diet 结构化画像校验](./2026-07-08-diet-profile-validation.md) | Pydantic 校验画像范围与枚举，非法 LLM 输出安全降级并公开 warning |
 | 2026-07-08 | [同步 LangGraph 与流式生成异步桥接](./2026-07-08-async-graph-and-stream-bridge.md) | 三种协议在线程执行同步图，SSE/WS 共用非阻塞 token queue |
 | 2026-07-08 | [RAG 来源透传闭环](./2026-07-08-rag-source-propagation.md) | Chat/Diet 共用编号证据格式，并将知识来源透传到三种协议 |
@@ -22,7 +23,6 @@
 | 2026-07-08 | [测试与真实依赖边界审计](./2026-07-08-test-and-dependency-boundary-audit.md) | 区分 mock 自动化、真实依赖验收和 MCP 协议原型边界 |
 | 2026-07-08 | [API 输入边界加固](./2026-07-08-api-input-boundary-hardening.md) | 后端强制图片 10MB 上限，WebSocket 复用 HTTP 字段契约 |
 | 2026-07-08 | [文档与运行时边界审计](./2026-07-08-documentation-runtime-boundary-audit.md) | 修正跨任务记忆、媒体 Motion、关节角和 ReAct 的事实口径 |
-| 2026-07-07 | [黄金演示闭环阶段 4：WebSocket 真流式与真实媒体冒烟](./2026-07-07-websocket-true-streaming-and-golden-smoke.md) | 修复 token 全量缓冲，回归首 token 实时到达，并复验真实图片/视频 MediaPipe 链路 |
 
 ## 维护方式
 

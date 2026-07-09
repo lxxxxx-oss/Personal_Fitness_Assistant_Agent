@@ -4,20 +4,18 @@ import logging
 from langgraph.graph import StateGraph, END
 
 from app.graph.state import RouterState, record_execution
-from app.tools.search_tool import TavilySearchTool
+from app.tools.registry import ToolRegistry, build_default_tool_registry
 
 logger = logging.getLogger(__name__)
 
-_search_tool: TavilySearchTool = None
+_tool_registry: ToolRegistry = None
 
 
-def _get_tool() -> TavilySearchTool:
-    global _search_tool
-    if _search_tool is None:
-        from app.config import config
-
-        _search_tool = TavilySearchTool(api_key=config.tavily_api_key)
-    return _search_tool
+def _get_registry() -> ToolRegistry:
+    global _tool_registry
+    if _tool_registry is None:
+        _tool_registry = build_default_tool_registry()
+    return _tool_registry
 
 
 def query_understanding_node(state: RouterState) -> RouterState:
@@ -61,8 +59,12 @@ def query_understanding_node(state: RouterState) -> RouterState:
 def search_node(state: RouterState) -> RouterState:
     """Tavily Search: execute web search."""
     query = state.get("_search_query", state["user_input"])  # type: ignore
-    tool = _get_tool()
-    result = tool.search(query, max_results=5)
+    registry = _get_registry()
+    result = registry.execute(
+        "search.tavily",
+        {"query": query, "max_results": 5},
+        context={"allowed_permissions": ["network"]},
+    )
     search_results = result.data if result.ok and result.data else []
     state["_search_results"] = search_results  # type: ignore
     state["_search_meta"] = result.meta  # type: ignore
