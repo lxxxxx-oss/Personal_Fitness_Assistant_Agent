@@ -135,6 +135,7 @@ miniprogram/                 微信小程序端
 tests/                       自动化测试源码
 docs/interview/              P0/P1/P2 面试复习材料
 docs/technical/              技术设计、专题状态和历史长文档
+docs/optimization/           渐进式优化设计（上下文压缩、记忆系统等）
 docs/progress/               阶段性实现与修复证据
 docs/tests/                  测试执行和手工验收记录
 docs/superpowers/            早期方案与规格
@@ -159,6 +160,7 @@ docs/superpowers/            早期方案与规格
 | 运行和联调 | [RUNBOOK.md](./RUNBOOK.md) |
 | 面试复习 | [interview/README.md](./interview/README.md) |
 | 技术设计 | [technical/README.md](./technical/README.md) |
+| 优化设计 | [记忆系统](./optimization/memory-system.md) / [上下文压缩](./optimization/context-compression.md) |
 | 开发过程 | [progress/README.md](./progress/README.md) |
 | 验收证据 | [tests/README.md](./tests/README.md) |
 | 完整文档分流规则 | [DOCUMENTATION_MAP.md](./DOCUMENTATION_MAP.md) |

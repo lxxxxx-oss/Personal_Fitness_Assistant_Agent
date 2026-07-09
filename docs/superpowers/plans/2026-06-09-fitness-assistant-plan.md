@@ -8,7 +8,7 @@
 
 **Architecture:** LangGraph 两级图结构——顶层路由图 (Router) 做关键词意图分类并条件分发到四个子图 (Search/Motion/Diet/Chat)，每个子图是独立的 StateGraph。横切层包括滑动窗口记忆和 MCP 客户端。
 
-**Tech Stack:** Python 3.13, LangGraph, HuggingFace Transformers (Qwen3-0.6B), FastAPI, NumPy, Sentence-Transformers, FastDTW, Milvus (后期)
+**Tech Stack:** Python 3.11, LangGraph, HuggingFace Transformers (Qwen3-0.6B), FastAPI, NumPy, Sentence-Transformers, FastDTW, Milvus (后期)
 
 ---
 

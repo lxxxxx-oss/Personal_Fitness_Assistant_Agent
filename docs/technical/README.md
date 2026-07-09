@@ -15,7 +15,6 @@
 | `interview-archive/` | 原完整面试手册、子图优化总览和阶段性面试优化计划，作为历史材料归档 |
 | `router/` | Router 多意图设计、当前状态、评测基线和优化证据 |
 | `motion/` | Motion 媒体输入、姿态估计、标准动作库和优化路线 |
-| `tool-registry/` | ToolRegistry 接入边界、Motion/MCP 迁移评估和工具治理路线 |
 
 ## 当前专题入口
 
@@ -23,7 +22,7 @@
 |---|---|---|
 | Router | [多意图路由设计](./router/MULTI_INTENT_ROUTING_DESIGN.md) | [优化状态](./router/ROUTER_OPTIMIZATION_STATUS.md) |
 | Motion | [媒体输入设计](./motion/MOTION_MEDIA_PIPELINE_DESIGN.md) | [优化路线](./motion/MOTION_OPTIMIZATION_ROADMAP.md) |
-| ToolRegistry | [Motion/MCP 迁移评估](./tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md) | Search、Knowledge/RAG、MCP execute 已接入；Motion compare 暂缓 |
+| ToolRegistry | [Motion/MCP 迁移评估](../progress/2026-07-09-motion-mcp-registry-migration-evaluation.md) | Search、Knowledge/RAG、MCP execute 已接入；Motion compare 暂缓 |
 
 ## 使用原则
 
