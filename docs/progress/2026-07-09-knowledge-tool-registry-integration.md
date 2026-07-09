@@ -46,10 +46,10 @@ Results:
 ## Current Boundary
 
 - ToolRegistry still does not replace LangGraph flow control.
-- Motion and MCP still call their tools directly in the main graph.
+- At this Knowledge step, Motion and MCP still called their tools directly in the main graph. Current status has advanced: MCP execute is now Registry-backed; Motion remains direct.
 - Registry `timeout_seconds` remains policy metadata.
 
 ## Next Steps
 
 - Consider whether selected registry metadata should be exposed through API execution metadata.
-- Keep Motion and MCP migration conservative because of file, NumPy-array, subprocess, and real-server boundaries.
+- Keep Motion migration conservative because of file, NumPy-array, media, and API boundaries.

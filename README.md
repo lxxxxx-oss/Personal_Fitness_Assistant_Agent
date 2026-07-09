@@ -10,7 +10,7 @@
 - Motion：完整标准动作教练系统，支持图片/视频转 PoseSequence、同 schema 标准视频构建、髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离，并输出教练式动作反馈。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - Knowledge-Diet：作为 Knowledge 内部 `diet_advice` 链路，LLM 提取结果经过 Pydantic JSON 解析、范围与枚举校验，再进入营养检索和推荐；非法输出安全降级并公开 warning。
-- MCP：定位为工具协议补充，自实现轻量 subprocess + stdio JSON-RPC Client 原型，默认 mock，并公开真实/mock/fallback 执行轨迹。
+- MCP：定位为工具协议补充，自实现轻量 subprocess + stdio JSON-RPC Client 原型，默认 mock；工具执行点已接入 `ToolRegistry` 的 `mcp.call_tool`，并公开真实/mock/fallback 执行轨迹。
 - 工程链路：FastAPI、HTTP/SSE/WebSocket、同步 LangGraph/LLM 到 asyncio 的线程桥接、Web UI、微信小程序、统一 ToolResult/ErrorCode 与专项验收记录。
 
 ## 当前架构
@@ -71,7 +71,7 @@ pip install -r requirements-motion.txt
 当前自动化回归：
 
 ```text
-170 passed, 2 skipped, 1 warning
+172 passed, 2 skipped, 1 warning
 ```
 
 默认 pytest 会 mock 本地 LLM 与 SentenceTransformer，因此该数字主要证明代码、接口、算法和降级契约可回归。Milvus 另有真实链路效果评测记录，项目也保留真实 MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。

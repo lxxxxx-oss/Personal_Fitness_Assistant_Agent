@@ -230,7 +230,7 @@ LangGraph 子图
 
 - 内部工具系统先解决“工具怎么被安全、稳定、可观察地执行”。
 - MCP 只是一类外部工具协议补充，不等于整个工具系统。
-- 当前最小 `ToolRegistry` 已落地，Search 子图已经通过 `search.tavily` 接入，Knowledge/RAG 已通过 `knowledge.retrieve` 接入；Motion/MCP 仍按原有方式直接调用工具。
+- 当前最小 `ToolRegistry` 已落地，Search 子图已经通过 `search.tavily` 接入，Knowledge/RAG 已通过 `knowledge.retrieve` 接入，MCP execute 已通过 `mcp.call_tool` 接入；Motion 仍按原有方式直接调用工具。
 
 ### 5.2 最小 ToolRegistry 白板
 
@@ -271,7 +271,7 @@ execute
 
 面试防守点：
 
-> ToolRegistry 不替代 LangGraph。LangGraph 管任务流程，ToolRegistry 管具体工具执行治理。ToolRegistry 也不等于 MCP。MCP 是一种外部工具协议，MCPClient 可以作为一个工具被 Registry 管理。当前 Registry 已有最小代码原型、单元测试，并已接入 Search 和 Knowledge/RAG；每次调用会记录 execution_id、duration_ms、attempts 和 fallback 归因，但还没有全面接管所有子图调用。
+> ToolRegistry 不替代 LangGraph。LangGraph 管任务流程，ToolRegistry 管具体工具执行治理。ToolRegistry 也不等于 MCP。MCP 是一种外部工具协议，MCPClient 可以作为一个工具被 Registry 管理。当前 Registry 已有最小代码原型、单元测试，并已接入 Search、Knowledge/RAG 和 MCP execute；每次调用会记录 execution_id、duration_ms、attempts 和 fallback 归因，但还没有全面接管所有子图调用。
 
 ### 5.3 MCP 调用链
 

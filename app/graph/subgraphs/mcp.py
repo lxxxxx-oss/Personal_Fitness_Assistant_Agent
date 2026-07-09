@@ -7,12 +7,14 @@ from langgraph.graph import StateGraph, END
 
 from app.graph.state import RouterState, record_execution
 from app.tools.mcp_client import MCPClient
+from app.tools.registry import ToolRegistry, ToolSpec
 
 logger = logging.getLogger(__name__)
 
 _mcp_client: MCPClient = None
 _mcp_configured_command: Optional[str] = None
 _mcp_fallback_reason: Optional[str] = None
+_mcp_tool_registry: Optional[ToolRegistry] = None
 
 
 def _get_client() -> MCPClient:
@@ -42,6 +44,41 @@ def _get_client() -> MCPClient:
         else:
             _mcp_client = client
     return _mcp_client
+
+
+def get_mcp_tool_registry() -> ToolRegistry:
+    """Return the MCP registry that reuses the subgraph-managed client."""
+    global _mcp_tool_registry
+    if _mcp_tool_registry is None:
+        registry = ToolRegistry()
+        registry.register(
+            ToolSpec(
+                name="mcp.call_tool",
+                description="Call a planned MCP tool through the subgraph client.",
+                input_schema={
+                    "type": "object",
+                    "required": ["tool_name"],
+                    "additionalProperties": False,
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128,
+                        },
+                        "arguments": {"type": "object"},
+                    },
+                },
+                permission="subprocess",
+                executor=lambda args: _get_client().call_tool(
+                    args["tool_name"],
+                    args.get("arguments", {}),
+                ),
+                timeout_seconds=10.0,
+                scope="mcp",
+            )
+        )
+        _mcp_tool_registry = registry
+    return _mcp_tool_registry
 
 
 def discover_tools_node(state: RouterState) -> RouterState:
@@ -182,7 +219,6 @@ def _extract_recipe_query(user_input: str) -> str:
 
 def execute_tool_node(state: RouterState) -> RouterState:
     """Execute MCP tool call."""
-    client = _get_client()
     plan_text = state.get("_tool_plan", "{}")  # type: ignore
 
     try:
@@ -198,8 +234,13 @@ def execute_tool_node(state: RouterState) -> RouterState:
         tool_name = "mcp_howtocook_getRecipeById"
         arguments = {"query": state["user_input"]}
 
-    result = client.call_tool(tool_name, arguments)
+    result = get_mcp_tool_registry().execute(
+        "mcp.call_tool",
+        {"tool_name": tool_name, "arguments": arguments},
+        context={"allowed_permissions": ["subprocess"]},
+    )
     state["_tool_result"] = result  # type: ignore
+    state["_mcp_tool_meta"] = result.meta  # type: ignore
     return state
 
 

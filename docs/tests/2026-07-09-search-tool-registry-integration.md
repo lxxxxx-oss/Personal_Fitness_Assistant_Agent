@@ -28,7 +28,7 @@ pytest -q
 
 Search is the first real subgraph path connected to `ToolRegistry`. The integration preserves existing Search behavior while proving the registry can govern a live subgraph tool call.
 
-Current status note: this document records the state immediately after Search migration. Knowledge/RAG was later migrated through `knowledge.retrieve`; Motion and MCP remain direct-call paths pending the migration order evaluation.
+Current status note: this document records the state immediately after Search migration. Knowledge/RAG was later migrated through `knowledge.retrieve`, and MCP execute was later migrated through `mcp.call_tool`; Motion remains the direct-call path pending further evaluation.
 
 ## Remaining Risk
 

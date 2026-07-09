@@ -20,6 +20,7 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| MCP 接入 ToolRegistry | [2026-07-09-mcp-tool-registry-integration.md](./2026-07-09-mcp-tool-registry-integration.md) | MCP `execute_tool_node` 已通过 `ToolRegistry` 调用 `mcp.call_tool`，并保留 mock/fallback 行为 |
 | Knowledge 接入 ToolRegistry | [2026-07-09-knowledge-tool-registry-integration.md](./2026-07-09-knowledge-tool-registry-integration.md) | Chat/Diet 的 RAG 检索已通过 `ToolRegistry` 调用 `knowledge.retrieve`，并保持证据与降级行为 |
 | ToolRegistry 可观测性 | [2026-07-09-tool-registry-observability.md](./2026-07-09-tool-registry-observability.md) | Registry 结果和 audit log 已包含 `execution_id`、`duration_ms`、attempts 和 fallback 归因 |
 | Search 接入 ToolRegistry | [2026-07-09-search-tool-registry-integration.md](./2026-07-09-search-tool-registry-integration.md) | Search 子图已通过 `ToolRegistry` 调用 `search.tavily`，并保持 mock/失败降级行为 |

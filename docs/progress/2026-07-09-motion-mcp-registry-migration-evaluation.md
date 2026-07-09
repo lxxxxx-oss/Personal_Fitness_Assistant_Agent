@@ -6,14 +6,14 @@ Design evaluation and interview mouthpiece alignment.
 
 ## Background
 
-Search and Knowledge/RAG have already been routed through the minimal `ToolRegistry`. The remaining question is whether Motion and MCP should be migrated immediately or kept as direct-call paths for now.
+Search and Knowledge/RAG had already been routed through the minimal `ToolRegistry`. This evaluation decided whether Motion and MCP should be migrated immediately or kept as direct-call paths for that step. Current status has advanced: MCP execute was later routed through `mcp.call_tool`; Motion remains direct.
 
 ## Evaluation Summary
 
 - Motion should not be migrated as one large tool. It includes media upload, temporary file handling, MediaPipe pose estimation, `PoseSequence`, reference selection, schema-safe comparison, numeric metrics, and coaching feedback.
 - The most suitable Motion migration unit is only the `PoseSequence -> PoseSequence` comparison step, represented by `motion.compare_pose`.
 - MCP is the better next migration candidate because its execute step already looks like `tool_name + arguments -> MCPClient.call_tool -> ToolResult`.
-- The current registry already registers `motion.compare_pose` and `mcp.call_tool`, but the main Motion/MCP runtime paths still call their tools directly.
+- At evaluation time, the registry already registered `motion.compare_pose` and `mcp.call_tool`, but the main Motion/MCP runtime paths still called their tools directly. MCP execute was later migrated.
 
 ## Decision
 
@@ -27,9 +27,9 @@ Do not migrate Motion/MCP in this step. Record the migration strategy first:
 
 This gives a stronger answer to the ToolRegistry follow-up:
 
-- Registry is not decorative: Search and Knowledge/RAG are already real paths.
-- Registry is not overused: Motion/MCP are delayed because their boundaries are riskier.
-- The next step is specific and defensible: MCP execution first, Motion compare later.
+- Registry is not decorative: Search and Knowledge/RAG were already real paths at evaluation time.
+- Registry is not overused: Motion/MCP were delayed because their boundaries were riskier.
+- The sequence was specific and defensible: MCP execution first, Motion compare later.
 
 ## Verification
 
@@ -46,4 +46,4 @@ No code behavior was changed in this step, so no automated test run was required
 
 ## Next Step
 
-Implement MCP execute-node Registry integration with targeted tests.
+MCP execute-node Registry integration was completed later with targeted tests. Next candidate: Motion standard pose comparison.

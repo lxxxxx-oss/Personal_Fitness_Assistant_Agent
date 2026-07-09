@@ -35,7 +35,7 @@ pytest -q
 
 The minimal registry prototype is usable as a side-channel tool governance layer. It does not yet replace the main LangGraph subgraph tool calls.
 
-Current status note: this was the 2026-07-08 prototype state. Search and Knowledge/RAG were later connected to registry execution. Motion and MCP remain direct-call paths, with a later migration evaluation recorded in `docs/technical/tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md`.
+Current status note: this was the 2026-07-08 prototype state. Search, Knowledge/RAG, and MCP execute were later connected to registry execution. Motion remains a direct-call path, with migration evaluation recorded in `docs/technical/tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md`.
 
 ## Remaining Risk
 

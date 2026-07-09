@@ -4,7 +4,7 @@
 
 ## 1. 一句话口径
 
-> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`，让 Chat/Diet 的 RAG 检索通过 Registry 调用 `knowledge.retrieve`。每次 Registry 调用都会产生 `execution_id` 和 `duration_ms`，fallback 会复用同一个 `execution_id` 并标出 `fallback_from`。
+> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`，让 Chat/Diet 的 RAG 检索通过 Registry 调用 `knowledge.retrieve`，让 MCP 执行节点通过 Registry 调用 `mcp.call_tool`。每次 Registry 调用都会产生 `execution_id` 和 `duration_ms`，fallback 会复用同一个 `execution_id` 并标出 `fallback_from`。
 
 ## 2. 工具系统和 MCP 的区别
 
@@ -12,7 +12,7 @@
 |---|---|---|---|
 | 内部工具系统 | 项目自己定义和调用的确定性能力集合 | SearchTool、Retriever、MotionTool、PoseEstimator、MCPClient 等 | 主线是“工具契约 + 受控执行 + 统一结果回传” |
 | MCP | 外部工具发现和调用的标准协议 | 作为 `MCPTool` 子链路的一种外部协议适配 | 只是工具协议补充，不是整个工具系统本身 |
-| ToolRegistry | 工具元数据和执行治理中心 | 已落地最小原型，Search 与 Knowledge/RAG 已接入，尚未全面接管所有子图 | 用于统一注册、发现、校验、权限、执行、审计和基础观测 |
+| ToolRegistry | 工具元数据和执行治理中心 | 已落地最小原型，Search、Knowledge/RAG 与 MCP execute 已接入，尚未全面接管所有子图 | 用于统一注册、发现、校验、权限、执行、审计和基础观测 |
 
 面试时不要把 MCP 当成全部工具系统。更稳的说法是：
 
@@ -41,7 +41,7 @@
 当前还没有完全统一的部分：
 
 - 内部工具不是让 LLM 动态发现后自由选择，而是由 Router 和子图控制调用。
-- Search 子图已经通过 `ToolRegistry` 调用 `search.tavily`，Knowledge/RAG 已通过 `ToolRegistry` 调用 `knowledge.retrieve`，但 Motion/MCP 还没有强制改走 Registry。
+- Search 子图已经通过 `ToolRegistry` 调用 `search.tavily`，Knowledge/RAG 已通过 `ToolRegistry` 调用 `knowledge.retrieve`，MCP execute 已通过 `ToolRegistry` 调用 `mcp.call_tool`，但 Motion 还没有强制改走 Registry。
 - 权限、超时、重试和审计已有最小 Registry 入口，但还没有覆盖所有子图调用。
 - MCP 的 `inputSchema` 校验和真实 Server 兼容性仍属于后续增强。
 
@@ -108,25 +108,25 @@ ToolRegistry.execute(name, args, context)
 
 面试时可以这样回答：
 
-> 我现在只把 ToolRegistry 做到最小可用原型，并先接入 Search 与 Knowledge/RAG，因为这两条链路风险相对低、面试收益高。Motion 处理文件和 NumPy 姿态序列，MCPClient 涉及子进程和 JSON-RPC，如果一下子强行替换所有子图调用，会引入适配风险，不一定提升核心链路。当前更合理的做法是先用 Search 和 Knowledge 证明 `ToolSpec + ToolRegistry` 的 schema、权限、执行、重试、fallback 和审计链路可行，再谨慎迁移其他工具。
+> 我现在只把 ToolRegistry 做到最小可用原型，并先接入 Search、Knowledge/RAG 和 MCP execute，因为这几条链路的执行入口比较清晰、面试收益高。Motion 处理文件、MediaPipe 模型和 NumPy 姿态序列，如果一下子强行替换整个 Motion API，会引入适配风险，不一定提升核心链路。当前更合理的做法是先用 Search、Knowledge 和 MCP execute 证明 `ToolSpec + ToolRegistry` 的 schema、权限、执行、重试、fallback 和审计链路可行，再谨慎评估 Motion 标准动作比较这一小段算法内核。
 
 这句话要体现两个点：
 
 - Registry 已有最小原型，但不是生产级工具平台。
 - 主链路稳定优先，接入顺序要从低风险工具开始。
 
-### 5.1 Motion/MCP 为什么不一次性迁移？
+### 5.1 Motion 为什么不一次性迁移？MCP 做到哪一步？
 
-如果面试官继续追问“既然你有 ToolRegistry，为什么 Motion 和 MCP 还没全部走它”，可以这样答：
+如果面试官继续追问“既然你有 ToolRegistry，为什么 Motion 还没全部走它，MCP 做到哪一步”，可以这样答：
 
-> 我没有为了统一而强行把所有工具一次性塞进 Registry。Search 和 Knowledge/RAG 的输入输出主要是文本、检索结果和结构化列表，风险低，所以我先迁移它们，证明 Registry 的 schema、权限、审计、retry 和 fallback 链路可行。Motion 和 MCP 的边界更复杂：Motion 有图片/视频上传、临时文件、MediaPipe 模型、`PoseSequence`、标准动作库和数值比较；MCP 有 subprocess、JSON-RPC、真实 server 兼容性和工具发现结果校验。所以我的策略是先评估再迁移。下一步优先迁移 MCP 的工具执行点，因为它天然是 `tool_name + arguments -> ToolResult`；Motion 只考虑先迁移标准动作比较这段算法内核，媒体上传和姿态估计继续由 FastAPI/API 层控制。
+> 我没有为了统一而强行把所有工具一次性塞进 Registry。Search 和 Knowledge/RAG 的输入输出主要是文本、检索结果和结构化列表，风险低，所以我先迁移它们；MCP 的 execute 节点也已经接入 Registry，因为它天然是 `tool_name + arguments -> ToolResult`。Motion 的边界更复杂：它有图片/视频上传、临时文件、MediaPipe 模型、`PoseSequence`、标准动作库和数值比较。所以我的策略是只评估 Motion 标准动作比较这段算法内核是否接入，媒体上传和姿态估计继续由 FastAPI/API 层控制。
 
 这不是回避实现，而是工程边界控制：
 
-- **MCP execute 更适合先迁移**：`execute_tool_node` 已经拿到 `tool_name` 和 `arguments`，可以直接调用 `ToolRegistry.execute("mcp.call_tool", ...)`，收益是权限、审计和执行元数据统一。
+- **MCP execute 已完成迁移**：`execute_tool_node` 已经拿到 `tool_name` 和 `arguments`，现在通过 `ToolRegistry.execute("mcp.call_tool", ...)` 调用工具，收益是权限、审计和执行元数据统一。
 - **Motion compare 适合后迁移**：`PoseSequence -> PoseSequence` 的标准动作比较输入输出清晰，可以接入 `motion.compare_pose`。
 - **Motion 媒体入口暂不迁移**：上传文件、模型文件缺失、视频解码、临时文件清理和 HTTP 错误码更适合由 API 层直接控制。
-- **准确口径**：Registry 已注册 `motion.compare_pose` 和 `mcp.call_tool` 代表工具，但主链路尚未强制走 Registry，不能说 Motion/MCP 已完整迁移。
+- **准确口径**：MCP execute 已经进入 Registry，但 MCP discovery/plan/format 仍由子图控制；Motion 只注册了 `motion.compare_pose` 代表工具，不能说 Motion 已完整迁移。
 
 细节版设计记录见：`docs/technical/tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md`。
 
@@ -146,4 +146,4 @@ ToolRegistry.execute(name, args, context)
 
 ### Q：最小版本先做什么？
 
-> 最小版本已经先注册了 Retriever、SearchTool、Motion compare、MCPClient 四类代表工具，并统一了 `ToolSpec` 元数据、参数校验、权限检查、有限重试、fallback 和 audit log。它不做复杂动态规划，也不让 LLM 任意发现和调用工具，仍保持 Router/子图控制执行顺序。目前 Search 和 Knowledge/RAG 已经接入 Registry，Registry 结果和 audit log 也已经包含 `execution_id`、`duration_ms`、attempts 和 fallback 归因。
+> 最小版本已经先注册了 Retriever、SearchTool、Motion compare、MCPClient 四类代表工具，并统一了 `ToolSpec` 元数据、参数校验、权限检查、有限重试、fallback 和 audit log。它不做复杂动态规划，也不让 LLM 任意发现和调用工具，仍保持 Router/子图控制执行顺序。目前 Search、Knowledge/RAG 和 MCP execute 已经接入 Registry，Registry 结果和 audit log 也已经包含 `execution_id`、`duration_ms`、attempts 和 fallback 归因。

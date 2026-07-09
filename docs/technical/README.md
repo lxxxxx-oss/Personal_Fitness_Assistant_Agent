@@ -23,7 +23,7 @@
 |---|---|---|
 | Router | [多意图路由设计](./router/MULTI_INTENT_ROUTING_DESIGN.md) | [优化状态](./router/ROUTER_OPTIMIZATION_STATUS.md) |
 | Motion | [媒体输入设计](./motion/MOTION_MEDIA_PIPELINE_DESIGN.md) | [优化路线](./motion/MOTION_OPTIMIZATION_ROADMAP.md) |
-| ToolRegistry | [Motion/MCP 迁移评估](./tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md) | 先迁移 MCP execute，再评估 Motion compare |
+| ToolRegistry | [Motion/MCP 迁移评估](./tool-registry/MOTION_MCP_REGISTRY_MIGRATION_EVALUATION.md) | MCP execute 已接入，下一步评估 Motion compare |
 
 ## 使用原则
 

@@ -33,7 +33,7 @@ Current status:
 Router -> Search subgraph -> ToolRegistry -> search.tavily -> TavilySearchTool
 ```
 
-At this Search-only step, other subgraphs still called their tools directly. Current status has advanced: Knowledge/RAG now also uses `knowledge.retrieve` through Registry; Motion and MCP remain direct-call paths pending the migration order evaluation.
+At this Search-only step, other subgraphs still called their tools directly. Current status has advanced: Knowledge/RAG now uses `knowledge.retrieve` through Registry, and MCP execute now uses `mcp.call_tool`; Motion remains the direct-call path pending further evaluation.
 
 ## Verification
 
@@ -53,7 +53,7 @@ Results:
 
 - ToolRegistry still does not replace LangGraph; LangGraph controls task flow.
 - ToolRegistry does not let the LLM freely discover or call tools.
-- Motion and MCP remain direct-call paths for now because their data and process boundaries are riskier.
+- At this step, Motion and MCP remained direct-call paths because their data and process boundaries were riskier. Current status: MCP execute is Registry-backed; Motion remains direct.
 
 ## Next Steps
 

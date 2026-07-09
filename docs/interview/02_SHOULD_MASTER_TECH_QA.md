@@ -173,7 +173,7 @@
 
 **推荐回答**
 
-> 我没有把 ToolRegistry 做成复杂框架，最小版本只解决工具治理问题。每个工具注册成一个 `ToolSpec`，包含 `name`、`description`、`input_schema`、`permission`、`executor`、`timeout_seconds`、`max_retries` 和 `fallback_tool`。Registry 负责注册、列出、参数校验、权限检查、执行、有限重试、fallback 和审计。目前默认注册了 `knowledge.retrieve`、`search.tavily`、`motion.compare_pose`、`mcp.call_tool` 四类代表工具，并且每次执行会生成 `execution_id` 和 `duration_ms`，方便定位一次工具调用。
+> 我没有把 ToolRegistry 做成复杂框架，最小版本只解决工具治理问题。每个工具注册成一个 `ToolSpec`，包含 `name`、`description`、`input_schema`、`permission`、`executor`、`timeout_seconds`、`max_retries` 和 `fallback_tool`。Registry 负责注册、列出、参数校验、权限检查、执行、有限重试、fallback 和审计。目前默认注册了 `knowledge.retrieve`、`search.tavily`、`motion.compare_pose`、`mcp.call_tool` 四类代表工具；Search、Knowledge/RAG 和 MCP execute 已经走 Registry，每次执行会生成 `execution_id` 和 `duration_ms`，方便定位一次工具调用。
 >
 > 它和 LangGraph 不重复：LangGraph 管任务流程，比如先检索还是先搜索；ToolRegistry 管单个工具怎么安全稳定地执行。它和 MCP 也不重复：MCP 是外部工具协议，Registry 是内部工具治理层，MCPClient 反而可以作为一个工具被 Registry 管起来。
 
@@ -193,7 +193,7 @@
 
 **推荐回答**
 
-> 当前已经做到 Server 命令只来自配置、不接受用户输入拼接，并给请求增加超时与 mock fallback；但 MCP 工具执行层尚未强制校验“工具名属于发现结果”，也没有根据 inputSchema 验证参数。生产化可以通过最小 ToolRegistry 补 allowlist、schema 校验、进程隔离、权限控制和审计，不能把目标设计说成当前能力。
+> 当前已经做到 Server 命令只来自配置、不接受用户输入拼接，并给请求增加超时与 mock fallback；MCP 的 execute 节点也已经通过 ToolRegistry 调用 `mcp.call_tool`，具备最小参数结构校验、`subprocess` 权限标签、执行元数据和 audit log。但它还没有强制校验“工具名属于发现结果”，也没有根据真实 Server 返回的 inputSchema 做深度参数验证。生产化还要补 allowlist、schema 深校验、进程隔离、响应 ID 校验和更完整审计，不能把目标设计说成当前能力。
 
 ### Q18：为什么需要 fallback？
 

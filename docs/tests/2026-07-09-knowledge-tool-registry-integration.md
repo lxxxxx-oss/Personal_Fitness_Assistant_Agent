@@ -33,6 +33,6 @@ Knowledge/RAG is now governed by the same minimal registry as Search. The projec
 
 ## Remaining Risk
 
-- Motion and MCP are not yet migrated.
+- At this Knowledge step, Motion and MCP were not yet migrated. Current status has advanced: MCP execute is now Registry-backed; Motion remains direct.
 - Registry timeout is not hard cancellation.
 - Registry audit data is still in-memory.

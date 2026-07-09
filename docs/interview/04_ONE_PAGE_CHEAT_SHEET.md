@@ -47,7 +47,7 @@
 
 ### 工具系统和 MCP 是一回事吗？
 
-> 不是。工具系统是项目内部对确定性能力的治理方式，包括输入 schema、权限、执行器、`ToolResult/ErrorCode` 和失败降级；MCP 只是外部工具接入的一种协议补充。当前最小 ToolRegistry 已接入 Search 和 Knowledge/RAG，并记录 `execution_id`、`duration_ms`、attempts、fallback 和 audit 信息。
+> 不是。工具系统是项目内部对确定性能力的治理方式，包括输入 schema、权限、执行器、`ToolResult/ErrorCode` 和失败降级；MCP 只是外部工具接入的一种协议补充。当前最小 ToolRegistry 已接入 Search、Knowledge/RAG 和 MCP execute，并记录 `execution_id`、`duration_ms`、attempts、fallback 和 audit 信息。
 
 ### Milvus 做了什么？
 

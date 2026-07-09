@@ -3,6 +3,7 @@ import pytest
 
 from app.config import Config
 from app.tools.mcp_client import MCPClient
+from app.tools.types import ErrorCode
 
 
 class TestMCPConfig:
@@ -143,6 +144,7 @@ class TestMCPSubgraphFallback:
         mcp_subgraph._mcp_client = None
         mcp_subgraph._mcp_configured_command = None
         mcp_subgraph._mcp_fallback_reason = None
+        mcp_subgraph._mcp_tool_registry = None
         monkeypatch.setattr(config, "mcp_server_command", "missing-howtocook-mcp")
 
         state = mcp_subgraph.discover_tools_node({
@@ -170,3 +172,81 @@ class TestMCPSubgraphFallback:
         mcp_subgraph._mcp_client = None
         mcp_subgraph._mcp_configured_command = None
         mcp_subgraph._mcp_fallback_reason = None
+        mcp_subgraph._mcp_tool_registry = None
+
+
+class TestMCPRegistryIntegration:
+    def test_execute_tool_node_uses_registry_mock(self, monkeypatch):
+        pytest.importorskip("langgraph")
+
+        from app.config import config
+        from app.graph.subgraphs import mcp as mcp_subgraph
+
+        mcp_subgraph._mcp_client = None
+        mcp_subgraph._mcp_configured_command = None
+        mcp_subgraph._mcp_fallback_reason = None
+        mcp_subgraph._mcp_tool_registry = None
+        monkeypatch.setattr(config, "mcp_server_command", "mock")
+
+        state = mcp_subgraph.execute_tool_node({
+            "user_input": "番茄炒蛋怎么做",
+            "user_id": "u1",
+            "intent": "mcp",
+            "memory": [],
+            "result": "",
+            "error": None,
+            "_tool_plan": (
+                '{"tool": "mcp_howtocook_getRecipeById", '
+                '"arguments": {"query": "番茄炒蛋"}}'
+            ),
+        })
+
+        result = state["_tool_result"]
+        assert result.ok
+        assert result.data["name"] == "番茄炒蛋"
+        assert result.meta["tool_name"] == "mcp.call_tool"
+        assert result.meta["permission"] == "subprocess"
+        assert result.meta["attempts"] == 1
+        assert "execution_id" in result.meta
+        assert "duration_ms" in result.meta
+        assert state["_mcp_tool_meta"] == result.meta
+
+        registry = mcp_subgraph.get_mcp_tool_registry()
+        assert registry.audit_log[-1]["tool_name"] == "mcp.call_tool"
+        assert registry.audit_log[-1]["ok"] is True
+
+    def test_execute_tool_node_schema_failure_is_structured(self, monkeypatch):
+        pytest.importorskip("langgraph")
+
+        from app.config import config
+        from app.graph.subgraphs import mcp as mcp_subgraph
+
+        mcp_subgraph._mcp_client = None
+        mcp_subgraph._mcp_configured_command = None
+        mcp_subgraph._mcp_fallback_reason = None
+        mcp_subgraph._mcp_tool_registry = None
+        monkeypatch.setattr(config, "mcp_server_command", "mock")
+
+        state = mcp_subgraph.execute_tool_node({
+            "user_input": "番茄炒蛋怎么做",
+            "user_id": "u1",
+            "intent": "mcp",
+            "memory": [],
+            "result": "",
+            "error": None,
+            "_tool_plan": (
+                '{"tool": "mcp_howtocook_getRecipeById", '
+                '"arguments": ["bad"]}'
+            ),
+        })
+
+        result = state["_tool_result"]
+        assert not result.ok
+        assert result.error_code == ErrorCode.INVALID_PARAM
+        assert "'arguments' must be an object" in result.error_message
+        assert result.meta["tool_name"] == "mcp.call_tool"
+        assert result.meta["permission"] == "subprocess"
+
+        registry = mcp_subgraph.get_mcp_tool_registry()
+        assert registry.audit_log[-1]["ok"] is False
+        assert registry.audit_log[-1]["error_code"] == ErrorCode.INVALID_PARAM
