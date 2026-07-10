@@ -70,6 +70,15 @@ class Config:
     memory_max_turns: int = field(
         default_factory=lambda: _get_int_env("MEMORY_MAX_TURNS", 6)
     )
+    memory_db_path: str = field(
+        default_factory=lambda: os.getenv("MEMORY_DB_PATH", "data/memory/memory.db")
+    )
+    context_compact_trigger_chars: int = field(
+        default_factory=lambda: _get_int_env("COMPACT_TRIGGER_CHARS", 6000)
+    )
+    context_max_prompt_chars: int = field(
+        default_factory=lambda: _get_int_env("MAX_PROMPT_CHARS", 8192)
+    )
 
     # Retriever
     retriever_top_k: int = field(

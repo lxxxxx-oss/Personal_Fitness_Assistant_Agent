@@ -1,6 +1,6 @@
 """FastAPI application entry point — Fitness Assistant API."""
 import logging
-from typing import Any, AsyncIterator, Dict, List
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import asyncio
 from contextlib import suppress
@@ -34,6 +34,8 @@ app.add_middleware(
 
 _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
+_conversation_store = None
+_memory_store = None
 
 
 async def _read_upload_with_limit(
@@ -177,15 +179,81 @@ def _get_or_create_memory(user_id: str):
     return _sessions[user_id]
 
 
+def _get_conversation_store():
+    global _conversation_store
+    if _conversation_store is None:
+        from app.memory.conversation_store import ConversationStore
+
+        _conversation_store = ConversationStore(config.memory_db_path)
+    return _conversation_store
+
+
+def _get_memory_store():
+    global _memory_store
+    if _memory_store is None:
+        from app.memory.memory_store import MemoryStore
+
+        _memory_store = MemoryStore(config.memory_db_path)
+    return _memory_store
+
+
+def _remember_explicit_user_memory(user_id: str, message: str) -> None:
+    try:
+        _get_memory_store().remember_explicit(user_id, message)
+    except ValueError:
+        logger.warning("Explicit memory write skipped due to invalid content")
+    except Exception:
+        logger.exception("Explicit memory write failed")
+
+
+def _retrieve_long_term_memories(user_id: str, message: str) -> List[Dict]:
+    try:
+        return _get_memory_store().search_memories(user_id, message, limit=5)
+    except Exception:
+        logger.exception("Long-term memory retrieval failed")
+        return []
+
+
+def _session_key(user_id: str, conversation_id: str) -> str:
+    return f"{user_id}:{conversation_id}"
+
+
+def _get_or_restore_memory(user_id: str, conversation_id: str):
+    from app.memory.sliding_window import SlidingWindowMemory
+
+    key = _session_key(user_id, conversation_id)
+    if key not in _sessions:
+        memory = SlidingWindowMemory(max_turns=config.memory_max_turns)
+        for message in _get_conversation_store().get_messages(
+            conversation_id,
+            user_id,
+        ):
+            memory.add(message)
+        _sessions[key] = memory
+    return _sessions[key]
+
+
+def _resolve_conversation_id(user_id: str, conversation_id: Optional[str]) -> str:
+    try:
+        return _get_conversation_store().get_or_create_conversation(
+            user_id,
+            conversation_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 # --- Request/Response Models ---
 
 class ChatRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=64)
     message: str = Field(..., min_length=1, max_length=4096)
+    conversation_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
 
 
 class ChatResponse(BaseModel):
     user_id: str
+    conversation_id: str
     intent: str
     reply: str
     sources: List[str] = Field(default_factory=list)
@@ -195,12 +263,80 @@ class ChatResponse(BaseModel):
 
 class HistoryResponse(BaseModel):
     user_id: str
+    conversation_id: Optional[str] = None
     history: List[Dict[str, str]]
 
 
 class ClearResponse(BaseModel):
     user_id: str
+    conversation_id: Optional[str] = None
     status: str
+
+
+class MemoryCreateRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    kind: str = Field(default="note", min_length=1, max_length=32)
+    content: str = Field(..., min_length=1, max_length=2000)
+    scope: str = Field(default="global", min_length=1, max_length=128)
+    source_type: str = Field(default="manual_import", min_length=1, max_length=64)
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    metadata: Dict = Field(default_factory=dict)
+
+
+class MemoryUpdateRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    content: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    scope: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    source_type: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    importance: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    status: Optional[str] = Field(default=None, min_length=1, max_length=32)
+    metadata: Optional[Dict] = None
+
+
+class MemoryItemResponse(BaseModel):
+    id: str
+    user_id: str
+    kind: str
+    content: str
+    scope: str
+    source_type: str
+    importance: float
+    status: str
+    access_count: int
+    last_accessed_at: Optional[str] = None
+    memory_key: str
+    metadata: Dict = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+    deduplicated: bool = False
+    score: Optional[float] = None
+
+
+class MemoryListResponse(BaseModel):
+    user_id: str
+    memories: List[MemoryItemResponse] = Field(default_factory=list)
+
+
+class CandidateMemoryResponse(BaseModel):
+    id: str
+    user_id: str
+    kind: str
+    content: str
+    scope: str
+    source_type: str
+    importance: float
+    privacy_level: str
+    status: str
+    metadata: Dict = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+    candidate: bool = False
+
+
+class CandidateMemoryListResponse(BaseModel):
+    user_id: str
+    candidates: List[CandidateMemoryResponse] = Field(default_factory=list)
 
 
 class MotionAnalyzeResponse(BaseModel):
@@ -265,16 +401,141 @@ async def health_check():
     return {"status": "ok", "version": "0.1.0"}
 
 
+@app.get("/memory", response_model=MemoryListResponse)
+async def list_memories(
+    user_id: str,
+    kind: Optional[str] = None,
+    include_deleted: bool = False,
+    limit: int = 50,
+):
+    """List long-term memories for one user."""
+    try:
+        memories = _get_memory_store().list_memories(
+            user_id,
+            kind=kind,
+            include_deleted=include_deleted,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MemoryListResponse(user_id=user_id, memories=memories)
+
+
+@app.post("/memory", response_model=MemoryItemResponse)
+async def create_memory(request: MemoryCreateRequest):
+    """Create one explicit long-term memory."""
+    try:
+        return _get_memory_store().create_memory(
+            user_id=request.user_id,
+            kind=request.kind,
+            content=request.content,
+            scope=request.scope,
+            source_type=request.source_type,
+            importance=request.importance,
+            metadata=request.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/memory/search", response_model=MemoryListResponse)
+async def search_memories(user_id: str, query: str, limit: int = 5):
+    """Search active long-term memories using SQLite FTS5 with LIKE fallback."""
+    memories = _get_memory_store().search_memories(user_id, query, limit=limit)
+    return MemoryListResponse(user_id=user_id, memories=memories)
+
+
+@app.get("/memory/candidates", response_model=CandidateMemoryListResponse)
+async def list_candidate_memories(
+    user_id: str,
+    status: str = "pending",
+    limit: int = 50,
+):
+    """List candidate memories waiting for confirmation."""
+    try:
+        candidates = _get_memory_store().list_candidate_memories(
+            user_id,
+            status=status,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CandidateMemoryListResponse(user_id=user_id, candidates=candidates)
+
+
+@app.post("/memory/candidates/{candidate_id}/confirm", response_model=MemoryItemResponse)
+async def confirm_candidate_memory(candidate_id: str, user_id: str):
+    """Confirm one candidate memory and promote it into memory_items."""
+    item = _get_memory_store().confirm_candidate_memory(user_id, candidate_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="candidate memory was not found")
+    return item
+
+
+@app.post("/memory/candidates/{candidate_id}/reject")
+async def reject_candidate_memory(candidate_id: str, user_id: str):
+    """Reject one candidate memory."""
+    rejected = _get_memory_store().reject_candidate_memory(user_id, candidate_id)
+    if not rejected:
+        raise HTTPException(status_code=404, detail="candidate memory was not found")
+    return {"id": candidate_id, "status": "rejected"}
+
+
+@app.get("/memory/{memory_id}", response_model=MemoryItemResponse)
+async def get_memory(memory_id: str, user_id: str):
+    """Read one long-term memory by id."""
+    item = _get_memory_store().get_memory(user_id, memory_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory was not found")
+    return item
+
+
+@app.patch("/memory/{memory_id}", response_model=MemoryItemResponse)
+async def update_memory(memory_id: str, request: MemoryUpdateRequest):
+    """Update one long-term memory."""
+    updates = request.model_dump(exclude_none=True)
+    updates.pop("user_id", None)
+    try:
+        item = _get_memory_store().update_memory(
+            user_id=request.user_id,
+            memory_id=memory_id,
+            updates=updates,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory was not found")
+    return item
+
+
+@app.delete("/memory/{memory_id}")
+async def delete_memory(memory_id: str, user_id: str):
+    """Logically delete one long-term memory."""
+    deleted = _get_memory_store().delete_memory(user_id, memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="memory was not found")
+    return {"id": memory_id, "status": "deleted"}
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Process user message, route to subgraph, return reply."""
-    memory = _get_or_create_memory(request.user_id)
+    conversation_id = _resolve_conversation_id(
+        request.user_id,
+        request.conversation_id,
+    )
+    memory = _get_or_restore_memory(request.user_id, conversation_id)
 
     state: RouterState = {
         "user_input": request.message,
         "user_id": request.user_id,
+        "conversation_id": conversation_id,
         "intent": "",
         "memory": memory.get_all(),
+        "_long_term_memories": _retrieve_long_term_memories(
+            request.user_id,
+            request.message,
+        ),
         "result": "",
         "error": None,
     }
@@ -288,9 +549,17 @@ async def chat(request: ChatRequest):
         sources, warnings, execution = _result_metadata(result_state)
 
         memory.add_turn(request.message, reply)
+        _get_conversation_store().add_turn(
+            conversation_id,
+            request.user_id,
+            request.message,
+            reply,
+        )
+        _remember_explicit_user_memory(request.user_id, request.message)
 
         return ChatResponse(
             user_id=request.user_id,
+            conversation_id=conversation_id,
             intent=intent,
             reply=reply,
             sources=sources,
@@ -305,9 +574,13 @@ async def chat(request: ChatRequest):
 @app.get("/chat/{user_id}/history", response_model=HistoryResponse)
 async def get_history(user_id: str):
     """Get user conversation history."""
-    memory = _get_or_create_memory(user_id)
+    conversation_id = _get_conversation_store().get_latest_active_conversation(user_id)
+    if conversation_id is None:
+        return HistoryResponse(user_id=user_id, conversation_id=None, history=[])
+    memory = _get_or_restore_memory(user_id, conversation_id)
     return HistoryResponse(
         user_id=user_id,
+        conversation_id=conversation_id,
         history=memory.get_all(),
     )
 
@@ -315,9 +588,17 @@ async def get_history(user_id: str):
 @app.delete("/chat/{user_id}/history", response_model=ClearResponse)
 async def clear_history(user_id: str):
     """Clear user conversation history."""
-    memory = _get_or_create_memory(user_id)
-    memory.clear()
-    return ClearResponse(user_id=user_id, status="cleared")
+    conversation_id = _get_conversation_store().get_latest_active_conversation(user_id)
+    _get_conversation_store().archive_user_conversations(user_id)
+    for key in list(_sessions.keys()):
+        if key.startswith(f"{user_id}:") or key == user_id:
+            _sessions[key].clear()
+            _sessions.pop(key, None)
+    return ClearResponse(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        status="cleared",
+    )
 
 
 @app.post("/motion/analyze", response_model=MotionAnalyzeResponse)
@@ -674,13 +955,22 @@ async def analyze_motion_video(
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat: SSE token-by-token output."""
-    memory = _get_or_create_memory(request.user_id)
+    conversation_id = _resolve_conversation_id(
+        request.user_id,
+        request.conversation_id,
+    )
+    memory = _get_or_restore_memory(request.user_id, conversation_id)
 
     state: RouterState = {
         "user_input": request.message,
         "user_id": request.user_id,
+        "conversation_id": conversation_id,
         "intent": "",
         "memory": memory.get_all(),
+        "_long_term_memories": _retrieve_long_term_memories(
+            request.user_id,
+            request.message,
+        ),
         "result": "",
         "error": None,
         "_streaming": True,
@@ -696,6 +986,7 @@ async def chat_stream(request: ChatRequest):
 
         # Send metadata first
         meta = {
+            "conversation_id": conversation_id,
             "intent": intent,
             "sources": sources,
             "warnings": warnings,
@@ -732,6 +1023,13 @@ async def chat_stream(request: ChatRequest):
 
         # Save to memory
         memory.add_turn(request.message, full_reply)
+        _get_conversation_store().add_turn(
+            conversation_id,
+            request.user_id,
+            request.message,
+            full_reply,
+        )
+        _remember_explicit_user_memory(request.user_id, request.message)
 
         # Signal completion
         yield "event: done\ndata: {}\n\n"
@@ -781,14 +1079,29 @@ async def chat_websocket(websocket: WebSocket):
             return
         user_id = request.user_id
         message = request.message
+        try:
+            conversation_id = _resolve_conversation_id(
+                user_id,
+                request.conversation_id,
+            )
+        except HTTPException as exc:
+            await websocket.send_json({
+                "type": "error",
+                "code": "CONVERSATION_NOT_FOUND",
+                "message": str(exc.detail),
+            })
+            await websocket.close()
+            return
 
-        memory = _get_or_create_memory(user_id)
+        memory = _get_or_restore_memory(user_id, conversation_id)
 
         state: RouterState = {
             "user_input": message,
             "user_id": user_id,
+            "conversation_id": conversation_id,
             "intent": "",
             "memory": memory.get_all(),
+            "_long_term_memories": _retrieve_long_term_memories(user_id, message),
             "result": "",
             "error": None,
             "_streaming": True,
@@ -804,6 +1117,7 @@ async def chat_websocket(websocket: WebSocket):
         # Send metadata
         await websocket.send_json({
             "type": "meta",
+            "conversation_id": conversation_id,
             "intent": intent,
             "sources": sources,
             "warnings": warnings,
@@ -816,6 +1130,13 @@ async def chat_websocket(websocket: WebSocket):
             await websocket.send_json({"type": "token", "text": fallback})
             await websocket.send_json({"type": "done"})
             memory.add_turn(message, fallback)
+            _get_conversation_store().add_turn(
+                conversation_id,
+                user_id,
+                message,
+                fallback,
+            )
+            _remember_explicit_user_memory(user_id, message)
             await websocket.close()
             return
 
@@ -839,6 +1160,13 @@ async def chat_websocket(websocket: WebSocket):
 
         # Save to memory
         memory.add_turn(message, full_reply)
+        _get_conversation_store().add_turn(
+            conversation_id,
+            user_id,
+            message,
+            full_reply,
+        )
+        _remember_explicit_user_memory(user_id, message)
         logger.info(f"WebSocket stream complete: {len(full_reply)} chars, intent={intent}")
 
     except WebSocketDisconnect:

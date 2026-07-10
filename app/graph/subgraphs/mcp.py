@@ -5,7 +5,9 @@ from typing import Optional
 
 from langgraph.graph import StateGraph, END
 
+from app.graph.prompt_builder import PromptBuilder
 from app.graph.state import RouterState, record_execution
+from app.graph.structured_state import add_tool_preview, json_preview
 from app.tools.mcp_client import MCPClient
 from app.tools.registry import ToolRegistry, ToolSpec
 
@@ -119,43 +121,7 @@ def plan_tool_call_node(state: RouterState) -> RouterState:
         return state
 
     tools = state.get("_mcp_tools", [])  # type: ignore
-    tools_desc = "\n".join(
-        [f"- {t['name']}: {t.get('description', '')}" for t in tools]
-    )
-
-    prompt = f"""# 角色
-你是一个厨房助手，帮助用户查询菜谱和食材。
-
-# 任务
-根据用户问题，从可用工具中选择最合适的一个，提取所需参数。只输出 JSON，不要其他内容。
-
-# 可用工具
-{tools_desc}
-
-# 工具选择指南
-- 用户想查某个具体菜谱 → 用 mcp_howtocook_getRecipeById，参数 query
-- 用户按分类浏览菜谱（如"荤菜""素菜""汤"）→ 用 mcp_howtocook_getRecipesByCategory，参数 category
-- 用户不知道吃什么 → 用 mcp_howtocook_whatToEat，参数 peopleCount
-- 用户需要一周膳食计划/智能推荐 → 用 mcp_howtocook_recommendMeals，参数 peopleCount + allergies + avoidItems
-- 用户想看所有菜谱 → 用 mcp_howtocook_getAllRecipes
-
-# 示例
-用户: "番茄炒蛋怎么做"
-输出: {{"tool": "mcp_howtocook_getRecipeById", "arguments": {{"query": "番茄炒蛋"}}}}
-
-用户: "有什么荤菜推荐"
-输出: {{"tool": "mcp_howtocook_getRecipesByCategory", "arguments": {{"category": "荤菜"}}}}
-
-用户: "两个人吃，不知道吃什么"
-输出: {{"tool": "mcp_howtocook_whatToEat", "arguments": {{"peopleCount": 2}}}}
-
-用户: "帮我做一周膳食计划，3个人，忌葱姜，虾过敏"
-输出: {{"tool": "mcp_howtocook_recommendMeals", "arguments": {{"peopleCount": 3, "allergies": ["虾"], "avoidItems": ["葱", "姜"]}}}}
-
-# 用户问题
-{state['user_input']}
-
-输出 JSON:"""
+    prompt = PromptBuilder.mcp_tool_plan(state["user_input"], tools)
 
     llm = LLMLoader(
         model_path=config.model_path,
@@ -241,6 +207,18 @@ def execute_tool_node(state: RouterState) -> RouterState:
     )
     state["_tool_result"] = result  # type: ignore
     state["_mcp_tool_meta"] = result.meta  # type: ignore
+    preview_payload = (
+        result.data
+        if result.ok
+        else {"error": result.error_message or "未知错误"}
+    )
+    add_tool_preview(
+        state,
+        intent="mcp",
+        tool=tool_name,
+        summary=json_preview(preview_payload, 800),
+        data_ref="_tool_result",
+    )
     return state
 
 
@@ -260,26 +238,10 @@ def format_result_node(state: RouterState) -> RouterState:
     else:
         payload = tool_result or {}
 
-    prompt = f"""# 任务
-将菜谱查询结果格式化为清晰易读的回复。
-
-# 格式要求
-- 菜名作为标题
-- 配料清单用列表
-- 步骤用编号
-- 末尾可附小贴士和热量信息（如果有）
-- 语言亲切但不过度啰嗦
-- 如果数据中包含error字段，如实告知用户并给出建议
-
-# 工具返回数据
-{json.dumps(payload, ensure_ascii=False, indent=2) if not isinstance(payload, str) else payload}
-
-# 用户问题
-{state['user_input']}
-
-请格式化回复："""
-
-    state["_prompt"] = prompt  # type: ignore
+    prompt = PromptBuilder.mcp_format_result(
+        state,
+        payload=json_preview(payload, 1200),
+    )
     if state.get("_streaming"):
         state["result"] = ""
         return state

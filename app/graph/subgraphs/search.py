@@ -3,7 +3,9 @@ import logging
 
 from langgraph.graph import StateGraph, END
 
+from app.graph.prompt_builder import PromptBuilder
 from app.graph.state import RouterState, record_execution
+from app.graph.structured_state import add_tool_preview, truncate_text
 from app.tools.registry import ToolRegistry, build_default_tool_registry
 
 logger = logging.getLogger(__name__)
@@ -24,23 +26,7 @@ def query_understanding_node(state: RouterState) -> RouterState:
     from app.llm.loader import LLMLoader
 
     user_input = state["user_input"]
-    prompt = f"""# 任务
-将用户问题改写为 1-2 个简洁的搜索关键词（用空格分隔），用于搜索引擎检索健身相关信息。
-
-# 规则
-- 提取核心概念，去掉口语化的问句结构
-- 中英文关键词均可，优先中文
-- 只输出关键词本身，不要任何解释或标点
-
-# 示例
-用户问题: "深蹲的时候膝盖总响是怎么回事"
-输出: 深蹲 膝盖弹响 原因
-
-用户问题: "减脂期间能不能吃水果，什么时候吃最好"
-输出: 减脂 水果摄入 时机
-
-用户问题: {user_input}
-输出:"""
+    prompt = PromptBuilder.search_query_rewrite(user_input)
 
     llm = LLMLoader(
         model_path=config.model_path,
@@ -68,6 +54,19 @@ def search_node(state: RouterState) -> RouterState:
     search_results = result.data if result.ok and result.data else []
     state["_search_results"] = search_results  # type: ignore
     state["_search_meta"] = result.meta  # type: ignore
+    if search_results:
+        summary = "\n".join(
+            f"[{index + 1}] {item.get('title', '')}: "
+            f"{truncate_text(item.get('content', ''), 180)}"
+            for index, item in enumerate(search_results[:3])
+        )
+        add_tool_preview(
+            state,
+            intent="search",
+            tool="search.tavily",
+            summary=summary,
+            data_ref="_search_results",
+        )
     is_mock = bool(result.meta.get("is_mock"))
     record_execution(
         state,
@@ -97,28 +96,18 @@ def synthesis_node(state: RouterState) -> RouterState:
     sources = []
     result_text = ""
     for i, r in enumerate(results):
-        result_text += f"\n[{i+1}] {r['title']}\n{r['content']}\nSource: {r['url']}\n"
+        result_text += (
+            f"\n[{i+1}] {r['title']}\n"
+            f"{truncate_text(r['content'], 600)}\n"
+            f"Source: {r['url']}\n"
+        )
         sources.append(r["url"])
 
-    prompt = f"""# 角色
-你是一个专业的健身知识助手，现在需要基于联网搜索结果回答用户问题。
-
-# 回答规则
-1. **摘要先行**：先用 1-2 句话概括核心答案。
-2. **要点展开**：列出 2-4 个关键要点，每个用 1-2 句话说明。
-3. **来源标注**：引用的信息后标注来源编号（如 [来源1]）。
-4. **诚实说明**：如果搜索结果与用户问题不相关或不充分，直接说明"搜索结果中未找到相关信息"，然后给出你的通用健身建议。
-5. **安全提醒**：涉及伤病、药物等问题时，引导用户咨询专业医生。
-
-# 搜索结果
-{result_text or "暂无搜索结果"}
-
-# 用户问题
-{state['user_input']}
-
-请回答："""
-
-    state["_prompt"] = prompt  # type: ignore
+    prompt = PromptBuilder.search_synthesis(
+        state,
+        result_text=result_text,
+        sources=sources,
+    )
     if state.get("_streaming"):
         state["result"] = ""
         state["_sources"] = sources  # type: ignore

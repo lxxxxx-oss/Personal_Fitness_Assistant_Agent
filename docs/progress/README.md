@@ -13,16 +13,16 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-10 | [Context Phase 4-5：compact 触发与可观测性](./2026-07-10-context-phase4-5-compact-observability.md) | PromptBuilder 统一触发确定性 compact，记录 `_prompt_meta` 与 `execution` compact 轨迹 |
+| 2026-07-10 | [Memory Phase 4-5：候选确认、FTS5 检索与预算注入](./2026-07-10-memory-phase4-5-candidates-fts-injection.md) | 敏感记忆先进 candidate，确认后入库；长期记忆 FTS5/LIKE 检索并注入 Knowledge prompt |
+| 2026-07-10 | [Memory Phase 2-3：长期记忆 CRUD 与最小 Memory Writer](./2026-07-10-memory-phase2-3-long-term-memory-writer.md) | SQLite 新增 `memory_items/sources/relations`，`/memory` CRUD 与显式“记住”写入 |
+| 2026-07-10 | [Context Phase 2-3：结构化状态与工具 preview](./2026-07-10-context-phase2-3-structured-state-preview.md) | `_structured_state` 记录任务、决策、画像、知识来源和工具摘要；Search/MCP/Motion 写入 preview |
+| 2026-07-10 | [Context Phase 1：Prompt Builder 统一入口](./2026-07-10-context-phase1-prompt-builder.md) | Chat/Diet/Search/MCP 的主要文本 prompt 收束到 `PromptBuilder`，并记录 `_prompt_meta.kind/chars/sections` |
+| 2026-07-10 | [Memory Phase 1：会话持久化最小闭环](./2026-07-10-memory-phase1-conversation-persistence.md) | SQLite 落地 conversations/messages/summaries/task_states，`conversation_id` 支持续接会话，SlidingWindowMemory 作为 hot cache |
 | 2026-07-09 | [ToolRegistry 阶段总结](./2026-07-09-tool-registry-stage-summary.md) | 收束 Search、Knowledge/RAG、MCP execute 已接入状态，并标记 Motion compare 暂缓 |
 | 2026-07-09 | [MCP 接入 ToolRegistry](./2026-07-09-mcp-tool-registry-integration.md) | MCP `execute_tool_node` 通过 `mcp.call_tool` 接入 Registry，并完成全量回归 |
 | 2026-07-09 | [Motion/MCP Registry 迁移评估](./2026-07-09-motion-mcp-registry-migration-evaluation.md) | 形成先 MCP execute、后 Motion compare 的顺序；MCP execute 已在后续步骤完成 |
 | 2026-07-09 | [Knowledge 接入 ToolRegistry](./2026-07-09-knowledge-tool-registry-integration.md) | Chat/Diet 的 RAG 检索通过 `knowledge.retrieve` 接入 Registry，并完成全量回归 |
-| 2026-07-09 | [ToolRegistry 可观测性](./2026-07-09-tool-registry-observability.md) | Registry 结果和 audit log 增加 `execution_id`、`duration_ms`、attempts 和 fallback 归因 |
-| 2026-07-09 | [Search 接入 ToolRegistry](./2026-07-09-search-tool-registry-integration.md) | Search 子图通过 `ToolRegistry.execute("search.tavily")` 调用工具，并完成全量回归 |
-| 2026-07-08 | [Diet 结构化画像校验](./2026-07-08-diet-profile-validation.md) | Pydantic 校验画像范围与枚举，非法 LLM 输出安全降级并公开 warning |
-| 2026-07-08 | [同步 LangGraph 与流式生成异步桥接](./2026-07-08-async-graph-and-stream-bridge.md) | 三种协议在线程执行同步图，SSE/WS 共用非阻塞 token queue |
-| 2026-07-08 | [RAG 来源透传闭环](./2026-07-08-rag-source-propagation.md) | Chat/Diet 共用编号证据格式，并将知识来源透传到三种协议 |
-| 2026-07-08 | [Motion 指标语义与坐标空间加固](./2026-07-08-motion-metric-semantics-hardening.md) | 形状差异改为 DTW 对齐逐关节距离，并拒绝已知坐标空间冲突 |
 
 ## 维护方式
 

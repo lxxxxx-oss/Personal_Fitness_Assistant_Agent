@@ -25,6 +25,9 @@ def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
         "_retrieved": [
             {"content": "保持核心稳定。", "source": "fitness_basics.txt"},
         ],
+        "_long_term_memories": [
+            {"kind": "preference", "content": "不喜欢吃香菜", "importance": 0.8, "score": 0.7}
+        ],
     }
 
     result = generate_node(state)
@@ -32,6 +35,11 @@ def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
     assert result["_sources"] == ["fitness_basics.txt"]
     assert "来源: fitness_basics.txt" in result["_prompt"]
     assert "[Ref1]" in result["_prompt"]
+    assert result["_prompt_meta"]["kind"] == "chat.answer"
+    assert result["_prompt_meta"]["chars"] == len(result["_prompt"])
+    assert "recent_conversation" in result["_prompt_meta"]["sections"]
+    assert "不喜欢吃香菜" in result["_prompt"]
+    assert "long_term_memory" in result["_prompt_meta"]["sections"]
 
 
 def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():
@@ -49,3 +57,37 @@ def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():
     assert result["_sources"] == ["nutrition.txt"]
     assert "来源: nutrition.txt" in result["_prompt"]
     assert "[Ref1]" in result["_prompt"]
+    assert result["_prompt_meta"]["kind"] == "diet.recommendation"
+    assert result["_prompt_meta"]["chars"] == len(result["_prompt"])
+    assert "user_profile" in result["_prompt_meta"]["sections"]
+
+
+def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
+    from app.config import config
+
+    monkeypatch.setattr(config, "context_compact_trigger_chars", 500)
+    monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+    state = {
+        "user_input": "深蹲怎么做？",
+        "memory": [
+            {"role": "user", "content": "旧对话" * 300},
+            {"role": "assistant", "content": "旧回答" * 300},
+        ],
+        "_streaming": True,
+        "_retrieved": [
+            {"content": "保持核心稳定。" * 80, "source": "fitness_basics.txt"},
+        ],
+        "_structured_state": {
+            "task": {"primary_intent": "chat"},
+            "tool_results_summary": [{"intent": "search", "summary": "工具摘要"}],
+        },
+    }
+
+    result = generate_node(state)
+
+    assert result["_prompt_meta"]["compact_triggered"] is True
+    assert result["_prompt_meta"]["original_chars"] > result["_prompt_meta"]["chars"]
+    assert len(result["_prompt"]) <= 1200
+    assert "## 对话压缩摘要" in result["_prompt"]
+    assert result["_structured_state"]["compact_triggered"] is True
+    assert result["_execution"][0]["component"] == "compact"

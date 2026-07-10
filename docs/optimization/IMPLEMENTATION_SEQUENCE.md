@@ -1,0 +1,362 @@
+# Context Compression 与 Memory System 实现顺序
+
+本文档记录 `context-compression.md` 和 `memory-system.md` 的落地顺序。它不是新的架构设计，而是把两份优化设计拆成可实施、可测试、可面试解释的阶段路线。
+
+核心原则：
+
+- 先保证当前项目继续可运行，再逐步增强长期记忆和上下文管理。
+- 先让会话可恢复，再让长期记忆可写可删，最后再做 Milvus 语义增强。
+- 先统一 Prompt Builder，再做结构化状态和压缩触发。
+- 不把“设计中能力”说成“已完整实现能力”。
+
+---
+
+## 1. 总体落地顺序
+
+推荐按下面顺序实现，而不是两套系统并行硬做：
+
+| 顺序 | 阶段 | 目标 | 主要影响 |
+|---|---|---|---|
+| 1 | Memory Phase 1 | 会话持久化最小闭环 | `/chat`、history、SQLite |
+| 2 | Context Phase 1 | Prompt Builder 统一入口 | Chat/Diet/Search/MCP prompt |
+| 3 | Context Phase 2-3 | 结构化状态 + 工具 preview | `RouterState`、工具结果注入 |
+| 4 | Memory Phase 2-3 | 长期记忆 CRUD + 最小 Memory Writer | `memory_items`、显式记忆 |
+| 5 | Memory Phase 4-5 | candidate 确认 + SQLite 检索 | 隐私确认、FTS5、注入预算 |
+| 6 | Context Phase 4-5 | 压缩触发 + 可观测性 | compact 事件、前端展示 |
+| 7 | Memory Phase 6 | Milvus 用户记忆增强 | embedding jobs、异步 worker |
+| 8 | 联动与评测 | Memory + Compression + RAG 统一验证 | benchmark、审计、生产化补齐 |
+
+当前进度：
+
+- 已完成：Memory Phase 1，会话持久化最小闭环。
+- 已完成：Context Phase 1，Prompt Builder 统一入口。
+- 已完成：Context Phase 2-3，结构化状态与工具结果 preview。
+- 已完成：Memory Phase 2-3，长期记忆基础表、CRUD 与最小 Memory Writer。
+- 已完成：Memory Phase 4-5，候选记忆确认、FTS5 检索与分层预算注入。
+- 已完成：Context Phase 4-5，compact 触发、摘要/兜底提取和可观测事件。
+- 下一步候选：Memory Phase 6，Milvus 用户长期记忆语义增强。
+
+一句话口径：
+
+> 我不会一开始就把所有历史对话塞进向量库，而是先做会话持久化和统一 Prompt Builder，再逐步引入长期记忆、候选确认、SQLite 检索、压缩触发，最后用 Milvus 做语义召回增强。这样每一步都可运行、可测试、可解释。
+
+---
+
+## 2. Memory System 实现步骤
+
+### Phase 1：会话持久化最小闭环
+
+目标：服务重启后，用户还能恢复最近会话上下文。
+
+实现内容：
+
+- 新建 SQLite 数据库文件：`data/memory/memory.db`
+- 建表：
+  - `conversations`
+  - `messages`
+  - `summaries`
+  - `task_states`
+- `/chat` 请求增加可选 `conversation_id`
+- `ChatResponse` 返回 `conversation_id`
+- 每次用户消息和助手回复写入 `messages`
+- 服务重启后可按 `conversation_id` 恢复最近消息，并填充 `SlidingWindowMemory`
+
+验收标准：
+
+- 不传 `conversation_id` 时自动创建新会话。
+- 传入旧 `conversation_id` 时能续接旧会话。
+- 重启服务后，最近对话仍能恢复。
+- 现有 `/chat/{user_id}/history` 行为不被破坏。
+
+### Phase 2：长期记忆基础表与 CRUD
+
+目标：用户可以显式管理长期记忆。
+
+实现内容：
+
+- 建表：
+  - `memory_items`
+  - `memory_sources`
+  - `memory_relations`
+- 实现 `MemoryStore`
+- 新增接口：
+  - `GET /memory`
+  - `POST /memory`
+  - `GET /memory/{id}`
+  - `PATCH /memory/{id}`
+  - `DELETE /memory/{id}`
+- 删除先做逻辑删除：`status='deleted'`
+
+验收标准：
+
+- 用户能新增、查看、修改、删除一条长期记忆。
+- 删除后的记忆不再参与检索和 prompt 注入。
+- SQLite 仍是 source of truth。
+
+### Phase 3：最小 Memory Writer
+
+目标：让系统能稳定写入真正有长期价值的信息。
+
+实现内容：
+
+- 用户明确说“记住...”时，直接写入 `memory_items`
+- 从 `_structured_state.profile / user_context / decisions` 中提升长期事实
+- 实现 `memory_key = hash(user_id + kind + normalized_content)` 精确去重
+- 暂时不依赖 LLM 自动推测，先用规则保证稳定
+
+验收标准：
+
+- 显式记忆写入准确率高。
+- 一次性闲聊不会进入长期记忆。
+- 重复表达不会生成大量重复 memory。
+
+### Phase 4：候选记忆与隐私确认
+
+目标：解决健身助手中的健康、身体状态、饮食偏好等隐私风险。
+
+实现内容：
+
+- 建表：`candidate_memories`
+- 新增接口：
+  - `GET /memory/candidates`
+  - `POST /memory/candidates/{id}/confirm`
+  - `POST /memory/candidates/{id}/reject`
+- `health` / `security` 级别默认进入 candidate，不直接写正式记忆
+- 与已有记忆冲突时，不直接覆盖，先进入候选或 relation
+
+验收标准：
+
+- “我膝盖有旧伤”这类信息不会绕过确认直接进入正式 memory。
+- 用户能确认或拒绝候选记忆。
+- 拒绝后的候选不参与检索、注入和向量同步。
+
+### Phase 5：SQLite 检索与注入
+
+目标：先不依赖 Milvus，也能完成基础个性化召回。
+
+实现内容：
+
+- 建 FTS5 独立表：`memory_items_fts(memory_id UNINDEXED, content)`
+- 用 `memory_id` 回查 `memory_items`
+- 实现：
+  - keyword_score
+  - metadata_score
+  - final_score
+  - 分层预算注入
+- pinned rule / constraint 优先注入，但仍受预算限制
+
+验收标准：
+
+- Recall@5 达到 MVP 基线。
+- Milvus 不可用时，基础记忆检索仍可工作。
+- 注入后 prompt 不超预算。
+
+### Phase 6：Milvus 异步增强
+
+目标：用 Milvus 提升长期记忆的语义召回，但不让它成为主链路单点依赖。
+
+实现内容：
+
+- 建表：`embedding_jobs`
+- 后台 worker：
+  - 读取 pending jobs
+  - Sentence-Transformers 编码
+  - Milvus upsert
+  - 成功后标记 completed
+- 失败时指数退避重试，最多 5 次
+- Milvus 不可用时降级到 FTS5 + metadata
+
+验收标准：
+
+- Milvus 可用时召回质量提升。
+- Milvus 不可用时主流程不挂。
+- embedding job 失败不会阻塞用户请求。
+
+### Phase 7：Prompt Builder 与上下文压缩联动
+
+目标：长期记忆、当前会话摘要、最近对话、RAG 证据能统一进入 prompt。
+
+实现内容：
+
+- Prompt Builder 注入：
+  - pinned rule / constraint
+  - active compact_summary
+  - 长期 memory top-k
+  - 最近 6 轮原文
+  - RAG evidence
+  - 工具 preview
+- compact_summary 不进入 `memory_items`
+- compact 中发现的长期事实必须交给 Memory Writer 判断
+
+验收标准：
+
+- 长对话、长期记忆、RAG 证据可以同时进入 prompt。
+- prompt 不超过 `MAX_PROMPT_CHARS`。
+- 压缩摘要不会绕过隐私确认。
+
+### Phase 8：评测、审计与生产化增强
+
+目标：让记忆系统的优化可以被指标证明。
+
+实现内容：
+
+- 建 memory eval case：
+  - 写入准确率
+  - 误写率
+  - 候选拦截率
+  - Recall@K
+  - 冲突识别率
+- 增加 `memory_access_logs` 清理策略
+- 生产化补：
+  - 登录鉴权
+  - 用户授权
+  - 加密/脱敏
+  - 删除同步
+  - 监控与审计
+
+验收标准：
+
+- 每次 memory 改动都能判断是否真的变强。
+- 不只看“有没有记住”，也看“有没有乱记”。
+
+---
+
+## 3. Context Compression 实现步骤
+
+### Phase 1：Prompt Builder 统一入口
+
+目标：先让 prompt 结构可控，再谈自动压缩。
+
+实现内容：
+
+- 收敛 Chat / Diet / Search / MCP 的 prompt 拼接逻辑
+- 固定注入顺序：
+
+```text
+安全规则
+硬约束
+长期记忆 / compact_summary
+最近对话
+工具 preview
+用户问题
+```
+
+- 保留现有 `SlidingWindowMemory`
+- 暂时不改变底层 memory 存储
+
+验收标准：
+
+- 现有问答链路不回退。
+- prompt 长度可观测。
+- RAG source 透传不被破坏。
+
+### Phase 2：结构化状态最小闭环
+
+目标：让子图之间共享结构化状态，而不是只靠自然语言历史。
+
+实现内容：
+
+- 在 `RouterState` 中增加 `_structured_state: Dict[str, Any]`
+- 先支持：
+  - `task`
+  - `decisions`
+  - `tool_results_summary`
+  - `profile`
+  - `knowledge_sources`
+  - `user_context`
+- Router 写入 `task / decisions`
+- Search/MCP 写入 `tool_results_summary`
+- Diet 写入 `profile`
+
+验收标准：
+
+- 多意图链路中，第二步可以读取第一步的结构化状态。
+- `_structured_state` 不被 `collect_route_result_node` 错误清除。
+
+### Phase 3：工具结果 preview
+
+目标：先解决工具结果过长撑爆 prompt 的问题。
+
+实现内容：
+
+- Search 只注入搜索摘要
+- RAG 只注入 evidence block
+- MCP 只注入菜谱摘要
+- Motion 只注入姿态/相似度摘要
+- 完整结果进入临时缓存，不直接塞进 prompt
+
+验收标准：
+
+- 长搜索结果不会直接撑爆 prompt。
+- 工具完整结果仍可追溯。
+
+### Phase 4：压缩触发与兜底提取
+
+目标：避免 prompt 超过 `MAX_PROMPT_CHARS = 8192`。
+
+实现内容：
+
+- 设置 `COMPACT_TRIGGER_CHARS = 6000`
+- 超阈值时：
+  - 保留最近 6 轮原文
+  - 旧轮次提取 `todos`
+  - 旧轮次提取 `user_context`
+  - 各字段按上限裁剪
+- LLM 摘要失败时丢弃摘要，不影响主流程
+
+验收标准：
+
+- prompt 超限率为 0。
+- 关键事实保留率不低于基线。
+- 摘要失败时主流程仍能返回。
+
+### Phase 5：可观测性与前端展示
+
+目标：让压缩不是黑盒。
+
+实现内容：
+
+- API `execution` 字段追加 compact 标记
+- Web UI / 小程序显示“对话已浓缩”
+- 展开后展示结构化状态摘要：
+  - 当前任务
+  - 最近文件
+  - 最近错误
+  - 路由决策
+  - 用户信息
+
+验收标准：
+
+- 用户和开发者都能知道什么时候压缩。
+- 能看到压缩保留了哪些结构化信息。
+
+### Phase 6：与持久化记忆联动
+
+目标：让上下文压缩和长期记忆边界清晰。
+
+实现内容：
+
+- 读取 Memory System 中的 active compact_summary
+- 读取长期 memory top-k
+- compact 中抽取出的长期事实交给 Memory Writer 判断
+- 不允许 compact 直接绕过 candidate confirmation 写入长期记忆
+
+验收标准：
+
+- compact_summary 只作为当前会话状态。
+- 长期事实必须经过 Memory Writer。
+- 隐私/健康信息仍走候选确认。
+
+---
+
+## 4. 面试表达重点
+
+面试时不要把这套路线说成已经完整实现，应按下面方式表达：
+
+> 当前项目已经有可运行的短期滑动窗口记忆、RAG/Milvus 知识库检索和 prompt 长度保护。后续优化会先做会话持久化，再做长期记忆 CRUD 和 Memory Writer，然后用 SQLite FTS5 做基础召回，最后再用 Milvus 做用户长期记忆的语义增强。Context Compression 也不会一开始就让 LLM 自动摘要，而是先统一 Prompt Builder、结构化状态和工具 preview，再做压缩触发和可观测性。
+
+这套实现顺序的价值：
+
+- 工程上：每一步都能独立测试和回滚。
+- 面试上：能说明不是堆技术，而是在控制风险和复杂度。
+- 产品上：先解决用户能感知的问题，再做生产化增强。

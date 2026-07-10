@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Literal, NotRequired, Optional, Tuple, Typed
 from langgraph.graph import END, StateGraph
 
 from app.graph.state import RouterState
+from app.graph.structured_state import add_decision, ensure_structured_state, set_task
 from app.graph.subgraphs.chat import build_chat_subgraph
 from app.graph.subgraphs.diet import build_diet_subgraph
 from app.graph.subgraphs.mcp import build_mcp_subgraph
@@ -1071,6 +1072,27 @@ def intent_classify_node(state: RouterState) -> RouterState:
     state["_route_results"] = []
     state["_route_execution_warnings"] = warnings
     state["_execution"] = []
+    ensure_structured_state(state)
+    set_task(
+        state,
+        {
+            "user_input": state["user_input"],
+            "primary_intent": decision["primary_intent"],
+            "secondary_intents": decision["secondary_intents"],
+            "execution_plan": execution_plan,
+            "needs_clarification": decision["needs_clarification"],
+        },
+    )
+    add_decision(
+        state,
+        {
+            "stage": "router",
+            "source": decision["source"],
+            "confidence": decision["confidence"],
+            "reason": decision["reason"],
+            "matches": decision["matches"][:8],
+        },
+    )
     logger.info(
         "Intent: %s confidence=%.2f source=%s input=%s",
         decision["intent"],
@@ -1096,7 +1118,9 @@ def collect_route_result_node(state: RouterState) -> RouterState:
         "result": state.get("result", ""),
         "error": state.get("error"),
         "prompt": state.get("_prompt", ""),
+        "prompt_meta": dict(state.get("_prompt_meta", {})),
         "sources": list(state.get("_sources", [])),  # type: ignore[arg-type]
+        "structured_state": dict(state.get("_structured_state", {})),
     }
     state.setdefault("_route_results", []).append(record)
 
@@ -1109,6 +1133,7 @@ def collect_route_result_node(state: RouterState) -> RouterState:
         state["error"] = None
         for key in (
             "_prompt",
+            "_prompt_meta",
             "_sources",
             "_retrieved",
             "_retrieval_meta",

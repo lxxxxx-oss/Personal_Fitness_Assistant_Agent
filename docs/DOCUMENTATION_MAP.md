@@ -41,6 +41,7 @@
 
 ### 优化设计
 
+- [实现顺序](./optimization/IMPLEMENTATION_SEQUENCE.md)：Context Compression 与 Memory System 的分阶段落地路线
 - [记忆系统](./optimization/memory-system.md)：SQLite + Milvus 持久化记忆、hybrid retrieval、分层预算注入、会话生命周期
 - [上下文压缩](./optimization/context-compression.md)：渐进式压缩、结构化状态、工具结果分层、安全 pin 机制
 

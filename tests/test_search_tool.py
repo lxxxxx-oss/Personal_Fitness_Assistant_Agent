@@ -76,6 +76,12 @@ class TestTavilySearchTool:
 
         assert result_state["_search_meta"]["tool_name"] == "search.tavily"
         assert result_state["_search_meta"]["permission"] == "network"
+        assert result_state["_structured_state"]["tool_results_summary"][0][
+            "tool"
+        ] == "search.tavily"
+        assert result_state["_structured_state"]["tool_results_summary"][0][
+            "data_ref"
+        ] == "_search_results"
         assert result_state["_execution"] == [
             {
                 "component": "search",

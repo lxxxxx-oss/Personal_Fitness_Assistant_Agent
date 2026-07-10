@@ -72,6 +72,112 @@ class TestChatEndpoint:
             "detail": "demo data",
         }
 
+    def test_memory_crud_endpoints(self, monkeypatch, tmp_path):
+        import app.main as main_module
+        from app.memory.memory_store import MemoryStore
+
+        monkeypatch.setattr(
+            main_module,
+            "_memory_store",
+            MemoryStore(str(tmp_path / "memory.db")),
+        )
+
+        create_response = client.post(
+            "/memory",
+            json={
+                "user_id": "memory_api_user",
+                "kind": "preference",
+                "content": "不喜欢高糖饮料",
+                "importance": 0.7,
+            },
+        )
+        assert create_response.status_code == 200
+        created = create_response.json()
+        assert created["status"] == "active"
+
+        list_response = client.get("/memory", params={"user_id": "memory_api_user"})
+        assert list_response.status_code == 200
+        assert list_response.json()["memories"][0]["id"] == created["id"]
+
+        patch_response = client.patch(
+            f"/memory/{created['id']}",
+            json={
+                "user_id": "memory_api_user",
+                "content": "不喜欢含糖饮料",
+            },
+        )
+        assert patch_response.status_code == 200
+        assert patch_response.json()["content"] == "不喜欢含糖饮料"
+
+        delete_response = client.delete(
+            f"/memory/{created['id']}",
+            params={"user_id": "memory_api_user"},
+        )
+        assert delete_response.status_code == 200
+        assert delete_response.json()["status"] == "deleted"
+
+    def test_memory_search_and_candidate_endpoints(self, monkeypatch, tmp_path):
+        import app.main as main_module
+        from app.memory.memory_store import MemoryStore
+
+        memory_store = MemoryStore(str(tmp_path / "memory.db"))
+        monkeypatch.setattr(main_module, "_memory_store", memory_store)
+        memory_store.create_candidate_memory(
+            user_id="candidate_api_user",
+            kind="note",
+            content="我膝盖有旧伤",
+            source_type="user_explicit_remember",
+            privacy_level="health",
+        )
+
+        candidates_response = client.get(
+            "/memory/candidates",
+            params={"user_id": "candidate_api_user"},
+        )
+        assert candidates_response.status_code == 200
+        candidate = candidates_response.json()["candidates"][0]
+        assert candidate["privacy_level"] == "health"
+
+        confirm_response = client.post(
+            f"/memory/candidates/{candidate['id']}/confirm",
+            params={"user_id": "candidate_api_user"},
+        )
+        assert confirm_response.status_code == 200
+        assert confirm_response.json()["content"] == "我膝盖有旧伤"
+
+        search_response = client.get(
+            "/memory/search",
+            params={"user_id": "candidate_api_user", "query": "膝盖训练"},
+        )
+        assert search_response.status_code == 200
+        assert search_response.json()["memories"][0]["content"] == "我膝盖有旧伤"
+
+    def test_chat_explicit_remember_writes_long_term_memory(self, monkeypatch, tmp_path):
+        import app.main as main_module
+        from app.memory.memory_store import MemoryStore
+
+        memory_store = MemoryStore(str(tmp_path / "memory.db"))
+        monkeypatch.setattr(main_module, "_memory_store", memory_store)
+
+        class FakeGraph:
+            def invoke(self, state):
+                return {"intent": "chat", "result": "我已经记下。"}
+
+        monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
+        response = client.post(
+            "/chat",
+            json={
+                "user_id": "remember_api_user",
+                "message": "请记住 我不喜欢吃香菜",
+            },
+        )
+
+        assert response.status_code == 200
+        memories = memory_store.list_memories("remember_api_user")
+        assert len(memories) == 1
+        assert memories[0]["kind"] == "preference"
+        assert memories[0]["source_type"] == "user_explicit_remember"
+
     def test_websocket_meta_returns_sources_and_warnings(self, monkeypatch):
         import app.main as main_module
 
@@ -91,26 +197,25 @@ class TestChatEndpoint:
         with client.websocket_connect("/chat/ws") as websocket:
             websocket.send_json({"user_id": "ws_metadata_user", "message": "测试来源"})
             meta = websocket.receive_json()
-            assert meta == {
-                "type": "meta",
-                "intent": "search",
-                "sources": ["https://example.com/ws"],
-                "warnings": ["partial_route_failure:diet"],
-                "execution": [
-                    {
-                        "component": "search",
-                        "mode": "tavily",
-                        "degraded": False,
-                        "detail": "",
-                    },
-                    {
-                        "component": "llm",
-                        "mode": "local_qwen",
-                        "degraded": False,
-                        "detail": "",
-                    },
-                ],
-            }
+            assert meta["type"] == "meta"
+            assert meta["conversation_id"]
+            assert meta["intent"] == "search"
+            assert meta["sources"] == ["https://example.com/ws"]
+            assert meta["warnings"] == ["partial_route_failure:diet"]
+            assert meta["execution"] == [
+                {
+                    "component": "search",
+                    "mode": "tavily",
+                    "degraded": False,
+                    "detail": "",
+                },
+                {
+                    "component": "llm",
+                    "mode": "local_qwen",
+                    "degraded": False,
+                    "detail": "",
+                },
+            ]
             assert websocket.receive_json()["type"] == "token"
             assert websocket.receive_json()["type"] == "done"
 
@@ -141,6 +246,27 @@ class TestChatEndpoint:
         response = client.post("/chat", json=payload)
         data = response.json()
         assert data["intent"] == "chat"
+        assert data["conversation_id"]
+
+    def test_chat_returns_and_reuses_conversation_id(self):
+        first = client.post(
+            "/chat",
+            json={"user_id": "conversation_user", "message": "hello"},
+        )
+        assert first.status_code == 200
+        conversation_id = first.json()["conversation_id"]
+
+        second = client.post(
+            "/chat",
+            json={
+                "user_id": "conversation_user",
+                "conversation_id": conversation_id,
+                "message": "continue",
+            },
+        )
+
+        assert second.status_code == 200
+        assert second.json()["conversation_id"] == conversation_id
 
     def test_streaming_endpoint_does_not_generate_final_answer_twice(
         self,

@@ -55,7 +55,8 @@
 | Motion | 已按完整标准动作教练系统口径完成图片/视频输入、PoseSequence、标准视频构建脚本、schema 安全比较、小程序参考选择、相似度计算和教练式反馈 |
 | Tool System | 已落地最小 `ToolRegistry` 原型：`ToolSpec` 记录 name、description、input_schema、permission、executor、timeout、retry、fallback；Registry 支持注册、列出、schema 校验、权限检查、执行、有限重试、fallback、`execution_id`、`duration_ms` 和 audit log；Search、Knowledge/RAG 与 MCP execute 已接入 Registry，Motion 仍由 LangGraph/API 直接控制工具调用 |
 | MCP | 定位为工具协议补充；轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析；`execute_tool_node` 已通过 `ToolRegistry` 调用 `mcp.call_tool`，默认 mock 用于演示稳定 |
-| Memory | 会话缓冲区按 `user_id` 隔离并最多保存 6 轮；当前由 Knowledge 能力域消费最近 6 条消息（约 3 轮），用于普通问答和饮食建议的连续上下文；跨 Search、Motion、MCP 的长期记忆消费仍是后续增强项 |
+| Memory | Phase 4-5 最小闭环已落地：会话持久化写入 `conversations/messages/summaries/task_states`，长期记忆写入 `memory_items/memory_sources/memory_relations`；已新增 `/memory` CRUD、候选记忆确认、SQLite FTS5 检索与中文 LIKE 兜底；用户明确说“记住……”时会通过最小 Memory Writer 写入长期记忆，健康/伤病/过敏等敏感内容先进 candidate；检索到的长期记忆会按预算注入 Knowledge prompt；Milvus 用户记忆增强仍是后续项 |
+| Context Management | Phase 4-5 最小闭环已落地：Chat/Diet/Search/MCP 的主要文本 prompt 通过 `PromptBuilder` 构建并记录 `_prompt_meta.kind/chars/sections/original_chars/compact_triggered`；`_structured_state` 记录当前任务、路由决策、用户画像、知识来源、工具摘要和 compact summary；prompt 超过 `COMPACT_TRIGGER_CHARS` 会触发确定性 compact 并在 `execution` 中公开轨迹；当前尚未实现 LLM 摘要、summary 持久化和前端展示 |
 | 异步接口 | HTTP/SSE/WebSocket 的同步 LangGraph 阶段通过 `asyncio.to_thread` 执行；SSE 与 WebSocket 共用线程到 asyncio queue 桥接逐 token 输出，避免阻塞事件循环；模型生成锁仍保证同进程串行推理 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
@@ -82,13 +83,15 @@
 | 小程序 WebSocket 存在端侧与网络差异 | 建连或执行失败时降级到非流式接口 | 完成真机、弱网和不同基础库版本验收 |
 | Docker 模型路径跨机器 | 配置支持环境变量覆盖 | 使用平台无关镜像和模型服务 |
 | 服务没有认证与限流 | 当前只绑定本机地址用于开发演示；`user_id` 不是身份凭证 | 接入认证授权、用户级访问控制、限流和审计 |
-| 会话仅在进程内 | `_sessions` 按用户键保存，重启丢失且没有用户键淘汰 | 使用带 TTL 的 Redis/数据库，并提供删除与隐私治理 |
+| 会话持久化仍是本地原型级 | 会话消息已写入本地 SQLite，`_sessions` 作为 hot cache；当前没有 TTL、多实例共享、用户授权或加密治理 | 引入认证授权、会话 TTL、跨实例共享存储、删除同步和隐私治理 |
+| 长期记忆仍是原型级 | 已支持 SQLite source of truth、CRUD、逻辑删除、显式“记住”写入、敏感候选确认、FTS5/LIKE 检索和 Prompt Builder 预算注入；但还没有候选 UI、Milvus 用户记忆增强、审计清理和用户授权 | 增加前端确认入口、Milvus 语义增强、memory eval、审计日志、删除同步和隐私治理 |
+| Context Compression 仍是最小闭环 | 已统一 Prompt Builder、记录 prompt 长度元数据，引入 `_structured_state`、工具结果 preview 和确定性 compact；但还没有 LLM 摘要、summary 持久化和前端可视化 | 增加 LLM 摘要兜底、`summaries` 持久化、前端展示和摘要质量评测 |
 | CORS 与错误边界偏宽 | CORS 允许任意来源，部分内部异常可能进入 500 detail | 配置来源白名单、统一安全错误响应和日志脱敏 |
 | `/health` 只证明进程存活 | 固定返回版本，不探测模型、检索或外部工具 | 拆分 liveness 与 readiness，并展示依赖级状态 |
 
 ### 本地原型安全声明
 
-当前 API 没有登录鉴权、租户隔离或请求限流，`user_id` 只是客户端提供的会话键。知道某个 `user_id` 的调用方可以读取或清空对应内存历史；CORS 也允许任意浏览器来源。项目默认监听 `127.0.0.1`，只适合本地开发和面试演示，不应直接暴露到公网。生产化前必须补认证授权、HTTPS、来源白名单、会话 TTL/持久化、上传与请求限流、错误脱敏和审计日志。
+当前 API 没有登录鉴权、租户隔离或请求限流，`user_id` 只是客户端提供的会话键。会话消息已写入本地 SQLite，但知道某个 `user_id` 的调用方仍可以读取或清空其最近 active 会话历史；CORS 也允许任意浏览器来源。项目默认监听 `127.0.0.1`，只适合本地开发和面试演示，不应直接暴露到公网。生产化前必须补认证授权、HTTPS、来源白名单、会话 TTL、上传与请求限流、错误脱敏和审计日志。
 
 ## 5. 对外接口
 
@@ -102,6 +105,7 @@
 | WebSocket | `/chat/ws` | WebSocket 流式对话 |
 | GET | `/chat/{user_id}/history` | 获取会话历史 |
 | DELETE | `/chat/{user_id}/history` | 清空会话历史 |
+| GET/POST/PATCH/DELETE | `/memory`、`/memory/{memory_id}` | 长期记忆 CRUD |
 | GET | `/ui` | Web UI |
 | POST | `/motion/analyze` | 上传 `.npz`，可选标准动作对比 |
 | POST | `/motion/analyze-image` | 上传图片并生成单帧静态姿态摘要 |
@@ -160,7 +164,7 @@ docs/superpowers/            早期方案与规格
 | 运行和联调 | [RUNBOOK.md](./RUNBOOK.md) |
 | 面试复习 | [interview/README.md](./interview/README.md) |
 | 技术设计 | [technical/README.md](./technical/README.md) |
-| 优化设计 | [记忆系统](./optimization/memory-system.md) / [上下文压缩](./optimization/context-compression.md) |
+| 优化设计 | [实现顺序](./optimization/IMPLEMENTATION_SEQUENCE.md) / [记忆系统](./optimization/memory-system.md) / [上下文压缩](./optimization/context-compression.md) |
 | 开发过程 | [progress/README.md](./progress/README.md) |
 | 验收证据 | [tests/README.md](./tests/README.md) |
 | 完整文档分流规则 | [DOCUMENTATION_MAP.md](./DOCUMENTATION_MAP.md) |

@@ -18,6 +18,15 @@ http://127.0.0.1:8000
 | WebSocket | `/chat/ws` | WebSocket 流式对话 | 已实现 |
 | GET | `/chat/{user_id}/history` | 获取对话历史 | 已实现 |
 | DELETE | `/chat/{user_id}/history` | 清空对话历史 | 已实现 |
+| GET | `/memory` | 查看长期记忆列表 | 已实现 |
+| POST | `/memory` | 新增长期记忆 | 已实现 |
+| GET | `/memory/search` | 检索长期记忆 | 已实现 |
+| GET | `/memory/candidates` | 查看候选记忆 | 已实现 |
+| POST | `/memory/candidates/{candidate_id}/confirm` | 确认候选记忆 | 已实现 |
+| POST | `/memory/candidates/{candidate_id}/reject` | 拒绝候选记忆 | 已实现 |
+| GET | `/memory/{memory_id}` | 查看单条长期记忆 | 已实现 |
+| PATCH | `/memory/{memory_id}` | 修改单条长期记忆 | 已实现 |
+| DELETE | `/memory/{memory_id}` | 逻辑删除单条长期记忆 | 已实现 |
 | GET | `/ui` | Web UI 静态页面 | 已实现 |
 | POST | `/motion/analyze` | 上传 `.npz` 做独立动作分析，可选标准动作对比 | 已实现 |
 | POST | `/motion/analyze-image` | 上传图片做单帧静态姿态提取和摘要 | 已实现 |
@@ -51,7 +60,7 @@ curl http://127.0.0.1:8000/health
 
 - 当前 API 没有登录鉴权和请求限流，仅适合绑定本机地址进行开发演示。
 - `user_id` 是客户端提供的会话键，不是经过验证的用户身份；历史查询和清空接口没有所有权校验。
-- 会话历史只保存在当前 Python 进程内，重启丢失，多 worker/多实例之间不共享，并且当前没有会话键 TTL。
+- 会话消息和长期记忆都写入本地 SQLite（默认 `data/memory/memory.db`），`SlidingWindowMemory` 仍作为进程内 hot cache；当前没有登录鉴权、用户授权、会话 TTL 或多实例共享能力。
 - CORS 当前允许任意来源。公网部署前必须配置来源白名单、HTTPS/WSS、认证授权、用户级访问控制、限流和安全错误响应。
 
 ## 3. 非流式对话
@@ -66,6 +75,7 @@ Content-Type: application/json
 ```json
 {
   "user_id": "u1",
+  "conversation_id": "可选，续接指定会话时传入",
   "message": "如何做一个标准深蹲？"
 }
 ```
@@ -76,12 +86,14 @@ Content-Type: application/json
 |---|---|---|---|
 | `user_id` | string | 是 | 1-64 字符 |
 | `message` | string | 是 | 1-4096 字符 |
+| `conversation_id` | string | 否 | 1-128 字符；不传时复用该用户最近 active 会话，没有则自动创建 |
 
 响应：
 
 ```json
 {
   "user_id": "u1",
+  "conversation_id": "conv_xxx",
   "intent": "motion",
   "reply": "...",
   "sources": [],
@@ -106,6 +118,8 @@ Content-Type: application/json
 
 Diet 请求会先把模型输出解析为结构化画像。身高只接受 80–250cm，体重只接受 20–400kg，性别和目标使用受控枚举；JSON 缺失、字段越界或类型不合法时不会直接信任原始文本，而是使用未知画像继续给通用建议，并在 `warnings` 中加入 `diet_profile_fallback:*`。
 
+`conversation_id` 是会话续接键。客户端首次调用可以不传，服务端会返回新建或最近 active 的 `conversation_id`；后续请求传回该值即可续接同一会话。若传入的 `conversation_id` 不属于当前 `user_id` 或不存在，接口返回 404。
+
 命令：
 
 ```bash
@@ -128,7 +142,7 @@ Accept: text/event-stream
 
 ```text
 event: meta
-data: {"intent":"diet","sources":[],"warnings":[],"execution":[{"component":"rag","mode":"milvus","degraded":false,"detail":""},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
+data: {"conversation_id":"conv_xxx","intent":"diet","sources":[],"warnings":[],"execution":[{"component":"rag","mode":"milvus","degraded":false,"detail":""},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
 
 data: 减脂
 
@@ -142,7 +156,7 @@ data: {}
 
 | 事件 | 说明 |
 |---|---|
-| `meta` | 首个事件，返回 intent、sources、warnings 和 execution 执行轨迹 |
+| `meta` | 首个事件，返回 conversation_id、intent、sources、warnings 和 execution 执行轨迹 |
 | 默认 `data` | LLM token 文本 |
 | `done` | 生成结束 |
 
@@ -167,6 +181,7 @@ ws://127.0.0.1:8000/chat/ws
 ```json
 {
   "user_id": "u1",
+  "conversation_id": "可选，续接指定会话时传入",
   "message": "怎么做番茄炒蛋？"
 }
 ```
@@ -174,7 +189,7 @@ ws://127.0.0.1:8000/chat/ws
 服务端返回：
 
 ```json
-{"type":"meta","intent":"mcp","sources":[],"warnings":[],"execution":[{"component":"mcp","mode":"mock","degraded":true,"detail":"MCP demo mode configured"},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
+{"type":"meta","conversation_id":"conv_xxx","intent":"mcp","sources":[],"warnings":[],"execution":[{"component":"mcp","mode":"mock","degraded":true,"detail":"MCP demo mode configured"},{"component":"llm","mode":"local_qwen","degraded":false,"detail":""}]}
 {"type":"token","text":"番茄炒蛋"}
 {"type":"token","text":"..."}
 {"type":"done"}
@@ -190,7 +205,7 @@ ws://127.0.0.1:8000/chat/ws
 
 - WebSocket 接口适合微信小程序或需要双向连接的客户端。
 - 当前实现为一次连接处理一条用户消息，发送完成后服务端关闭连接。
-- WebSocket 与 HTTP/SSE 复用同一输入约束：`user_id` 为 1-64 字符串，`message` 为 1-4096 字符串；非法 JSON 返回 `Invalid JSON`，字段非法返回 `INVALID_REQUEST`。
+- WebSocket 与 HTTP/SSE 复用同一输入约束：`user_id` 为 1-64 字符串，`message` 为 1-4096 字符串，`conversation_id` 可选；非法 JSON 返回 `Invalid JSON`，字段非法返回 `INVALID_REQUEST`。
 - LangGraph 同步准备阶段运行在工作线程中；本地 LLM 的同步 token 生成器通过共享的 asyncio queue 桥接到 WebSocket，每个 token 生成后立即发送，不再先收集完整列表。
 
 ## 6. 获取对话历史
@@ -204,6 +219,7 @@ GET /chat/{user_id}/history
 ```json
 {
   "user_id": "u1",
+  "conversation_id": "conv_xxx",
   "history": [
     {"role": "user", "content": "what is a squat?"},
     {"role": "assistant", "content": "..."}
@@ -220,7 +236,7 @@ curl http://127.0.0.1:8000/chat/u1/history
 说明：
 
 - 历史按 `user_id` 隔离。
-- 默认保留最近 6 轮对话。
+- 默认返回该用户最近 active 会话的 hot cache 历史；服务重启后会从 SQLite 恢复最近会话消息，再由 `SlidingWindowMemory` 保留最近 6 轮。
 
 ## 7. 清空对话历史
 
@@ -233,6 +249,7 @@ DELETE /chat/{user_id}/history
 ```json
 {
   "user_id": "u1",
+  "conversation_id": "conv_xxx",
   "status": "cleared"
 }
 ```
@@ -243,7 +260,126 @@ DELETE /chat/{user_id}/history
 curl -X DELETE http://127.0.0.1:8000/chat/u1/history
 ```
 
-## 8. Web UI
+## 8. 长期记忆接口
+
+长期记忆接口用于管理用户明确希望系统长期保留的信息，例如偏好、约束、目标、事实和待办。它和 `/chat/{user_id}/history` 的会话历史不同：会话历史服务于最近对话续接，长期记忆服务于跨会话个性化。
+
+当前已实现的长期记忆类型：
+
+```text
+rule / fact / preference / todo / goal / constraint / decision / note
+```
+
+当前已实现的来源类型：
+
+```text
+code_rule / user_explicit_remember / llm_candidate / compact_extraction / project_file / manual_import
+```
+
+### 查看长期记忆列表
+
+```http
+GET /memory?user_id=u1&kind=preference&limit=50
+```
+
+参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `user_id` | string | 是 | 用户会话键，当前不是登录身份 |
+| `kind` | string | 否 | 按记忆类型过滤 |
+| `include_deleted` | bool | 否 | 是否包含逻辑删除记录，默认 false |
+| `limit` | int | 否 | 1-200，默认 50 |
+
+响应：
+
+```json
+{
+  "user_id": "u1",
+  "memories": [
+    {
+      "id": "mem_xxx",
+      "user_id": "u1",
+      "kind": "preference",
+      "content": "不喜欢高糖饮料",
+      "scope": "global",
+      "source_type": "manual_import",
+      "importance": 0.7,
+      "status": "active",
+      "access_count": 0,
+      "last_accessed_at": null,
+      "memory_key": "...",
+      "metadata": {},
+      "created_at": "...",
+      "updated_at": "...",
+      "deduplicated": false
+    }
+  ]
+}
+```
+
+### 新增长期记忆
+
+```http
+POST /memory
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "user_id": "u1",
+  "kind": "preference",
+  "content": "不喜欢高糖饮料",
+  "scope": "global",
+  "source_type": "manual_import",
+  "importance": 0.7,
+  "metadata": {}
+}
+```
+
+说明：
+
+- `content` 会参与 `memory_key = hash(user_id + kind + normalized_content)` 去重。
+- 当前删除是逻辑删除：`status='deleted'`。
+- 用户在聊天中明确说“请记住/帮我记住/记住……”时，会走最小 Memory Writer。
+- 普通显式记忆会写入 `memory_items`；包含膝盖、旧伤、疼痛、疾病、过敏等健康/敏感词的内容会先进入 `candidate_memories`，确认后才进入正式长期记忆。
+- 当前已实现 SQLite FTS5 检索，中文场景保留 LIKE 短片段兜底；Milvus 用户记忆增强仍未实现。
+
+### 检索长期记忆
+
+```http
+GET /memory/search?user_id=u1&query=香菜&limit=5
+```
+
+检索只返回 `status='active'` 的正式长期记忆，不返回 pending/rejected candidate。返回项包含 `score` 字段，当前分数由关键词召回、importance 和访问次数加权得到；访问次数加成采用 `0.10 * min(access_count, 20) / 20`，避免访问次数无限放大。
+
+### 候选记忆确认
+
+```bash
+curl "http://127.0.0.1:8000/memory/candidates?user_id=u1"
+
+curl -X POST "http://127.0.0.1:8000/memory/candidates/{candidate_id}/confirm?user_id=u1"
+
+curl -X POST "http://127.0.0.1:8000/memory/candidates/{candidate_id}/reject?user_id=u1"
+```
+
+候选记忆用于拦截健康、伤病、过敏等敏感长期事实。确认后会写入 `memory_items`，拒绝后不会参与检索和 prompt 注入。
+
+### 查看、修改和删除单条长期记忆
+
+```bash
+curl "http://127.0.0.1:8000/memory/{memory_id}?user_id=u1"
+
+curl -X PATCH "http://127.0.0.1:8000/memory/{memory_id}" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"u1","content":"不喜欢含糖饮料"}'
+
+curl -X DELETE "http://127.0.0.1:8000/memory/{memory_id}?user_id=u1"
+```
+
+## 9. Web UI
 
 ```text
 http://127.0.0.1:8000/ui
@@ -254,7 +390,7 @@ http://127.0.0.1:8000/ui
 - 静态文件来自 `app/static/`。
 - 后端启动后可直接用浏览器访问。
 
-## 9. 动作上传分析
+## 10. 动作上传分析
 
 当前对外开放的动作分析接口包括三个入口：
 

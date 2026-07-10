@@ -11,6 +11,11 @@
 - Motion `PoseSequence`、姿态估计适配器，以及真实图片/视频姿态链路。
 - MCP 默认 mock 和真实 server fallback。
 - Milvus RAG 可选后端、Memory fallback 和主链路回归。
+- 长期记忆 CRUD、逻辑删除和显式 Memory Writer。
+- 候选记忆确认、SQLite FTS5/LIKE 检索和长期记忆 prompt 注入。
+- Context compact 触发、prompt 长度保护和 compact 可观测性。
+- Prompt Builder 统一入口和 prompt 长度元数据。
+- `_structured_state` 当前工作态和工具结果 preview。
 - Web UI 对话等待状态和 Motion 图片上传入口。
 - 面试/演示用手工体验语句。
 
@@ -20,6 +25,12 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| Context Phase 4-5 compact | [2026-07-10-context-phase4-5-compact-observability.md](./2026-07-10-context-phase4-5-compact-observability.md) | 长 prompt 会触发确定性 compact，最终 prompt 不超过上限，并在 `_prompt_meta` 与 `execution` 中记录压缩事件 |
+| Memory Phase 4-5 候选确认与检索注入 | [2026-07-10-memory-phase4-5-candidates-fts-injection.md](./2026-07-10-memory-phase4-5-candidates-fts-injection.md) | 敏感记忆进入 candidate，确认后进入正式长期记忆；`/memory/search` 可召回并注入 Chat/Diet prompt |
+| Memory Phase 2-3 长期记忆 | [2026-07-10-memory-phase2-3-long-term-memory-writer.md](./2026-07-10-memory-phase2-3-long-term-memory-writer.md) | `memory_items/sources/relations`、`/memory` CRUD、逻辑删除、显式“记住”写入和去重已通过自动化测试 |
+| Context Phase 2-3 结构化状态与工具 preview | [2026-07-10-context-phase2-3-structured-state-preview.md](./2026-07-10-context-phase2-3-structured-state-preview.md) | `_structured_state` 已记录 Router 决策、用户画像、知识来源和工具摘要；Search/MCP/Motion 只向 prompt 注入 preview，完整结果保留在临时字段 |
+| Context Phase 1 Prompt Builder | [2026-07-10-context-phase1-prompt-builder.md](./2026-07-10-context-phase1-prompt-builder.md) | Chat/Diet/Search/MCP 的主要文本 prompt 已收束到统一入口；Chat/Diet RAG prompt 已验证 `_prompt_meta` 和 source 透传 |
+| Memory Phase 1 会话持久化 | [2026-07-10-memory-phase1-conversation-persistence.md](./2026-07-10-memory-phase1-conversation-persistence.md) | `/chat`、SSE、WebSocket 已返回 `conversation_id`；消息写入 SQLite 并可恢复到 SlidingWindowMemory hot cache |
 | MCP 接入 ToolRegistry | [2026-07-09-mcp-tool-registry-integration.md](./2026-07-09-mcp-tool-registry-integration.md) | MCP `execute_tool_node` 已通过 `ToolRegistry` 调用 `mcp.call_tool`，并保留 mock/fallback 行为 |
 | Knowledge 接入 ToolRegistry | [2026-07-09-knowledge-tool-registry-integration.md](./2026-07-09-knowledge-tool-registry-integration.md) | Chat/Diet 的 RAG 检索已通过 `ToolRegistry` 调用 `knowledge.retrieve`，并保持证据与降级行为 |
 | ToolRegistry 可观测性 | [2026-07-09-tool-registry-observability.md](./2026-07-09-tool-registry-observability.md) | Registry 结果和 audit log 已包含 `execution_id`、`duration_ms`、attempts 和 fallback 归因 |

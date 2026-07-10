@@ -377,6 +377,11 @@ class TestIntentClassification:
         assert isinstance(result["_secondary_intents"], list)
         assert result["_route_plan"][0] == result["_primary_intent"]
         assert isinstance(result["_needs_clarification"], bool)
+        assert result["_structured_state"]["task"]["primary_intent"] == "diet"
+        assert result["_structured_state"]["task"]["execution_plan"] == result[
+            "_route_execution_plan"
+        ]
+        assert result["_structured_state"]["decisions"][0]["stage"] == "router"
 
 
 class TestRouterGraph:
@@ -405,6 +410,9 @@ class TestRouterGraph:
             def run(state):
                 state["result"] = f"{intent} result"
                 state["_prompt"] = f"{intent} prompt"
+                state.setdefault("_structured_state", {}).setdefault(
+                    "tool_results_summary", []
+                ).append({"intent": intent, "summary": f"{intent} preview"})
                 return state
 
             builder.add_node("run", run)
@@ -434,6 +442,10 @@ class TestRouterGraph:
         assert [item["intent"] for item in result["_route_results"]] == [
             "motion",
             "diet",
+        ]
+        assert result["_structured_state"]["tool_results_summary"] == [
+            {"intent": "motion", "summary": "motion preview"},
+            {"intent": "diet", "summary": "diet preview"},
         ]
         assert result["result"] == "Mock LLM response"
 

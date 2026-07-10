@@ -5,6 +5,7 @@ from typing import Literal
 from langgraph.graph import StateGraph, END
 
 from app.graph.state import RouterState, record_execution
+from app.graph.structured_state import add_tool_preview
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +140,30 @@ def tool_node(state: RouterState) -> RouterState:
                 results.append({"type": "error", "message": str(e)})
 
     state["_tool_results"] = results  # type: ignore
+    if results:
+        summary_lines = []
+        for item in results[:4]:
+            if item.get("type") == "load_pose":
+                summary_lines.append(
+                    f"loaded_pose:{item.get('frames')} frames/{item.get('joints')} joints"
+                )
+            elif item.get("type") == "comparison":
+                metrics = item.get("metrics", {})
+                summary_lines.append(
+                    f"comparison:{item.get('reference')} "
+                    f"dtw={metrics.get('dtw_distance')} "
+                    f"cos={metrics.get('cosine_similarity')} "
+                    f"shape={metrics.get('shape_difference')}"
+                )
+            elif item.get("type") == "error":
+                summary_lines.append(f"error:{item.get('message')}")
+        add_tool_preview(
+            state,
+            intent="motion",
+            tool="motion.analysis",
+            summary="\n".join(summary_lines),
+            data_ref="_tool_results",
+        )
     logger.info(f"Tool execution complete: {len(results)} results")
     return state
 
