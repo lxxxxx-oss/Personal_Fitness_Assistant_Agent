@@ -31,6 +31,20 @@
 - 单进程模型生成全局串行锁 `_MODEL_GENERATION_LOCK`
 - 记忆条目仅 `{role, content}`，无时间戳或元数据
 
+### 1.4 当前状态与边界
+
+本文档是**目标优化设计**，不是当前代码已完整落地的说明。当前项目已经具备基础的短期记忆和 prompt 长度保护，但还没有完整的渐进式压缩管道。
+
+| 层级 | 当前状态 |
+|---|---|
+| 已实现 | `SlidingWindowMemory` 保存最近对话；`MAX_PROMPT_CHARS` 做硬上限保护；Chat/Knowledge 链路能读取最近若干条历史 |
+| 设计中 | `_structured_state`、compact_summary、工具结果 preview、压缩触发、系统消息气泡、所有子图统一 prompt builder |
+| 生产化补齐 | 精确 token 计数、可恢复会话、压缩评测集、前端可展开状态卡片、异常摘要降级和审计 |
+
+面试时应表达为：
+
+> 当前可运行版本采用轻量滑动窗口和 prompt 长度保护，保证本地演示稳定；这份文档描述的是下一步把它升级成“短期原文窗口 + 结构化状态 + 可观测压缩”的上下文工程方案。
+
 ---
 
 ## 2. 设计目标
@@ -303,32 +317,42 @@
 
 ## 12. 实现阶段
 
-### Phase 1：数据模型 + 存储
-- 在 `RouterState` 中新增 `_structured_state` 字段
-- 实现字段上限裁剪逻辑
-- 实现工具结果临时缓存 `_tool_result_cache`
+实现顺序遵循一个原则：先让上下文“可控可测”，再做自动摘要。不要一开始就引入复杂 LLM 压缩，否则很难判断问题来自记忆写入、prompt 组装还是摘要质量。
 
-### Phase 2：代码规则写入
-- Router 节点写入 `task`、`decisions`
-- Chat/Diet 节点写入 `knowledge_sources`、`profile`
-- Motion API 写入 `files`
-- Search/MCP 写入 `tool_results_summary`
+### Phase 1：Prompt Builder 统一入口
+- 把 Chat/Knowledge 的 prompt 拼接逻辑先收敛到统一 builder。
+- 固定注入顺序：安全规则 → 硬约束 → 记忆/摘要 → 最近对话 → 工具 preview → 用户问题。
+- 保留现有 `SlidingWindowMemory`，不急着改变底层存储。
+- 验收标准：现有问答链路不回退，prompt 长度可观测。
 
-### Phase 3：压缩触发 + Prompt 重构
-- 实现 token 阈值检查
-- 实现压缩流程（保留 6 轮 + LLM 兜底提取）
-- 重构所有子图的 prompt 构建节点，统一注入顺序
-- 实现安全规则 pin 机制（`data/rules/safety_rules.md`）
+### Phase 2：结构化状态最小闭环
+- 在 `RouterState` 中新增 `_structured_state` 字段。
+- 实现字段上限裁剪逻辑。
+- 先让 Router 写入 `task` / `decisions`，Search/MCP 写入 `tool_results_summary`。
+- 验收标准：多意图链路中第二步能读取第一步的结构化状态。
 
-### Phase 4：可观测性
-- 系统消息气泡（WebSocket 推 `type: "compact"` 事件）
-- Web UI + 小程序渲染结构化卡片
-- API `execution` 字段追加 compact 标记
+### Phase 3：工具结果 preview
+- Search/MCP/RAG 先实现 preview 格式化。
+- 完整结果进入临时缓存，prompt 中只放 preview。
+- Motion 暂时只记录上传文件元信息，不急着把标准动作比较结果做复杂注入。
+- 验收标准：长搜索结果不会直接撑爆 prompt。
 
-### Phase 5：工具结果分层
-- Search/MCP/Motion/RAG 实现 preview 格式化
-- 完整结果写入临时缓存
-- 前端展开查询接口
+### Phase 4：压缩触发与兜底提取
+- 实现 `COMPACT_TRIGGER_CHARS` 检查。
+- 超阈值时保留最近 6 轮原文，旧轮次做 `todos` / `user_context` 兜底提取。
+- LLM 摘要失败时丢弃摘要并继续主流程。
+- 验收标准：prompt 超限率为 0，关键事实保留率不低于基线。
+
+### Phase 5：可观测性与前端展示
+- API `execution` 字段追加 compact 标记。
+- Web UI / 小程序显示“对话已浓缩”系统消息。
+- 展开后展示结构化状态摘要。
+- 验收标准：用户和开发者都能知道什么时候压缩、压缩保留了什么。
+
+### Phase 6：与持久化记忆联动
+- 读取 memory-system 中的 active compact_summary 和长期 memory 注入。
+- compact 中抽取出的长期事实必须交给 Memory Writer 判断，不直接写入长期记忆。
+- 验收标准：上下文压缩和长期记忆边界清晰，不绕过隐私确认。
 
 ---
 
@@ -341,10 +365,64 @@
 | 多意图场景下状态被错误清除 | `collect_route_result_node` 显式保留 `_structured_state` |
 | 临时缓存无限增长 | 每用户最多 20 条，FIFO 淘汰 |
 | 压缩后信息不可逆 | 可在系统消息中提供 `user_id` 和压缩时间戳，便于调试 |
+| 压缩摘要绕过隐私确认 | compact 只服务当前会话上下文；如果要提升为长期记忆，必须经过 Memory Writer 和敏感信息确认规则 |
 
 ---
 
-## 14. 与现有文档的关系
+## 14. 评测体系
+
+上下文压缩的评测目标不是证明“摘要写得好不好看”，而是证明：长对话之后，关键事实仍然能进入 prompt，安全规则不会丢，prompt 长度不会爆。
+
+### 14.1 Benchmark Case 类型
+
+| Case 类型 | 测什么 | 示例 |
+|---|---|---|
+| 长对话关键事实保留 | 压缩后用户关键信息是否仍被注入 | 第 1 轮说“我是素食者”，第 10 轮问饮食建议 |
+| 安全规则保留 | 压缩后安全规则是否仍在 prompt 前缀 | 长对话后请求医疗诊断，仍应触发免责声明 |
+| 多意图状态共享 | `search → diet` 等多步任务后状态是否保留 | 先搜索食材，再让 diet 基于搜索结果推荐 |
+| 工具 preview 控制 | 工具长结果是否被压成 preview，而非整段塞入 prompt | Tavily 返回多条长内容，只注入摘要 |
+| 压缩触发稳定性 | 超过阈值时触发，未超过时不触发 | 构造 5000 / 6500 chars 两组输入 |
+| 摘要异常降级 | LLM 兜底输出格式错误时主流程不中断 | mock 一个不符合模板的摘要输出 |
+
+### 14.2 核心指标
+
+| 指标 | 判断方式 | 目标 |
+|---|---|---|
+| 关键事实保留率 | 压缩后 prompt / structured_state 是否包含 golden fact | MVP ≥ 80% |
+| Prompt 超限率 | 构建后的 prompt 是否超过 `MAX_PROMPT_CHARS` | 0 |
+| 安全规则保留率 | 安全规则是否始终位于 prompt 前缀 | 100% |
+| 压缩误触发率 | 未超过阈值却触发压缩的比例 | 尽量低，作为回归观察 |
+| 压缩漏触发率 | 超过阈值却未触发压缩的比例 | 0 |
+| 降级成功率 | LLM 摘要失败时主流程仍能返回 | 100% |
+
+### 14.3 最小评测集
+
+MVP 阶段不需要大规模 benchmark，建议先维护 20-30 条可解释 case：
+
+- 8 条长对话事实保留 case
+- 5 条安全规则保留 case
+- 5 条多意图状态共享 case
+- 5 条工具结果 preview case
+- 3 条异常降级 case
+
+每条 case 至少包含：输入轮次、预期保留字段、是否触发 compact、最终 prompt 长度、实际结果。
+
+### 14.4 变强的判定
+
+一次上下文压缩改动只有同时满足以下条件，才认为是正向优化：
+
+- prompt 超限率没有上升。
+- 安全规则保留率仍为 100%。
+- 关键事实保留率提升，或在不下降的情况下显著降低 prompt 长度。
+- LLM 摘要失败、工具结果过长、多意图链路等困难 case 不回退。
+
+面试时可以这样讲：
+
+> 我不会只看模型回答是否“像是对的”，而是把压缩拆成可测指标：关键事实有没有保留、安全规则有没有被截断、prompt 是否超限、异常摘要是否能降级。这样才能判断压缩策略是真的提升了上下文管理能力，而不是只是把历史对话变短。
+
+---
+
+## 15. 与现有文档的关系
 
 本文档是上下文压缩与记忆系统的**唯一设计入口**。相关现有文档：
 - `docs/README.md` §2、§4 — 当前架构与已知边界

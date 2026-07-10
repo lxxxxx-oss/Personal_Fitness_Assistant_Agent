@@ -46,6 +46,20 @@
 - **记忆注入 ≠ 全部注入**，按 final_score 取 top-k，有分层预算控制
 - **`_structured_state` 不是长期记忆**，它是当前会话的压缩工作态；只有被 Memory Writer 判定为长期有价值的内容，才抽取进 `memory_items`
 
+### 1.2 当前状态与边界
+
+本文档是**持久化记忆系统的目标设计**，不是当前代码已完整落地的说明。当前项目已有短期滑动窗口记忆和 RAG/Milvus 检索能力，但还没有完整的 SQLite 长期记忆库、Memory Writer、候选确认和跨会话恢复。
+
+| 层级 | 当前状态 |
+|---|---|
+| 已实现 | `SlidingWindowMemory` 按 `user_id` 保存最近对话；Knowledge/RAG 可以使用最近历史；Milvus 已用于知识库向量检索；基础 API 可运行 |
+| 设计中 | SQLite conversations/messages/memory_items/summaries；Memory Writer；candidate_memories；FTS5 + Milvus hybrid retrieval；记忆 CRUD；会话恢复 |
+| 生产化补齐 | 登录鉴权、用户授权、加密/脱敏、删除同步、真实后台 worker、记忆评测集、监控与审计 |
+
+面试时应表达为：
+
+> 当前项目的 Memory 是原型级短期记忆，主要保证多轮问答可运行；这份文档描述的是下一步把它升级成持久化长期记忆系统。SQLite 负责可信存储，Milvus 只做向量召回，Memory Writer 控制什么能进入长期记忆。
+
 ---
 
 ## 2. 数据模型
@@ -181,7 +195,56 @@ importance = clamp(
   → Memory Writer 判断长期价值 → 抽取 → memory_items（SQLite + Milvus）
 ```
 
-### 2.7 辅助表
+### 2.7 Memory Writer：长期记忆写入决策
+
+Memory Writer 是记忆系统的“筛选器”，负责判断哪些信息只是当前上下文，哪些信息值得进入长期记忆。它不直接等同于 LLM 抽取器：代码规则能判断的内容优先由代码写入，LLM 只负责语义候选提取。
+
+#### 输入
+
+| 输入 | 来源 | 用途 |
+|---|---|---|
+| 当前用户消息 | `messages` | 判断是否有明确的“记住...”请求 |
+| 当前助手回复 | `messages` | 记录已做出的长期承诺或设计决策 |
+| `_structured_state` | 当前会话工作态 | 提供 profile、user_context、decisions、todos 等候选来源 |
+| compact_summary | `summaries` | 长对话压缩后补充上下文 |
+| 工具结果摘要 | `tool_results_summary` | 只在形成可复用事实或决策时进入候选 |
+
+#### 输出
+
+| 输出 | 说明 |
+|---|---|
+| `memory_items` | 已确认的长期记忆，可参与 FTS5 / Milvus 检索和 prompt 注入 |
+| `candidate_memories` | LLM 推测、敏感、冲突或低置信的候选记忆，需要用户确认或后续规则确认 |
+| `memory_sources` | 记录记忆来源，方便审计“这条记忆为什么被写入” |
+| `memory_relations` | 记录 supersedes / contradicts / supports / derives_from 等关系 |
+
+#### 写入决策规则
+
+| 场景 | 处理 |
+|---|---|
+| 用户明确说“记住...” | 直接写入 `memory_items`，`source_type='user_explicit_remember'` |
+| 用户长期画像，如训练目标、饮食偏好、身体限制 | 写入 `memory_items` 或敏感时写入 `candidate_memories` 等待确认 |
+| 项目级架构决策，如“SQLite 是 source of truth” | 写入 `memory_items(kind='decision')`，来源为 `code_rule` 或 `project_file` |
+| 当前会话 TODO | 默认留在 `task_states`；跨会话仍需跟进时写入 `memory_items(kind='todo')` |
+| 一次性闲聊、临时工具结果、普通搜索摘要 | 不写入长期记忆，只留在当前上下文或工具结果缓存 |
+| LLM 从对话推测出的偏好/事实 | 先写入 `candidate_memories(source_type='llm_candidate')`，确认后再转正式记忆 |
+| 与已有记忆冲突 | 不覆盖旧记忆，先写 `candidate_memories.conflict_with_memory_id`，必要时进入人工/用户确认 |
+
+#### 防记忆污染规则
+
+- **少写优于乱写**：没有长期价值或置信度不足时，不进入 `memory_items`。
+- **敏感信息谨慎写入**：健康、身体状况、隐私偏好等内容默认进入候选确认流程，除非用户明确要求记住。
+- **工具结果默认不长期保存**：只有工具结果沉淀成稳定事实、用户偏好、设计决策或可复用经验时才提升。
+- **冲突不直接覆盖**：新记忆与旧记忆矛盾时，先建立 relation 或 candidate，不在热路径里直接替换。
+- **写入前先去重**：先走 `memory_key` 精确去重，再走 embedding 相似度辅助去重。
+
+#### 面试口径
+
+可以这样解释：
+
+> 我没有把所有历史对话都粗暴写进向量库，而是单独设计了 Memory Writer。它的职责是做“长期价值判断”：用户明确要求记住的内容直接进入长期记忆；LLM 推测出来的偏好或健康信息先进入候选表；普通工具结果和一次性闲聊不会污染记忆库。这样能控制 memory pollution，也能解释每条记忆为什么存在。
+
+### 2.8 辅助表
 
 #### candidate_memories
 
@@ -420,7 +483,7 @@ next_retry_at = now + min(2 ** (retry_count - 1), 32)  # 秒
 
 5 次后仍失败 → `status='failed'`，不再重试，需要人工介入或下次 memory 更新时重新触发。
 
-### 2.8 并发控制
+### 2.9 并发控制
 
 #### conversations 版本号 + Transaction
 
@@ -694,41 +757,61 @@ memory_total_budget = 2000 tokens (硬上限)
 
 ## 7. 实现阶段
 
-### Phase 1：SQLite 数据层
-- 创建 SQLite 数据库文件（`data/memory/memory.db`）
-- 建表（所有 10 张表，含 FTS5 虚拟表和触发器）
-- 实现 `MemoryStore` 类，封装 CRUD 操作
-- 实现 `candidate_memories` 确认/拒绝流程
-- 实现内容相似度去重逻辑（memory_key + embedding 辅助）
-- 单元测试
+实现顺序遵循一个原则：先把短期会话“可恢复”，再把长期记忆“可写可删”，最后再引入 Milvus 和复杂压缩联动。这样能保证每一步都可演示、可测试，不会一开始就被分布式检索和后台 worker 拖住。
 
-### Phase 2：Retrieval 引擎
-- 实现 hybrid relevance 计算（embedding + FTS5 rank-position 归一化 + metadata）
-- 实现 final_score 排序
-- 实现分层预算控制器
-- 实现注入规则路由
+### Phase 1：会话持久化最小闭环
+- 创建 SQLite 数据库文件（`data/memory/memory.db`）。
+- 先建 `conversations`、`messages`、`summaries`、`task_states` 四张表。
+- `/chat` 支持可选 `conversation_id`。
+- 服务重启后可以恢复最近 conversation 和最近消息。
+- 验收标准：重启服务后，用户继续同一 `conversation_id`，仍能拿到最近上下文。
 
-### Phase 3：Milvus 同步
-- 实现 embedding_jobs 后台 worker
-- 指数退避重试策略（5 次，1s→2s→4s→8s→16s）
-- Milvus Collection 创建
-- 降级策略（Milvus 不可用时的 fallback）
+### Phase 2：长期记忆基础表与 CRUD
+- 建 `memory_items`、`memory_sources`、`memory_relations`。
+- 实现 `MemoryStore` 基础 CRUD。
+- 实现 `GET /memory`、`POST /memory`、`PATCH /memory/{id}`、`DELETE /memory/{id}`。
+- 删除先做 SQLite 逻辑删除，后续再同步派生索引。
+- 验收标准：用户可以显式新增、查看、修改、删除一条长期记忆。
 
-### Phase 4：Prompt Builder 集成
-- 重构所有子图的 prompt 构建节点
-- 统一注入顺序（安全规则 → 硬约束 → compact_summary → 记忆注入 → 最近 6 轮 → 工具 preview → 用户问题）
-- 使用 Qwen3 tokenizer 精确执行 budget token 计数
-- 与上下文压缩联动
+### Phase 3：最小 Memory Writer
+- 支持用户明确说“记住...”时写入正式记忆。
+- 支持从 `_structured_state.profile/user_context/decisions` 中提升长期事实。
+- 实现 `memory_key` 精确去重。
+- 暂不依赖 LLM 自动推测，先用规则保证稳定。
+- 验收标准：显式记忆写入准确率高，一次性信息不会被写入。
 
-### Phase 5：API 层
-- `/chat` 接口新增 `conversation_id` 和响应字段
-- `/memory` CRUD 接口 + candidates 确认/拒绝
-- 会话生命周期管理
+### Phase 4：候选记忆与隐私确认
+- 建 `candidate_memories`。
+- 实现候选确认/拒绝接口。
+- health / security 级别默认进入候选，不直接写正式记忆。
+- 冲突记忆先进入 candidate 或 relation，不直接覆盖。
+- 验收标准：敏感信息候选拦截率达标，用户能确认或拒绝候选记忆。
 
-### Phase 6：会话恢复与持久化
-- 服务重启恢复逻辑
-- 消息历史持久化
-- compact_summary 生成与替换（乐观锁 + transaction 并发控制）
+### Phase 5：SQLite 检索与注入
+- 建独立 FTS5 表 `memory_items_fts(memory_id UNINDEXED, content)`。
+- 实现 keyword_score + metadata_score 的基础检索。
+- 实现 final_score 和分层预算注入。
+- 先不依赖 Milvus，也能完成基础个性化召回。
+- 验收标准：Recall@5 达到 MVP 基线，prompt 不超预算。
+
+### Phase 6：Milvus 异步增强
+- 建 `embedding_jobs`。
+- 实现后台 worker：Sentence-Transformers 编码 → Milvus upsert。
+- 实现指数退避重试和失败降级。
+- Milvus 不可用时退回 FTS5 + metadata。
+- 验收标准：Milvus 可用时召回更好，不可用时主流程不挂。
+
+### Phase 7：Prompt Builder 与上下文压缩联动
+- 在统一 Prompt Builder 中注入长期 memory、active compact_summary 和最近对话。
+- 按预算控制 pinned、fact/preference/goal、decision/todo/note。
+- compact_summary 只作为会话状态，不直接进入 `memory_items`。
+- 验收标准：长对话、长期记忆、RAG 证据能同时进入 prompt 且不超限。
+
+### Phase 8：评测、审计与生产化增强
+- 建立 memory eval case：写入准确率、误写率、Recall@K、候选拦截率。
+- 增加 memory_access_logs 清理策略。
+- 补充登录鉴权、用户授权、脱敏和删除同步。
+- 验收标准：一次记忆系统改动可以通过指标判断是否变强。
 
 ---
 
@@ -750,7 +833,121 @@ memory_total_budget = 2000 tokens (硬上限)
 
 ---
 
-## 9. 与现有文档的关系
+## 9. 评测体系
+
+记忆系统的评测目标不是“写入的记忆越多越好”，而是证明：该记的能记住，不该记的不污染，检索时能找回，注入时不撑爆 prompt。
+
+### 9.1 Benchmark Case 类型
+
+| Case 类型 | 测什么 | 示例 |
+|---|---|---|
+| 显式记忆写入 | 用户明确要求记住时是否进入 `memory_items` | “记住，我是素食者” |
+| 隐式长期偏好识别 | 用户没有说“记住”时，是否能识别长期价值 | “我平时不吃牛肉，之后推荐饮食注意一下” |
+| 敏感信息候选确认 | 健康/隐私类信息是否先进 `candidate_memories` | “我膝盖有旧伤” |
+| 一次性信息过滤 | 临时闲聊和短期任务是否不会污染长期记忆 | “今天下午我想喝咖啡” |
+| 冲突检测 | 新旧记忆矛盾时是否不直接覆盖 | 旧记忆“素食者”，新输入“我现在开始吃肉了” |
+| 检索命中 | 给定 query 是否召回正确 memory | “给我推荐晚餐”应召回素食偏好 |
+| Milvus 降级 | Milvus 不可用时 FTS5 + metadata 是否可用 | 关闭 Milvus mock 后仍能召回关键词记忆 |
+| 注入预算 | 高分记忆是否进入 prompt，低分记忆是否被截断 | 多条记忆同时命中时检查 top-k |
+
+### 9.2 核心指标
+
+| 指标 | 判断方式 | 目标 |
+|---|---|---|
+| 记忆写入准确率 | 应写入的 case 是否进入正确 kind | MVP ≥ 80% |
+| 误写率 | 不该长期保存的内容是否被写入 `memory_items` | 越低越好，重点观察 |
+| 候选拦截率 | 敏感/低置信内容是否进入 candidate 而非正式 memory | MVP ≥ 90% |
+| 检索 Recall@K | golden memory 是否出现在 top-k | Recall@5 ≥ 80% |
+| 冲突识别率 | 矛盾记忆是否进入 conflict 流程 | MVP ≥ 80% |
+| 去重成功率 | 重复表达是否合并或候选去重 | MVP ≥ 80% |
+| 注入预算稳定性 | memory 注入后 prompt 是否超预算 | 0 超限 |
+
+### 9.3 最小评测集
+
+MVP 阶段建议维护 30-50 条 case，覆盖写入、检索和注入三条链路：
+
+- 10 条显式记忆写入 case
+- 10 条隐式长期偏好/事实识别 case
+- 8 条敏感信息 candidate case
+- 8 条一次性信息过滤 case
+- 6 条冲突与去重 case
+- 10 条检索 Recall@K case
+
+每条 case 至少包含：用户输入、预期动作（写入/候选/忽略/冲突）、预期 kind、预期 source_type、检索 query、golden memory id 或内容片段。
+
+### 9.4 变强的判定
+
+一次记忆系统改动只有满足以下条件，才认为是正向优化：
+
+- Recall@K 上升，或在不下降的情况下显著降低误写率。
+- 敏感信息不会绕过 candidate confirmation。
+- 一次性信息过滤能力不下降。
+- Milvus 不可用时仍能通过 FTS5 / metadata 完成基础召回。
+- 注入预算和 prompt 长度不出现回归。
+
+面试时可以这样讲：
+
+> 我对 Memory 的评测不只看“有没有记住”，还看“有没有乱记”。因为 Agent 的长期记忆一旦污染，后续回答会持续受影响。所以我会同时评测写入准确率、误写率、敏感信息候选拦截、Recall@K 和注入预算稳定性。这样能证明 Memory 是可控增强，而不是把历史对话简单塞进向量库。
+
+---
+
+## 10. 隐私与可删除性
+
+个人健身助手会涉及饮食偏好、训练目标、身体限制、伤病风险等信息。记忆系统必须把“能记住用户”与“用户能控制记忆”同时讲清楚，否则长期记忆会变成隐私风险。
+
+### 10.1 敏感信息分级
+
+| 级别 | 示例 | 默认处理 |
+|---|---|---|
+| normal | “喜欢详细解释”“偏好在家训练” | 可写入正式记忆 |
+| personal | 身高、体重、作息、饮食偏好 | 用户明确表达长期有效时写入；LLM 推测时进入 candidate |
+| health | 膝盖旧伤、腰痛、疾病、过敏 | 默认进入 `candidate_memories`，需要用户确认后才进入正式记忆 |
+| security | 账号、联系方式、隐私凭据 | 默认不写入长期记忆；如果误入 candidate，也应拒绝或脱敏 |
+
+### 10.2 用户控制能力
+
+| 能力 | 接口/位置 | 说明 |
+|---|---|---|
+| 查看记忆 | `GET /memory` / `GET /memory/{id}` | 用户可以看到系统记住了什么 |
+| 删除记忆 | `DELETE /memory/{id}` | 将 `memory_items.status` 标记为 `deleted`，并触发向量侧删除 |
+| 更新记忆 | `PATCH /memory/{id}` | 用户可以修正错误偏好、目标或限制 |
+| 查看候选记忆 | `GET /memory/candidates` | 用户可以看到待确认的敏感/低置信记忆 |
+| 确认候选 | `POST /memory/candidates/{id}/confirm` | 确认后才写入正式 `memory_items` |
+| 拒绝候选 | `POST /memory/candidates/{id}/reject` | 拒绝后不参与检索、注入和向量同步 |
+| 清空会话历史 | `DELETE /chat/{user_id}/history` | 归档当前 conversation，不等同于删除长期记忆 |
+
+### 10.3 删除语义
+
+删除默认采用逻辑删除：
+
+```text
+memory_items.status = 'deleted'
+  → FTS5 触发器删除对应 memory_id
+  → 创建 Milvus delete job 或立即按 vector_id 删除
+  → memory_access_logs 保留最小审计记录
+  → 后续 retrieval / prompt injection 不再读取该记忆
+```
+
+这样做的原因是：SQLite 是 source of truth，系统需要先在主存储中标记删除，再清理派生索引。Milvus 和 FTS5 都只是检索加速层，不能成为删除真相的唯一依据。
+
+### 10.4 候选确认策略
+
+| 来源 | 是否需要确认 | 说明 |
+|---|---|---|
+| `user_explicit_remember` | 否 | 用户主动要求记住，直接写入正式记忆 |
+| `code_rule` / `project_file` / `manual_import` | 否 | 项目规则或人工导入，来源确定 |
+| `llm_candidate` | 是 | LLM 推测不可靠，尤其涉及个人偏好和健康信息 |
+| `compact_extraction` | 视内容而定 | 普通事实可自动写入，health/security 级别进入候选 |
+
+### 10.5 面试口径
+
+可以这样解释：
+
+> 这个项目是健身助手，长期记忆会涉及训练目标、饮食偏好甚至身体限制，所以我不会把所有信息默认写死。SQLite 是 source of truth，用户可以查看、修改、删除自己的记忆；健康类信息默认进入候选确认流程；删除时先更新 SQLite 状态，再清理 FTS5 和 Milvus 这些派生索引。这样既能提供个性化，又不会让记忆系统失控。
+
+---
+
+## 11. 与现有文档的关系
 
 本文档是记忆系统的**唯一设计入口**。相关现有文档：
 - `docs/optimization/context-compression.md` — 上下文压缩设计（记忆系统的下游消费者）
