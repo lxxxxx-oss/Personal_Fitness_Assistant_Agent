@@ -3,6 +3,36 @@ from app.memory.memory_store import (
     extract_explicit_memory_content,
     infer_explicit_memory_kind,
 )
+from app.tools.types import ToolResult
+
+
+class FakeSemanticRetriever:
+    def __init__(self):
+        self.docs = []
+        self.sources = []
+        self.fail = False
+
+    def add_documents(self, docs, sources=None):
+        if self.fail:
+            return ToolResult.fail("NETWORK_ERROR", "milvus unavailable")
+        self.docs.extend(docs)
+        self.sources.extend(list(sources or []))
+        return ToolResult.ok(data={"upserted": len(docs)}, backend="milvus")
+
+    def search(self, query, top_k=5, threshold=0.1):
+        if not self.sources:
+            return ToolResult.ok(data=[], backend="milvus")
+        return ToolResult.ok(
+            data=[
+                {
+                    "content": self.docs[0],
+                    "score": 0.92,
+                    "index": 1,
+                    "source": self.sources[0],
+                }
+            ],
+            backend="milvus",
+        )
 
 
 def test_memory_store_crud_and_logical_delete(tmp_path):
@@ -84,6 +114,56 @@ def test_search_memories_uses_fts_or_like_fallback(tmp_path):
     assert results[0]["content"] == "不喜欢吃香菜"
     assert results[0]["score"] > 0
     assert store.get_memory("u1", results[0]["id"])["access_count"] == 1
+
+
+def test_embedding_jobs_process_and_semantic_search_merge(tmp_path):
+    retriever = FakeSemanticRetriever()
+    store = MemoryStore(
+        str(tmp_path / "memory.db"),
+        semantic_enabled=True,
+        semantic_retriever=retriever,
+    )
+    created = store.create_memory(
+        user_id="u1",
+        kind="goal",
+        content="目标是提升深蹲力量",
+        source_type="manual_import",
+        importance=0.9,
+    )
+
+    jobs = store.list_embedding_jobs(status="pending")
+    assert len(jobs) == 1
+    assert jobs[0]["memory_id"] == created["id"]
+
+    processed = store.process_embedding_jobs()
+    assert processed == {"processed": 1, "completed": 1, "failed": 0, "enabled": True}
+    assert store.list_embedding_jobs(status="completed")[0]["memory_id"] == created["id"]
+
+    results = store.search_memories("u1", "腿部力量进步", limit=5)
+    assert results[0]["id"] == created["id"]
+    assert results[0]["score"] > 0.4
+
+
+def test_embedding_job_failure_keeps_main_memory_available(tmp_path):
+    retriever = FakeSemanticRetriever()
+    retriever.fail = True
+    store = MemoryStore(
+        str(tmp_path / "memory.db"),
+        semantic_enabled=True,
+        semantic_retriever=retriever,
+    )
+    store.create_memory(
+        user_id="u1",
+        kind="preference",
+        content="不喜欢香菜",
+        source_type="manual_import",
+    )
+
+    processed = store.process_embedding_jobs()
+
+    assert processed["failed"] == 1
+    assert store.list_embedding_jobs(status="failed")[0]["attempts"] == 1
+    assert store.search_memories("u1", "香菜", limit=5)[0]["content"] == "不喜欢香菜"
 
 
 def test_explicit_memory_extraction_and_kind_inference():

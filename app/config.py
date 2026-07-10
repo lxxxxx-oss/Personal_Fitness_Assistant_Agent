@@ -114,6 +114,15 @@ class Config:
         default_factory=lambda: os.getenv("MILVUS_COLLECTION_NAME")
         or os.getenv("MILVUS_COLLECTION", "fitness_knowledge")
     )
+    memory_milvus_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("MEMORY_MILVUS_ENABLED", False)
+    )
+    memory_milvus_collection_name: str = field(
+        default_factory=lambda: os.getenv(
+            "MEMORY_MILVUS_COLLECTION_NAME",
+            "fitness_user_memory",
+        )
+    )
     milvus_index_type: str = field(
         default_factory=lambda: os.getenv("MILVUS_INDEX_TYPE", "IVF_FLAT").upper()
     )

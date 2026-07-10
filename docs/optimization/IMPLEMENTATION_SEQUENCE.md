@@ -34,7 +34,9 @@
 - 已完成：Memory Phase 2-3，长期记忆基础表、CRUD 与最小 Memory Writer。
 - 已完成：Memory Phase 4-5，候选记忆确认、FTS5 检索与分层预算注入。
 - 已完成：Context Phase 4-5，compact 触发、摘要/兜底提取和可观测事件。
-- 下一步候选：Memory Phase 6，Milvus 用户长期记忆语义增强。
+- 已完成：Memory Phase 6，Milvus 用户长期记忆语义增强。
+- 已完成：联动与评测，新增 Memory + Context + RAG 统一 benchmark，覆盖长期记忆召回、敏感 candidate、prompt 注入、compact 和 RAG source 透传。
+- 下一步候选：扩充真实健身/饮食问答样本，增加 Recall@K、MRR、生成忠实度和延迟基线。
 
 一句话口径：
 
@@ -200,6 +202,11 @@
 
 实现内容：
 
+- 当前已落地最小统一 benchmark：
+  - `data/eval/memory_context_benchmark.jsonl`
+  - `scripts/eval_memory_context.py`
+  - `tests/test_memory_context_eval_script.py`
+  - 覆盖长期记忆召回、敏感 candidate、prompt 注入、compact 和 RAG source 透传
 - 建 memory eval case：
   - 写入准确率
   - 误写率
@@ -216,6 +223,7 @@
 
 验收标准：
 
+- 当前最小 benchmark 已达到 8/8 passed，核心回归集达到 137 passed。
 - 每次 memory 改动都能判断是否真的变强。
 - 不只看“有没有记住”，也看“有没有乱记”。
 

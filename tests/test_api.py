@@ -152,6 +152,32 @@ class TestChatEndpoint:
         assert search_response.status_code == 200
         assert search_response.json()["memories"][0]["content"] == "我膝盖有旧伤"
 
+    def test_memory_embedding_job_endpoints(self, monkeypatch, tmp_path):
+        import app.main as main_module
+        from app.memory.memory_store import MemoryStore
+        from tests.test_memory_store import FakeSemanticRetriever
+
+        memory_store = MemoryStore(
+            str(tmp_path / "memory.db"),
+            semantic_enabled=True,
+            semantic_retriever=FakeSemanticRetriever(),
+        )
+        monkeypatch.setattr(main_module, "_memory_store", memory_store)
+        memory_store.create_memory(
+            user_id="embedding_api_user",
+            kind="goal",
+            content="目标是提升卧推力量",
+            source_type="manual_import",
+        )
+
+        list_response = client.get("/memory/embedding-jobs")
+        assert list_response.status_code == 200
+        assert list_response.json()["jobs"][0]["status"] == "pending"
+
+        process_response = client.post("/memory/embedding-jobs/process")
+        assert process_response.status_code == 200
+        assert process_response.json()["completed"] == 1
+
     def test_chat_explicit_remember_writes_long_term_memory(self, monkeypatch, tmp_path):
         import app.main as main_module
         from app.memory.memory_store import MemoryStore

@@ -9,8 +9,8 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Mapping, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 
 ALLOWED_MEMORY_KINDS = {
@@ -94,8 +94,16 @@ class MemoryStore:
     user facts/rules/preferences that should survive individual sessions.
     """
 
-    def __init__(self, db_path: str):
+    def __init__(
+        self,
+        db_path: str,
+        *,
+        semantic_enabled: bool = False,
+        semantic_retriever: Any = None,
+    ):
         self.db_path = db_path
+        self.semantic_enabled = semantic_enabled
+        self._semantic_retriever = semantic_retriever
         self._lock = threading.Lock()
         parent = os.path.dirname(os.path.abspath(db_path))
         if parent:
@@ -212,6 +220,28 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 # Some embedded SQLite builds omit FTS5. Search falls back to LIKE.
                 pass
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS embedding_jobs (
+                    id TEXT PRIMARY KEY,
+                    memory_id TEXT NOT NULL REFERENCES memory_items(id),
+                    user_id TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending','completed','failed')),
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    next_run_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_embedding_jobs_status
+                ON embedding_jobs(status, next_run_at, updated_at)
+                """
+            )
 
     def create_memory(
         self,
@@ -275,6 +305,7 @@ class MemoryStore:
                     ),
                 )
                 self._upsert_fts_locked(conn, memory_id, content)
+                self._enqueue_embedding_job_locked(conn, memory_id, user_id, now)
             except sqlite3.IntegrityError:
                 existing = self._get_by_key_locked(conn, user_id, memory_key)
                 if existing is None:
@@ -382,6 +413,8 @@ class MemoryStore:
                     ),
                 )
                 self._upsert_fts_locked(conn, memory_id, content)
+                if status == "active":
+                    self._enqueue_embedding_job_locked(conn, memory_id, user_id, now)
             except sqlite3.IntegrityError as exc:
                 raise ValueError("active duplicate memory already exists") from exc
         return self.get_memory(user_id, memory_id)
@@ -575,14 +608,21 @@ class MemoryStore:
             return []
         limit = max(1, min(int(limit), 20))
         rows = self._search_fts(user_id, query, limit)
+        semantic_rows = self._search_semantic(user_id, query, limit)
         if not rows:
             rows = self._search_like(user_id, query, limit)
-        memories = [self._row_to_dict(row) for row in rows]
+        memories = self._merge_search_results(
+            [self._row_to_dict(row) for row in rows],
+            semantic_rows,
+            limit,
+        )
         for memory in memories:
             access_bonus = 0.10 * min(int(memory.get("access_count") or 0), 20) / 20
             keyword_score = float(memory.pop("_keyword_score", 0.6))
+            embedding_score = float(memory.pop("_embedding_score", 0.0))
             memory["score"] = round(
-                (0.60 * keyword_score)
+                (0.45 * max(keyword_score, 0.0))
+                + (0.25 * max(embedding_score, 0.0))
                 + (0.30 * float(memory.get("importance") or 0.0))
                 + access_bonus,
                 4,
@@ -590,6 +630,69 @@ class MemoryStore:
         memories.sort(key=lambda item: item["score"], reverse=True)
         self._mark_accessed([item["id"] for item in memories])
         return memories
+
+    def process_embedding_jobs(self, *, limit: int = 20) -> Dict[str, Any]:
+        if not self.semantic_enabled:
+            return {"processed": 0, "completed": 0, "failed": 0, "enabled": False}
+        retriever = self._get_semantic_retriever()
+        if retriever is None:
+            return {"processed": 0, "completed": 0, "failed": 0, "enabled": False}
+        jobs = self._load_embedding_jobs(limit=max(1, min(int(limit), 100)))
+        completed = 0
+        failed = 0
+        for job in jobs:
+            memory = self.get_memory(job["user_id"], job["memory_id"])
+            if not memory or memory.get("status") != "active":
+                self._mark_embedding_job(job["id"], "completed")
+                completed += 1
+                continue
+            result = retriever.add_documents(
+                [memory["content"]],
+                sources=[memory["id"]],
+            )
+            if result.ok:
+                self._mark_embedding_job(job["id"], "completed")
+                completed += 1
+            else:
+                failed += 1
+                self._fail_embedding_job(
+                    job["id"],
+                    int(job["attempts"]) + 1,
+                    result.error_message or result.error_code or "unknown",
+                )
+        return {
+            "processed": len(jobs),
+            "completed": completed,
+            "failed": failed,
+            "enabled": True,
+        }
+
+    def list_embedding_jobs(
+        self,
+        *,
+        status: str = "pending",
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        if status not in {"pending", "completed", "failed", "all"}:
+            raise ValueError("status must be pending, completed, failed, or all")
+        where: List[str] = []
+        params: List[Any] = []
+        if status != "all":
+            where.append("status = ?")
+            params.append(status)
+        params.append(max(1, min(int(limit), 200)))
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM embedding_jobs
+                {clause}
+                ORDER BY updated_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def _get_by_key_locked(
         self,
@@ -657,6 +760,56 @@ class MemoryStore:
             ).fetchall()
         return list(rows)
 
+    def _search_semantic(
+        self,
+        user_id: str,
+        query: str,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        if not self.semantic_enabled:
+            return []
+        retriever = self._get_semantic_retriever()
+        if retriever is None:
+            return []
+        try:
+            result = retriever.search(query, top_k=limit, threshold=0.1)
+        except Exception:
+            return []
+        if not result.ok or not result.data:
+            return []
+        found: List[Dict[str, Any]] = []
+        for item in result.data:
+            memory_id = str(item.get("source") or "")
+            if not memory_id:
+                continue
+            memory = self.get_memory(user_id, memory_id)
+            if memory and memory.get("status") == "active":
+                memory["_embedding_score"] = float(item.get("score", 0.0))
+                found.append(memory)
+        return found
+
+    def _merge_search_results(
+        self,
+        keyword_results: List[Dict[str, Any]],
+        semantic_results: Sequence[Dict[str, Any]],
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in keyword_results:
+            item.setdefault("_keyword_score", item.get("_keyword_score", 0.6))
+            merged[item["id"]] = item
+        for item in semantic_results:
+            existing = merged.get(item["id"])
+            if existing:
+                existing["_embedding_score"] = max(
+                    float(existing.get("_embedding_score", 0.0)),
+                    float(item.get("_embedding_score", 0.0)),
+                )
+            else:
+                item.setdefault("_keyword_score", 0.0)
+                merged[item["id"]] = item
+        return list(merged.values())[:limit]
+
     def _fallback_like_terms(self, query: str) -> List[str]:
         query = query.strip()
         if not query:
@@ -689,6 +842,70 @@ class MemoryStore:
                 [(now, now, memory_id) for memory_id in memory_ids],
             )
 
+    def _enqueue_embedding_job_locked(
+        self,
+        conn: sqlite3.Connection,
+        memory_id: str,
+        user_id: str,
+        now: str,
+    ) -> None:
+        if not self.semantic_enabled:
+            return
+        conn.execute(
+            """
+            INSERT INTO embedding_jobs (
+                id, memory_id, user_id, status, attempts, next_run_at,
+                created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'pending', 0, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), memory_id, user_id, now, now, now),
+        )
+
+    def _load_embedding_jobs(self, *, limit: int) -> List[Dict[str, Any]]:
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM embedding_jobs
+                WHERE status IN ('pending','failed')
+                  AND attempts < 5
+                  AND next_run_at <= ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (now, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _mark_embedding_job(self, job_id: str, status: str) -> None:
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE embedding_jobs
+                SET status = ?, updated_at = ?, last_error = NULL
+                WHERE id = ?
+                """,
+                (status, now, job_id),
+            )
+
+    def _fail_embedding_job(self, job_id: str, attempts: int, error: str) -> None:
+        delay_seconds = min(16, 2 ** max(attempts - 1, 0))
+        next_run_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds)).isoformat()
+        status = "failed"
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE embedding_jobs
+                SET status = ?, attempts = ?, last_error = ?,
+                    next_run_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, attempts, error[:500], next_run_at, now, job_id),
+            )
+
     def _upsert_fts_locked(
         self,
         conn: sqlite3.Connection,
@@ -709,6 +926,27 @@ class MemoryStore:
             conn.execute("DELETE FROM memory_items_fts WHERE memory_id = ?", (memory_id,))
         except sqlite3.OperationalError:
             pass
+
+    def _get_semantic_retriever(self):
+        if self._semantic_retriever is not None:
+            return self._semantic_retriever
+        try:
+            from app.config import config
+            from app.tools.retriever import MilvusRetriever
+
+            self._semantic_retriever = MilvusRetriever(
+                uri=config.milvus_uri,
+                collection_name=config.memory_milvus_collection_name,
+                token=config.milvus_token,
+                embedding_model=config.embedding_model,
+                index_type=config.milvus_index_type,
+                nlist=config.milvus_nlist,
+                nprobe=config.milvus_nprobe,
+                timeout_seconds=config.milvus_timeout_seconds,
+            )
+        except Exception:
+            self._semantic_retriever = None
+        return self._semantic_retriever
 
     def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
         item = dict(row)

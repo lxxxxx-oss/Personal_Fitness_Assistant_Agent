@@ -13,6 +13,8 @@
 - Milvus RAG 可选后端、Memory fallback 和主链路回归。
 - 长期记忆 CRUD、逻辑删除和显式 Memory Writer。
 - 候选记忆确认、SQLite FTS5/LIKE 检索和长期记忆 prompt 注入。
+- Milvus 用户长期记忆同步任务和语义召回合并。
+- Memory + Context + RAG 统一 benchmark，用于证明记忆、压缩和证据链组合后没有回归。
 - Context compact 触发、prompt 长度保护和 compact 可观测性。
 - Prompt Builder 统一入口和 prompt 长度元数据。
 - `_structured_state` 当前工作态和工具结果 preview。
@@ -25,6 +27,8 @@
 
 | 能力 | 验收记录 | 结论口径 |
 |---|---|---|
+| Memory + Context + RAG 统一 Benchmark | [2026-07-10-memory-context-rag-benchmark.md](./2026-07-10-memory-context-rag-benchmark.md) | 8 条联动样本 100% 通过，覆盖长期记忆召回、敏感候选、prompt 注入、compact 和 RAG source 透传 |
+| Memory Phase 6 Milvus 用户记忆 | [2026-07-10-memory-phase6-milvus-user-memory.md](./2026-07-10-memory-phase6-milvus-user-memory.md) | 用户长期记忆可生成 embedding job，可选同步到 Milvus 派生索引；Milvus 失败时 SQLite 检索仍可用 |
 | Context Phase 4-5 compact | [2026-07-10-context-phase4-5-compact-observability.md](./2026-07-10-context-phase4-5-compact-observability.md) | 长 prompt 会触发确定性 compact，最终 prompt 不超过上限，并在 `_prompt_meta` 与 `execution` 中记录压缩事件 |
 | Memory Phase 4-5 候选确认与检索注入 | [2026-07-10-memory-phase4-5-candidates-fts-injection.md](./2026-07-10-memory-phase4-5-candidates-fts-injection.md) | 敏感记忆进入 candidate，确认后进入正式长期记忆；`/memory/search` 可召回并注入 Chat/Diet prompt |
 | Memory Phase 2-3 长期记忆 | [2026-07-10-memory-phase2-3-long-term-memory-writer.md](./2026-07-10-memory-phase2-3-long-term-memory-writer.md) | `memory_items/sources/relations`、`/memory` CRUD、逻辑删除、显式“记住”写入和去重已通过自动化测试 |

@@ -55,14 +55,14 @@
 | Motion | 已按完整标准动作教练系统口径完成图片/视频输入、PoseSequence、标准视频构建脚本、schema 安全比较、小程序参考选择、相似度计算和教练式反馈 |
 | Tool System | 已落地最小 `ToolRegistry` 原型：`ToolSpec` 记录 name、description、input_schema、permission、executor、timeout、retry、fallback；Registry 支持注册、列出、schema 校验、权限检查、执行、有限重试、fallback、`execution_id`、`duration_ms` 和 audit log；Search、Knowledge/RAG 与 MCP execute 已接入 Registry，Motion 仍由 LangGraph/API 直接控制工具调用 |
 | MCP | 定位为工具协议补充；轻量 Client 已实现 subprocess/stdio、initialize、`tools/list`、`tools/call` 和首个 text content block 解析；`execute_tool_node` 已通过 `ToolRegistry` 调用 `mcp.call_tool`，默认 mock 用于演示稳定 |
-| Memory | Phase 4-5 最小闭环已落地：会话持久化写入 `conversations/messages/summaries/task_states`，长期记忆写入 `memory_items/memory_sources/memory_relations`；已新增 `/memory` CRUD、候选记忆确认、SQLite FTS5 检索与中文 LIKE 兜底；用户明确说“记住……”时会通过最小 Memory Writer 写入长期记忆，健康/伤病/过敏等敏感内容先进 candidate；检索到的长期记忆会按预算注入 Knowledge prompt；Milvus 用户记忆增强仍是后续项 |
-| Context Management | Phase 4-5 最小闭环已落地：Chat/Diet/Search/MCP 的主要文本 prompt 通过 `PromptBuilder` 构建并记录 `_prompt_meta.kind/chars/sections/original_chars/compact_triggered`；`_structured_state` 记录当前任务、路由决策、用户画像、知识来源、工具摘要和 compact summary；prompt 超过 `COMPACT_TRIGGER_CHARS` 会触发确定性 compact 并在 `execution` 中公开轨迹；当前尚未实现 LLM 摘要、summary 持久化和前端展示 |
+| Memory | Phase 6 最小闭环已落地：会话持久化写入 `conversations/messages/summaries/task_states`，长期记忆写入 `memory_items/memory_sources/memory_relations`；已新增 `/memory` CRUD、候选记忆确认、SQLite FTS5 检索、中文 LIKE 兜底和可选 Milvus 用户记忆派生索引；用户明确说“记住……”时会通过最小 Memory Writer 写入长期记忆，健康/伤病/过敏等敏感内容先进 candidate；检索到的长期记忆会按预算注入 Knowledge prompt；SQLite 仍是 source of truth，Milvus 失败不影响主链路；已新增 Memory + Context + RAG 统一 benchmark 证明组合链路可回归 |
+| Context Management | Phase 4-5 最小闭环已落地：Chat/Diet/Search/MCP 的主要文本 prompt 通过 `PromptBuilder` 构建并记录 `_prompt_meta.kind/chars/sections/original_chars/compact_triggered`；`_structured_state` 记录当前任务、路由决策、用户画像、知识来源、工具摘要和 compact summary；prompt 超过 `COMPACT_TRIGGER_CHARS` 会触发确定性 compact 并在 `execution` 中公开轨迹；已通过统一 benchmark 验证 prompt 注入、compact 与 RAG source 透传；当前尚未实现 LLM 摘要、summary 持久化和前端展示 |
 | 异步接口 | HTTP/SSE/WebSocket 的同步 LangGraph 阶段通过 `asyncio.to_thread` 执行；SSE 与 WebSocket 共用线程到 asyncio queue 桥接逐 token 输出，避免阻塞事件循环；模型生成锁仍保证同进程串行推理 |
 | Web UI | `/ui` 可用，支持对话状态提示和 Motion 图片上传 |
 | 微信小程序 | Chat 主链路、执行模式展示及 Motion 图片/视频上传闭环已完成；开发者工具和真机联调未完成 |
 | Docker | 配置文件已提供，完整构建验证未完成 |
 
-当前文档记录的自动化测试结果为 `172 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、工具治理、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
+当前文档记录的自动化测试结果为 `172 passed, 2 skipped, 1 warning`。默认 pytest 通过 fixture 替换本地 LLM 生成和 SentenceTransformer 编码，主要证明接口、状态流、工具治理、算法与降级契约可回归；两个 skip 分别是本地真实模型和需显式 `MILVUS_TEST_URI` 的真实 Milvus 测试。最新 Memory + Context + RAG 专项 benchmark 结果为 8/8 passed，相关核心回归集为 `137 passed, 1 warning`。真实 Qwen Router A/B、MediaPipe 媒体冒烟另有专项记录。warning 来自 Starlette TestClient/httpx 兼容层弃用提示。验收入口见 [tests/README.md](./tests/README.md)。
 
 ## 4. 已知边界与工程取舍
 
@@ -84,7 +84,7 @@
 | Docker 模型路径跨机器 | 配置支持环境变量覆盖 | 使用平台无关镜像和模型服务 |
 | 服务没有认证与限流 | 当前只绑定本机地址用于开发演示；`user_id` 不是身份凭证 | 接入认证授权、用户级访问控制、限流和审计 |
 | 会话持久化仍是本地原型级 | 会话消息已写入本地 SQLite，`_sessions` 作为 hot cache；当前没有 TTL、多实例共享、用户授权或加密治理 | 引入认证授权、会话 TTL、跨实例共享存储、删除同步和隐私治理 |
-| 长期记忆仍是原型级 | 已支持 SQLite source of truth、CRUD、逻辑删除、显式“记住”写入、敏感候选确认、FTS5/LIKE 检索和 Prompt Builder 预算注入；但还没有候选 UI、Milvus 用户记忆增强、审计清理和用户授权 | 增加前端确认入口、Milvus 语义增强、memory eval、审计日志、删除同步和隐私治理 |
+| 长期记忆仍是原型级 | 已支持 SQLite source of truth、CRUD、逻辑删除、显式“记住”写入、敏感候选确认、FTS5/LIKE 检索、Prompt Builder 预算注入和可选 Milvus 用户记忆同步任务；但还没有候选 UI、常驻后台 worker、审计清理和用户授权 | 增加前端确认入口、常驻 worker、memory eval、审计日志、删除同步和隐私治理 |
 | Context Compression 仍是最小闭环 | 已统一 Prompt Builder、记录 prompt 长度元数据，引入 `_structured_state`、工具结果 preview 和确定性 compact；但还没有 LLM 摘要、summary 持久化和前端可视化 | 增加 LLM 摘要兜底、`summaries` 持久化、前端展示和摘要质量评测 |
 | CORS 与错误边界偏宽 | CORS 允许任意来源，部分内部异常可能进入 500 detail | 配置来源白名单、统一安全错误响应和日志脱敏 |
 | `/health` 只证明进程存活 | 固定返回版本，不探测模型、检索或外部工具 | 拆分 liveness 与 readiness，并展示依赖级状态 |

@@ -193,7 +193,10 @@ def _get_memory_store():
     if _memory_store is None:
         from app.memory.memory_store import MemoryStore
 
-        _memory_store = MemoryStore(config.memory_db_path)
+        _memory_store = MemoryStore(
+            config.memory_db_path,
+            semantic_enabled=config.memory_milvus_enabled,
+        )
     return _memory_store
 
 
@@ -339,6 +342,29 @@ class CandidateMemoryListResponse(BaseModel):
     candidates: List[CandidateMemoryResponse] = Field(default_factory=list)
 
 
+class EmbeddingJobResponse(BaseModel):
+    id: str
+    memory_id: str
+    user_id: str
+    status: str
+    attempts: int
+    last_error: Optional[str] = None
+    next_run_at: str
+    created_at: str
+    updated_at: str
+
+
+class EmbeddingJobListResponse(BaseModel):
+    jobs: List[EmbeddingJobResponse] = Field(default_factory=list)
+
+
+class EmbeddingJobProcessResponse(BaseModel):
+    processed: int
+    completed: int
+    failed: int
+    enabled: bool
+
+
 class MotionAnalyzeResponse(BaseModel):
     filename: str
     frames: int
@@ -479,6 +505,23 @@ async def reject_candidate_memory(candidate_id: str, user_id: str):
     if not rejected:
         raise HTTPException(status_code=404, detail="candidate memory was not found")
     return {"id": candidate_id, "status": "rejected"}
+
+
+@app.get("/memory/embedding-jobs", response_model=EmbeddingJobListResponse)
+async def list_memory_embedding_jobs(status: str = "pending", limit: int = 50):
+    """List memory embedding jobs for the optional Milvus sync worker."""
+    try:
+        jobs = _get_memory_store().list_embedding_jobs(status=status, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return EmbeddingJobListResponse(jobs=jobs)
+
+
+@app.post("/memory/embedding-jobs/process", response_model=EmbeddingJobProcessResponse)
+async def process_memory_embedding_jobs(limit: int = 20):
+    """Process pending memory embedding jobs synchronously for local demos/tests."""
+    result = _get_memory_store().process_embedding_jobs(limit=limit)
+    return EmbeddingJobProcessResponse(**result)
 
 
 @app.get("/memory/{memory_id}", response_model=MemoryItemResponse)

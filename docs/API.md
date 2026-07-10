@@ -24,6 +24,8 @@ http://127.0.0.1:8000
 | GET | `/memory/candidates` | 查看候选记忆 | 已实现 |
 | POST | `/memory/candidates/{candidate_id}/confirm` | 确认候选记忆 | 已实现 |
 | POST | `/memory/candidates/{candidate_id}/reject` | 拒绝候选记忆 | 已实现 |
+| GET | `/memory/embedding-jobs` | 查看用户记忆 Milvus 同步任务 | 已实现 |
+| POST | `/memory/embedding-jobs/process` | 处理用户记忆 Milvus 同步任务 | 已实现 |
 | GET | `/memory/{memory_id}` | 查看单条长期记忆 | 已实现 |
 | PATCH | `/memory/{memory_id}` | 修改单条长期记忆 | 已实现 |
 | DELETE | `/memory/{memory_id}` | 逻辑删除单条长期记忆 | 已实现 |
@@ -345,7 +347,7 @@ Content-Type: application/json
 - 当前删除是逻辑删除：`status='deleted'`。
 - 用户在聊天中明确说“请记住/帮我记住/记住……”时，会走最小 Memory Writer。
 - 普通显式记忆会写入 `memory_items`；包含膝盖、旧伤、疼痛、疾病、过敏等健康/敏感词的内容会先进入 `candidate_memories`，确认后才进入正式长期记忆。
-- 当前已实现 SQLite FTS5 检索，中文场景保留 LIKE 短片段兜底；Milvus 用户记忆增强仍未实现。
+- 当前已实现 SQLite FTS5 检索，中文场景保留 LIKE 短片段兜底；Milvus 用户记忆增强为可选派生索引，默认未开启，SQLite 仍是 source of truth。
 
 ### 检索长期记忆
 
@@ -354,6 +356,8 @@ GET /memory/search?user_id=u1&query=香菜&limit=5
 ```
 
 检索只返回 `status='active'` 的正式长期记忆，不返回 pending/rejected candidate。返回项包含 `score` 字段，当前分数由关键词召回、importance 和访问次数加权得到；访问次数加成采用 `0.10 * min(access_count, 20) / 20`，避免访问次数无限放大。
+
+如果设置 `MEMORY_MILVUS_ENABLED=1`，正式长期记忆会先写入 SQLite，再生成 `embedding_jobs`。调用 `/memory/embedding-jobs/process` 后，任务会将记忆内容写入 Milvus 用户记忆 Collection；检索时会合并 Milvus 语义结果和 SQLite FTS5/LIKE 结果。Milvus 失败时只降低语义召回，不影响 SQLite 检索和聊天主链路。
 
 ### 候选记忆确认
 
@@ -366,6 +370,23 @@ curl -X POST "http://127.0.0.1:8000/memory/candidates/{candidate_id}/reject?user
 ```
 
 候选记忆用于拦截健康、伤病、过敏等敏感长期事实。确认后会写入 `memory_items`，拒绝后不会参与检索和 prompt 注入。
+
+### 用户记忆 Milvus 同步任务
+
+```bash
+curl "http://127.0.0.1:8000/memory/embedding-jobs?status=pending"
+
+curl -X POST "http://127.0.0.1:8000/memory/embedding-jobs/process?limit=20"
+```
+
+配置项：
+
+| 配置 | 默认值 | 说明 |
+|---|---|---|
+| `MEMORY_MILVUS_ENABLED` | `false` | 是否启用用户长期记忆 Milvus 派生索引 |
+| `MEMORY_MILVUS_COLLECTION_NAME` | `fitness_user_memory` | 用户长期记忆专用 Collection |
+
+任务失败后会保留在 `embedding_jobs` 中，并按最多 5 次的有限重试策略等待下次处理。当前这个处理接口是本地原型/演示入口，生产化应改为后台 worker。
 
 ### 查看、修改和删除单条长期记忆
 

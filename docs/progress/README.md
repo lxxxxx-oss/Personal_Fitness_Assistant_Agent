@@ -13,6 +13,8 @@
 
 | 日期 | 记录 | 重点 |
 |---|---|---|
+| 2026-07-10 | [Memory + Context + RAG 统一 Benchmark](./2026-07-10-memory-context-rag-benchmark.md) | 新增 `scripts/eval_memory_context.py` 与 8 条联动样本，覆盖 memory recall、敏感 candidate、prompt 注入、compact 和 RAG source |
+| 2026-07-10 | [Memory Phase 6：Milvus 用户长期记忆增强](./2026-07-10-memory-phase6-milvus-user-memory.md) | SQLite `embedding_jobs`、可选用户记忆 Milvus 同步、语义结果与 FTS5/LIKE 合并 |
 | 2026-07-10 | [Context Phase 4-5：compact 触发与可观测性](./2026-07-10-context-phase4-5-compact-observability.md) | PromptBuilder 统一触发确定性 compact，记录 `_prompt_meta` 与 `execution` compact 轨迹 |
 | 2026-07-10 | [Memory Phase 4-5：候选确认、FTS5 检索与预算注入](./2026-07-10-memory-phase4-5-candidates-fts-injection.md) | 敏感记忆先进 candidate，确认后入库；长期记忆 FTS5/LIKE 检索并注入 Knowledge prompt |
 | 2026-07-10 | [Memory Phase 2-3：长期记忆 CRUD 与最小 Memory Writer](./2026-07-10-memory-phase2-3-long-term-memory-writer.md) | SQLite 新增 `memory_items/sources/relations`，`/memory` CRUD 与显式“记住”写入 |
@@ -21,8 +23,6 @@
 | 2026-07-10 | [Memory Phase 1：会话持久化最小闭环](./2026-07-10-memory-phase1-conversation-persistence.md) | SQLite 落地 conversations/messages/summaries/task_states，`conversation_id` 支持续接会话，SlidingWindowMemory 作为 hot cache |
 | 2026-07-09 | [ToolRegistry 阶段总结](./2026-07-09-tool-registry-stage-summary.md) | 收束 Search、Knowledge/RAG、MCP execute 已接入状态，并标记 Motion compare 暂缓 |
 | 2026-07-09 | [MCP 接入 ToolRegistry](./2026-07-09-mcp-tool-registry-integration.md) | MCP `execute_tool_node` 通过 `mcp.call_tool` 接入 Registry，并完成全量回归 |
-| 2026-07-09 | [Motion/MCP Registry 迁移评估](./2026-07-09-motion-mcp-registry-migration-evaluation.md) | 形成先 MCP execute、后 Motion compare 的顺序；MCP execute 已在后续步骤完成 |
-| 2026-07-09 | [Knowledge 接入 ToolRegistry](./2026-07-09-knowledge-tool-registry-integration.md) | Chat/Diet 的 RAG 检索通过 `knowledge.retrieve` 接入 Registry，并完成全量回归 |
 
 ## 维护方式
 
