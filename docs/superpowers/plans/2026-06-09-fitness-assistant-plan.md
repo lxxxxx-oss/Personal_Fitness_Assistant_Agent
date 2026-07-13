@@ -1,6 +1,6 @@
-# 健身智能助手 Agent — 实施计划
+﻿# 健身智能助手 Agent — 实施计划
 
-> 归档说明：这是项目启动阶段的任务拆解，复选框不再代表当前完成度。当前状态统一查看 [../../README.md](../../README.md)。
+> 归档说明：这是项目启动阶段的任务拆解，复选框不再代表当前完成度。当前状态统一查看 [../../01_项目总览.md](../../01_项目总览.md)。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

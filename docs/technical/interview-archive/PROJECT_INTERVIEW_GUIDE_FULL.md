@@ -1,6 +1,6 @@
-# AI Agent 岗位面试项目讲解手册
+﻿# AI Agent 岗位面试项目讲解手册
 
-> 归档说明：本文是整理前的完整长版手册，保留用于追溯历史内容和细节证据。当前面试复习请优先使用 `docs/interview/` 下基于实现、证据和边界整理的 P0/P1/P2 材料；如果本文与当前代码或最新复习材料冲突，以 `docs/README.md`、`docs/API.md`、`docs/interview/` 和最新 progress/tests 为准。
+> 归档说明：本文是整理前的完整长版手册，保留用于追溯历史内容和细节证据。当前面试复习请优先使用 `docs/interview/` 下基于实现、证据和边界整理的 P0/P1/P2 材料；如果本文与当前代码或最新复习材料冲突，以 `docs/01_项目总览.md`、`docs/02_接口说明.md`、`docs/interview/` 和最新 progress/tests 为准。
 
 ## 0. 使用方式
 

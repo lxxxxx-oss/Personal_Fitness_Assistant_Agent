@@ -1,4 +1,4 @@
-# 子图优化方向汇总
+﻿# 子图优化方向汇总
 
 > 归档说明：本文是整理前的子图优化长文档，保留用于追溯历史路线和设计细节。当前面试复习请优先使用 `docs/interview/` 下基于实现、证据和边界整理的 P0/P1/P2 材料；专题设计以 `docs/technical/router/`、`docs/technical/motion/` 和最新 progress/tests 为准。
 
@@ -8,7 +8,7 @@
 
 - 区分“当前已实现”和“后续可优化”，不要把规划项说成已落地。
 - 优化方向尽量对应可验证指标，而不是只写“效果更好”。
-- 后续 Router 和 Motion 的当前状态分别维护在 `docs/technical/router/`、`docs/technical/motion/`；其他模块的当前事实以 `docs/README.md`、最新 progress/tests 和代码为准。
+- 后续 Router 和 Motion 的当前状态分别维护在 `docs/technical/router/`、`docs/technical/motion/`；其他模块的当前事实以 `docs/01_项目总览.md`、最新 progress/tests 和代码为准。
 
 ## 1. Chat / Diet RAG 优化方向
 

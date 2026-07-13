@@ -1,4 +1,4 @@
-# 上下文渐进式压缩设计
+﻿# 上下文渐进式压缩设计
 
 > **定位说明**：本文档设计的是上下文压缩管道（prompt 组装前的取舍与注入策略）。底层记忆存储（`SlidingWindowMemory`、`_sessions`、`_structured_state`）作为压缩层的数据来源，在本设计中引用但不改动其存储机制。
 >
@@ -425,9 +425,9 @@ MVP 阶段不需要大规模 benchmark，建议先维护 20-30 条可解释 case
 ## 15. 与现有文档的关系
 
 本文档是上下文压缩与记忆系统的**唯一设计入口**。相关现有文档：
-- `docs/README.md` §2、§4 — 当前架构与已知边界
+- `docs/01_项目总览.md` §2、§4 — 当前架构与已知边界
 - `docs/interview/04_ONE_PAGE_CHEAT_SHEET.md` — 面试中 Memory 的口径
-- `docs/progress/2026-06-27-llm-memory-oom-fix.md` — LLM 内存安全修复记录
+- `docs/04_项目证据.md` — 当前面试高价值进度与测试证据摘要
 - `app/memory/sliding_window.py` — 当前实现源码
 - `app/config.py` — memory_max_turns / MAX_PROMPT_CHARS 配置
 

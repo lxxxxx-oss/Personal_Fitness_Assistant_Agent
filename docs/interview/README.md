@@ -53,7 +53,7 @@
 | MCP | 为什么把它定位为工具协议补充，自己实现 Client 做了什么 |
 | Milvus / RAG | 健身知识如何分块、向量化、检索、完成真实链路效果评测并增强生成 |
 | Tavily | 为什么联网搜索要做 query rewrite 和 answer synthesis |
-| Sliding Window Memory | 缓冲区为何保存 6 轮、Knowledge 为何只注入最后 6 条消息，以及跨 Search/Motion/MCP 的长期记忆消费为何作为后续增强 |
+| Agent Memory / Context Engineering | 如何分层管理短期对话、compact summary 和长期用户画像；为什么 SQLite 是 source of truth、Milvus 只是语义召回增强；如何通过 benchmark 证明链路稳定 |
 | Docker | 如何说明项目具备部署意识，而不是只在本机脚本运行 |
 
 ## 阅读顺序
@@ -110,4 +110,5 @@
 - MCP 是工具协议补充：用于说明外部工具标准化接入，不把它讲成饮食主链路本身。
 - 工具系统主线优先于 MCP：先讲内部工具的职责、schema、权限、executor、`ToolResult` 回传，再讲 MCP 是外部工具协议补充；`ToolRegistry` 已有最小原型并已接入 Search、Knowledge/RAG 与 MCP execute，且具备 `execution_id`、`duration_ms`、fallback 归因和 audit log，但不说成生产级工具平台或已全面接管所有工具。
 - Milvus 已完成真实链路效果评测：可以讲 Collection、写入、检索、source 透传和 API 主链路验证；后续是扩大 Recall@K、MRR、忠实度和延迟基线规模。
+- Memory + Context 已形成最小闭环：短期上下文、压缩摘要和长期记忆分层管理；敏感健康信息先进 candidate；SQLite 作为 source of truth，Milvus 作为可选语义增强；Memory + Context + RAG benchmark 已通过 8/8。
 - Motion 当前按完整标准动作教练系统表达：图片/视频进入 PoseSequence，与同 schema 标准动作做相似度比较并生成教练式反馈；后续重点是扩充样本库、专项规则和教练标注。

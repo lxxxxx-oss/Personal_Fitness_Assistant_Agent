@@ -1,4 +1,4 @@
-# 健身智能助手 — 微信小程序设计参考
+﻿# 健身智能助手 — 微信小程序设计参考
 
 > 本文保留完整架构设计，不代表当前完成度。实际状态统一查看 [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md)。
 
@@ -6,7 +6,7 @@
 
 **日期:** 2026-06-09  
 **状态:** 设计参考；核心代码已实现，端到端状态见完成度文档
-**关联文档:** [后端设计规范](../superpowers/specs/2026-06-09-fitness-assistant-design.md) | [后端 API 文档](../API.md)
+**关联文档:** [后端设计规范](../superpowers/specs/2026-06-09-fitness-assistant-design.md) | [后端 API 文档](../02_接口说明.md)
 
 ---
 

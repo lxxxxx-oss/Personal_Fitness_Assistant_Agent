@@ -1,4 +1,4 @@
-# 记忆系统设计
+﻿# 记忆系统设计
 
 > **定位说明**：本文档设计的是持久化记忆系统（存储什么、怎么存、怎么检索、怎么注入）。上下文压缩（`context-compression.md`）是它的下游消费者——压缩层决定 prompt 组装时的取舍策略，记忆系统是压缩层的数据来源。
 >
@@ -951,7 +951,7 @@ memory_items.status = 'deleted'
 
 本文档是记忆系统的**唯一设计入口**。相关现有文档：
 - `docs/optimization/context-compression.md` — 上下文压缩设计（记忆系统的下游消费者）
-- `docs/README.md` §3、§4 — 当前架构与 Memory 边界
+- `docs/01_项目总览.md` §3、§4 — 当前架构与 Memory 边界
 - `docs/interview/04_ONE_PAGE_CHEAT_SHEET.md` — 面试 Memory 口径
 - `app/memory/sliding_window.py` — 当前 hot cache 实现
 - `app/config.py` — memory_max_turns 配置
