@@ -4,7 +4,7 @@
 
 ## 1. 一句话口径
 
-> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`，让 Chat/Diet 的 RAG 检索通过 Registry 调用 `knowledge.retrieve`，让 MCP 执行节点通过 Registry 调用 `mcp.call_tool`。每次 Registry 调用都会产生 `execution_id` 和 `duration_ms`，fallback 会复用同一个 `execution_id` 并标出 `fallback_from`。
+> 项目里的工具系统不是“写几个函数让 LLM 调用”，而是把检索、搜索、动作分析、姿态估计、MCP Client 等确定性能力封装成有输入契约、权限边界、统一返回和错误码的执行单元；当前已经在 `ToolResult/ErrorCode` 和子图调用边界之上，补了最小 `ToolRegistry` 原型，用来集中管理工具元数据、参数校验、权限、超时策略字段、有限重试、fallback 和 audit log，并让 Search 子图通过 Registry 调用 `search.tavily`，让 Chat/Diet 的 RAG 检索通过 Registry 调用 `knowledge.retrieve`，让 MCP 执行节点通过 Registry 调用 `mcp.call_tool`。每次 Registry 调用都会产生 `execution_id` 和 `duration_ms`，fallback 会复用同一个 `execution_id` 并标出 `fallback_from`；但 Registry 当前不负责强制中断超时执行，真实超时隔离仍依赖具体工具自身或后续 ToolExecutor 增强。
 
 ## 2. 工具系统和 MCP 的区别
 
@@ -42,7 +42,7 @@
 
 - 内部工具不是让 LLM 动态发现后自由选择，而是由 Router 和子图控制调用。
 - Search 子图已经通过 `ToolRegistry` 调用 `search.tavily`，Knowledge/RAG 已通过 `ToolRegistry` 调用 `knowledge.retrieve`，MCP execute 已通过 `ToolRegistry` 调用 `mcp.call_tool`，但 Motion 还没有强制改走 Registry。
-- 权限、超时、重试和审计已有最小 Registry 入口，但还没有覆盖所有子图调用。
+- 权限、超时策略字段、重试和审计已有最小 Registry 入口，但还没有覆盖所有子图调用，也还没有实现 Registry 层硬超时中断。
 - MCP 的 `inputSchema` 校验和真实 Server 兼容性仍属于后续增强。
 
 ## 4. 最小 ToolRegistry 设计
@@ -84,7 +84,7 @@ class ToolRegistry:
 | `input_schema` | 参数结构化校验，避免 LLM 传错格式 | `query: string`、`top_k: 1..10` |
 | `permission` | 区分只读、网络、文件、外部进程等风险 | `read_only`、`network`、`subprocess` |
 | `executor` | 真正执行工具逻辑 | 调用 Retriever、Tavily、MotionTool |
-| `timeout_seconds` | 防止外部依赖卡死请求 | MCP Server stdout 超时 |
+| `timeout_seconds` | 记录工具级超时策略，供具体工具或后续 ToolExecutor 使用；当前 Registry 本身不强制中断执行 | MCP Client 自身 stdout 超时、后续统一 executor 超时 |
 | `max_retries` | 失败恢复有边界 | 网络错误最多重试 1-2 次 |
 | `fallback_tool` | 可用性降级 | Milvus 失败 fallback 到 MemoryRetriever |
 
@@ -95,7 +95,7 @@ ToolRegistry.execute(name, args, context)
   -> get ToolSpec
   -> validate_args(input_schema, args)
   -> check_permission(permission, context)
-  -> run executor with timeout
+  -> run executor（当前不在 Registry 层强制中断 timeout）
   -> if retryable: bounded retry
   -> if still failed and fallback_tool exists: fallback
   -> ToolResult.meta 写入 execution_id/duration_ms/attempts

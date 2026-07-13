@@ -64,21 +64,21 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 pip install -r requirements-motion.txt
 ```
 
-并准备 `data/models/pose_landmarker.task`。完整模型下载、标准动作构建和联调命令见 [运行手册](docs/RUNBOOK.md)。
+并准备 `data/models/pose_landmarker.task`。完整模型下载、标准动作构建和联调命令见 [运行手册](docs/03_运行排错.md)。
 
 ## 验证状态
 
 当前自动化回归：
 
 ```text
-172 passed, 2 skipped, 1 warning
+189 passed, 2 skipped, 2 warnings
 ```
 
-默认 pytest 会 mock 本地 LLM 与 SentenceTransformer，因此该数字主要证明代码、接口、算法和降级契约可回归。Milvus 另有真实链路效果评测记录，项目也保留真实 MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。
+默认 pytest 会 mock 本地 LLM 与 SentenceTransformer，因此该数字主要证明代码、接口、算法和降级契约可回归。两个 warning 分别来自 Starlette TestClient/httpx 兼容层弃用提示，以及当前 Windows 工作区 `.pytest_cache` 写入受限提示；不影响测试结论。Milvus 另有真实链路效果评测记录，项目也保留真实 MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。
 
 ## 当前边界
 
-- 当前服务定位为本地面试原型：没有登录鉴权、请求限流和持久化会话，CORS 允许任意来源，不应直接暴露到公网。
+- 当前服务定位为本地面试原型：没有登录鉴权、请求限流、会话 TTL 或多实例共享；会话与长期记忆已写入本地 SQLite，但仍不应直接暴露到公网。
 - `/health` 只是进程存活检查，不代表 Qwen、Milvus、MediaPipe、Tavily 或 MCP 已就绪。
 - 会话缓冲区最多保存 6 轮，当前由 Knowledge 问答链路优先消费；跨 Search/Motion/MCP 的长期画像联动仍可继续增强。
 - MCP 默认使用 mock，是工具协议补充；真实 Server 的响应 ID、inputSchema、通知语义和兼容性治理可继续补强。
@@ -91,13 +91,13 @@ pip install -r requirements-motion.txt
 
 | 需求 | 文档 |
 |---|---|
-| 项目当前事实、能力与边界 | [docs/README.md](docs/README.md) |
-| HTTP、SSE、WebSocket 与 Motion API | [docs/API.md](docs/API.md) |
-| 安装、配置、测试、Docker 与联调 | [docs/RUNBOOK.md](docs/RUNBOOK.md) |
+| 项目当前事实、能力与边界 | [docs/01_项目总览.md](docs/01_项目总览.md) |
+| HTTP、SSE、WebSocket 与 Motion API | [docs/02_接口说明.md](docs/02_接口说明.md) |
+| 安装、配置、测试、Docker 与联调 | [docs/03_运行排错.md](docs/03_运行排错.md) |
 | 面试主线与技术问答 | [docs/interview/README.md](docs/interview/README.md) |
 | Router / Motion 技术设计 | [docs/technical/README.md](docs/technical/README.md) |
-| 测试与真实链路证据 | [docs/tests/README.md](docs/tests/README.md) |
-| 完整文档导航 | [docs/DOCUMENTATION_MAP.md](docs/DOCUMENTATION_MAP.md) |
+| 测试与真实链路证据 | [docs/04_项目证据.md](docs/04_项目证据.md) |
+| 文档学习入口 | [docs/00_先看这里.md](docs/00_先看这里.md) |
 
 ## 技术栈
 

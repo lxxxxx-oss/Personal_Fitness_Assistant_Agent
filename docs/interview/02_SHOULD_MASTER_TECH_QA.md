@@ -167,13 +167,13 @@
 
 > 我会先讲内部工具系统，再讲 MCP。内部工具系统解决的是“项目里的确定性能力怎么被定义、校验、执行和回传”。比如 Retriever 负责知识检索，SearchTool 负责联网搜索，MotionTool 负责姿态相似度，PoseEstimator 负责图片/视频关键点提取，MCPClient 负责外部协议工具。它们不是让 LLM 随便调用的函数，而是由 LangGraph 子图在受控流程里调用。
 >
-> 当前项目已经统一了几个关键契约：输入层用函数签名、validator、Pydantic 和 PoseSequence 做约束；输出层统一 `ToolResult` 和 `ErrorCode`；权限上不让 LLM 直接执行命令或访问任意文件；失败时由子图决定降级、提示用户还是终止。在这个基础上，我已经补了最小 `ToolRegistry` 原型，集中描述工具 schema、权限、executor、超时字段、有限重试、fallback 和 audit log，并把 Search、Knowledge/RAG 和 MCP execute 作为真实路径接入 Registry。Registry 结果和审计日志里还会记录 `execution_id`、`duration_ms`、attempts 和 fallback 来源。准确口径是：Registry 已开始进入主链路，但还没有全面接管所有子图。
+> 当前项目已经统一了几个关键契约：输入层用函数签名、validator、Pydantic 和 PoseSequence 做约束；输出层统一 `ToolResult` 和 `ErrorCode`；权限上不让 LLM 直接执行命令或访问任意文件；失败时由子图决定降级、提示用户还是终止。在这个基础上，我已经补了最小 `ToolRegistry` 原型，集中描述工具 schema、权限、executor、超时策略字段、有限重试、fallback 和 audit log，并把 Search、Knowledge/RAG 和 MCP execute 作为真实路径接入 Registry。Registry 结果和审计日志里还会记录 `execution_id`、`duration_ms`、attempts 和 fallback 来源。准确口径是：Registry 已开始进入主链路，但还没有全面接管所有子图，也还没有在 Registry 层实现硬超时中断。
 
 ### Q15-1：最小 ToolRegistry 会怎么设计？
 
 **推荐回答**
 
-> 我没有把 ToolRegistry 做成复杂框架，最小版本只解决工具治理问题。每个工具注册成一个 `ToolSpec`，包含 `name`、`description`、`input_schema`、`permission`、`executor`、`timeout_seconds`、`max_retries` 和 `fallback_tool`。Registry 负责注册、列出、参数校验、权限检查、执行、有限重试、fallback 和审计。目前默认注册了 `knowledge.retrieve`、`search.tavily`、`motion.compare_pose`、`mcp.call_tool` 四类代表工具；Search、Knowledge/RAG 和 MCP execute 已经走 Registry，每次执行会生成 `execution_id` 和 `duration_ms`，方便定位一次工具调用。
+> 我没有把 ToolRegistry 做成复杂框架，最小版本只解决工具治理问题。每个工具注册成一个 `ToolSpec`，包含 `name`、`description`、`input_schema`、`permission`、`executor`、`timeout_seconds`、`max_retries` 和 `fallback_tool`。Registry 负责注册、列出、参数校验、权限检查、执行、有限重试、fallback 和审计；其中 `timeout_seconds` 目前是策略字段，不是 Registry 层硬超时。当前默认注册了 `knowledge.retrieve`、`search.tavily`、`motion.compare_pose`、`mcp.call_tool` 四类代表工具；Search、Knowledge/RAG 和 MCP execute 已经走 Registry，每次执行会生成 `execution_id` 和 `duration_ms`，方便定位一次工具调用。
 >
 > 它和 LangGraph 不重复：LangGraph 管任务流程，比如先检索还是先搜索；ToolRegistry 管单个工具怎么安全稳定地执行。它和 MCP 也不重复：MCP 是外部工具协议，Registry 是内部工具治理层，MCPClient 反而可以作为一个工具被 Registry 管起来。
 

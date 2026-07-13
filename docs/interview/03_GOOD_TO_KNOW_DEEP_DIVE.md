@@ -261,7 +261,7 @@ execute
   -> get spec
   -> schema validation
   -> permission check
-  -> executor with timeout
+  -> executor（当前 Registry 不强制中断 timeout，超时隔离依赖具体工具或后续 ToolExecutor）
   -> bounded retry
   -> fallback if configured
   -> ToolResult

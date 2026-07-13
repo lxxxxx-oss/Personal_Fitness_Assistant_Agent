@@ -102,7 +102,7 @@ execute_tool_node
 验证结果：
 
 - `pytest tests\test_mcp_client.py tests\test_tool_registry.py -q`：`27 passed`
-- `pytest -q`：`172 passed, 2 skipped, 1 warning`
+- `D:\Users\Lesedi\anaconda3\envs\fitness-agent\python.exe -m pytest tests/ -q`：`189 passed, 2 skipped, 2 warnings`
 
 面试价值：证明 Registry 不只管理检索和搜索，也可以管理外部协议工具。
 
