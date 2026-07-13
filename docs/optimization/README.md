@@ -1,4 +1,4 @@
-# Optimization 优化路线入口
+﻿# 优化方案索引
 
 本目录只放“后续优化怎么设计、按什么顺序落地、当前做到哪里”的文档。它不是面试背诵目录，但可以支撑你回答“为什么这样演进、边界是什么、下一步怎么做”。
 
@@ -6,9 +6,9 @@
 
 | 顺序 | 文档 | 作用 |
 |---:|---|---|
-| 1 | [IMPLEMENTATION_SEQUENCE.md](./IMPLEMENTATION_SEQUENCE.md) | 总路线：Context Compression 与 Memory System 的落地顺序和当前进度 |
-| 2 | [memory-system.md](./memory-system.md) | 记忆系统设计：SQLite source of truth、长期记忆、候选确认、Milvus 增强 |
-| 3 | [context-compression.md](./context-compression.md) | 上下文压缩设计：Prompt Builder、结构化状态、compact、预算控制 |
+| 1 | [实施顺序.md](./实施顺序.md) | 总路线：Context Compression 与 Memory System 的落地顺序和当前进度 |
+| 2 | [记忆系统设计.md](./记忆系统设计.md) | 记忆系统设计：SQLite source of truth、长期记忆、候选确认、Milvus 增强 |
+| 3 | [上下文压缩设计.md](./上下文压缩设计.md) | 上下文压缩设计：Prompt Builder、结构化状态、compact、预算控制 |
 
 ## 当前重点口径
 

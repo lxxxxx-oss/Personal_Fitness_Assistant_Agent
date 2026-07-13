@@ -1,8 +1,8 @@
-# Personal Fitness Assistant Agent
+﻿# 个人健身助手智能体
 
 一个面向 Agent 岗位面试展示的多任务 LLM Agent 项目，以健身、营养与动作分析作为业务场景。项目重点不是追求健身产品的功能数量，而是用 LangGraph 把路由、RAG、实时搜索、数值算法、记忆和外部工具组织成可解释、可评测、可降级的执行系统，并为每项设计准备可演示、可追问的工程证据。
 
-如果没有编程基础，请从 [零基础项目地图](docs/interview/00_零基础项目地图.md) 开始，不需要先阅读源码或接口文档。
+如果没有编程基础，请从 [零基础项目地图](docs/interview/01_零基础项目地图.md) 开始，不需要先阅读源码或接口文档。
 
 ## 项目亮点
 
@@ -66,7 +66,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 pip install -r requirements-motion.txt
 ```
 
-并准备 `data/models/pose_landmarker.task`。完整模型下载、标准动作构建和联调命令见 [运行手册](docs/03_运行排错.md)。
+并准备 `data/models/pose_landmarker.task`。完整模型下载、标准动作构建和联调命令见 [运行手册](docs/运行与排错.md)。
 
 ## 验证状态
 
@@ -93,13 +93,13 @@ pip install -r requirements-motion.txt
 
 | 需求 | 文档 |
 |---|---|
-| 项目当前事实、能力与边界 | [docs/01_项目总览.md](docs/01_项目总览.md) |
-| HTTP、SSE、WebSocket 与 Motion API | [docs/02_接口说明.md](docs/02_接口说明.md) |
-| 安装、配置、测试、Docker 与联调 | [docs/03_运行排错.md](docs/03_运行排错.md) |
+| 项目当前事实、能力与边界 | [docs/项目总览.md](docs/项目总览.md) |
+| HTTP、SSE、WebSocket 与 Motion API | [docs/接口说明.md](docs/接口说明.md) |
+| 安装、配置、测试、Docker 与联调 | [docs/运行与排错.md](docs/运行与排错.md) |
 | 面试主线与技术问答 | [docs/interview/README.md](docs/interview/README.md) |
 | Router / Motion 技术设计 | [docs/technical/README.md](docs/technical/README.md) |
-| 测试与真实链路证据 | [docs/04_项目证据.md](docs/04_项目证据.md) |
-| 文档学习入口 | [docs/00_先看这里.md](docs/00_先看这里.md) |
+| 测试与真实链路证据 | [docs/项目证据.md](docs/项目证据.md) |
+| 文档学习入口 | [docs/README.md](docs/README.md) |
 
 ## 技术栈
 
