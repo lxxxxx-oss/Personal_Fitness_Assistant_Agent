@@ -6,9 +6,9 @@
 
 ## 30 秒介绍
 
-> 顶层 Router 采用“加权规则 + 语义样例 + 可选 Qwen 兜底”，既识别单一意图，也能按白名单执行复合请求，并在 66 条常规样本和 36 条困难样本上持续回归。执行层中，Knowledge 统一承接 Chat/Diet，Milvus RAG 负责领域知识并已完成真实链路效果评测，Tavily 负责实时信息，Motion 负责完整标准动作教练系统，MCP Client 作为外部工具协议补充；会话缓冲区最多保存 6 轮，由 Knowledge 消费最近 6 条消息。
+> 顶层 Router 采用“加权规则 + 语义样例 + 可选 Qwen 兜底”，既识别单一意图，也能按白名单执行复合请求，并在 66 条常规样本和 36 条困难样本上持续回归。执行层中，Knowledge 统一承接 Chat/Diet，Milvus RAG 负责领域知识，Tavily 负责实时信息，Motion 负责动作分析，MCP Client 作为外部工具协议补充；Memory 与 PromptBuilder 分层管理近期对话、长期用户信息和上下文预算。
 
-## 五条主线
+## 七条主线
 
 | 主线 | 一句话讲法 | 深挖关键词 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | Search | 查询改写、Tavily 检索、来源约束合成三阶段拆分 | title/content/url、source grounding、错误分类 |
 | 工具系统 | 内部工具先统一职责、schema、权限、executor 和 ToolResult，再把 MCP 作为外部协议补充 | ToolResult、ErrorCode、ToolSpec、ToolRegistry、execution_id、duration_ms、fallback、audit |
 | MCP | 作为工具协议补充，自实现轻量 Client 打通串行协议主链路和 mock fallback | subprocess、stdio、JSON-RPC；响应 ID、schema 校验和真实 Server 兼容性可继续增强 |
+| Memory / Context | 分层管理近期对话、长期记忆和 Prompt 预算 | sliding window、SQLite source of truth、candidate、compact、Milvus 语义增强 |
 
 ## 三个最能体现工程能力的点
 
@@ -30,7 +31,7 @@
 | 数字 | 含义 |
 |---|---|
 | 66 + 36 | Router 常规样本与困难样本回归基线 |
-| 最近 6 轮 | 滑动窗口短期记忆容量 |
+| 最近 6 轮 | Prompt 默认选取的近期对话范围；长期信息另由 Memory Store 管理 |
 | 33 个关键点 | MediaPipe Pose 的人体关键点数量 |
 | 约 10 FPS / 300 帧 | 视频姿态提取的默认采样与资源上限 |
 | IVF_FLAT + COSINE | Milvus 索引与相似度度量 |
