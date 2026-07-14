@@ -52,6 +52,7 @@ class MemoryRetriever:
         self.embedding_model_name = embedding_model
         self.device = device
         self._encoder = None
+        self._encoder_load_attempted = False
         self._documents: List[str] = []
         self._sources: List[str] = []
         self._chunk_ids: List[int] = []
@@ -60,9 +61,10 @@ class MemoryRetriever:
 
     def _ensure_encoder(self):
         """延迟加载 Sentence-Transformer 编码器."""
-        if self._encoder is not None:
+        if self._encoder is not None or self._encoder_load_attempted:
             return
 
+        self._encoder_load_attempted = True
         logger.info(f"Loading embedding model: {self.embedding_model_name}")
         try:
             from sentence_transformers import SentenceTransformer

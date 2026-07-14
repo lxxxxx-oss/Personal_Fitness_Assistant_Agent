@@ -92,6 +92,20 @@ class TestMemoryRetriever:
         assert len(result.data) >= 1
         assert all("content" in r for r in result.data)
 
+    def test_failed_encoder_load_is_not_retried_for_every_search(self, sample_docs):
+        with patch(
+            "sentence_transformers.SentenceTransformer",
+            side_effect=OSError("model unavailable"),
+        ) as loader:
+            retriever = MemoryRetriever(embedding_model="missing-model")
+            retriever.add_documents(sample_docs)
+            first = retriever.search("squat", top_k=2, threshold=0.0)
+            second = retriever.search("deadlift", top_k=2, threshold=0.0)
+
+        assert first.ok and first.meta["mode"] == "keyword"
+        assert second.ok and second.meta["mode"] == "keyword"
+        assert loader.call_count == 1
+
     def test_search_returns_scores(self, retriever, sample_docs):
         retriever.add_documents(sample_docs)
         result = retriever.search("diet and nutrition", top_k=3)
