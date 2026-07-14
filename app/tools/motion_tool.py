@@ -8,7 +8,7 @@ Numerical similarity scores are statistical comparisons, not quality guarantees.
 
 import logging
 import os
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -28,6 +28,15 @@ EXPECTED_NDIM_SEQ = 3       # ndim for a sequence (T, J, 3)
 DTW_EXCELLENT = 0.3
 COS_EXCELLENT = 0.85
 SHAPE_EXCELLENT = 0.2
+CONFIDENCE_THRESHOLD = 0.5
+MIN_VALID_ALIGNMENT_RATIO = 0.6
+
+MEDIAPIPE_ANGLE_SPECS: Dict[str, Tuple[int, int, int]] = {
+    "left_knee": (23, 25, 27),
+    "right_knee": (24, 26, 28),
+    "left_hip": (11, 23, 25),
+    "right_hip": (12, 24, 26),
+}
 
 
 def normalize_pose(
@@ -111,6 +120,217 @@ def compute_joint_angles(
     return float(np.arccos(cos_angle))
 
 
+def _validate_confidence(
+    confidence: Optional[np.ndarray],
+    sequence_shape: Tuple[int, int, int],
+    name: str,
+) -> Optional[np.ndarray]:
+    if confidence is None:
+        return None
+    if not isinstance(confidence, np.ndarray):
+        raise ValueError(f"{name} must be a numpy array")
+    if confidence.shape[:2] != sequence_shape[:2]:
+        raise ValueError(
+            f"{name} shape must align with sequence frames/joints, "
+            f"got {confidence.shape} vs {sequence_shape[:2]}"
+        )
+    if not np.isfinite(confidence).all():
+        raise ValueError(f"{name} contains NaN or infinite values")
+    return confidence.astype(np.float32)
+
+
+def _confidence_basic_summary(
+    confidence: Optional[np.ndarray],
+    threshold: float,
+) -> Optional[Dict[str, Any]]:
+    if confidence is None:
+        return None
+    return {
+        "mean": round(float(confidence.mean()), 4),
+        "min": round(float(confidence.min()), 4),
+        "max": round(float(confidence.max()), 4),
+        "low_confidence_ratio": round(float((confidence < threshold).mean()), 4),
+    }
+
+
+def _alignment_valid_mask(
+    alignment_path: List[Tuple[int, int]],
+    joint_count: int,
+    confidence1: Optional[np.ndarray],
+    confidence2: Optional[np.ndarray],
+    threshold: float,
+) -> np.ndarray:
+    mask = np.ones((len(alignment_path), joint_count), dtype=bool)
+    if confidence1 is None and confidence2 is None:
+        return mask
+
+    for row, (left, right) in enumerate(alignment_path):
+        if confidence1 is not None:
+            mask[row] &= confidence1[left] >= threshold
+        if confidence2 is not None:
+            mask[row] &= confidence2[right] >= threshold
+    return mask
+
+
+def _nanmean_or_zero(values: np.ndarray) -> float:
+    if values.size == 0 or np.isnan(values).all():
+        return 0.0
+    return float(np.nanmean(values))
+
+
+def _joint_distance_diagnostics(
+    aligned_joint_distances: np.ndarray,
+    valid_mask: np.ndarray,
+    fps1: Optional[float],
+    fps2: Optional[float],
+) -> Dict[str, Any]:
+    valid_distances = np.where(valid_mask, aligned_joint_distances, np.nan)
+    per_joint_mean = np.zeros(valid_distances.shape[1], dtype=np.float32)
+    for joint_index in range(valid_distances.shape[1]):
+        joint_values = valid_distances[:, joint_index]
+        if not np.isnan(joint_values).all():
+            per_joint_mean[joint_index] = float(np.nanmean(joint_values))
+    worst_joint_index = int(np.argmax(per_joint_mean))
+
+    if np.isnan(valid_distances).all():
+        worst_row = 0
+        worst_joint_for_frame = worst_joint_index
+        worst_distance = 0.0
+    else:
+        flat_index = int(np.nanargmax(valid_distances))
+        worst_row, worst_joint_for_frame = np.unravel_index(
+            flat_index,
+            valid_distances.shape,
+        )
+        worst_distance = float(valid_distances[worst_row, worst_joint_for_frame])
+
+    return {
+        "per_joint_mean_distance": [
+            round(float(value), 4) for value in per_joint_mean.tolist()
+        ],
+        "worst_joint": {
+            "joint_index": worst_joint_index,
+            "mean_distance": round(float(per_joint_mean[worst_joint_index]), 4),
+        },
+        "worst_aligned_point": {
+            "path_index": int(worst_row),
+            "joint_index": int(worst_joint_for_frame),
+            "distance": round(worst_distance, 4),
+            "user_frame": None,
+            "reference_frame": None,
+            "user_time_seconds": None,
+            "reference_time_seconds": None,
+        },
+    }
+
+
+def _attach_worst_frame_times(
+    diagnostics: Dict[str, Any],
+    alignment_path: List[Tuple[int, int]],
+    fps1: Optional[float],
+    fps2: Optional[float],
+) -> None:
+    point = diagnostics["worst_aligned_point"]
+    path_index = int(point["path_index"])
+    if path_index >= len(alignment_path):
+        return
+    user_frame, reference_frame = alignment_path[path_index]
+    point["user_frame"] = int(user_frame)
+    point["reference_frame"] = int(reference_frame)
+    if fps1 and fps1 > 0:
+        point["user_time_seconds"] = round(float(user_frame) / float(fps1), 4)
+    if fps2 and fps2 > 0:
+        point["reference_time_seconds"] = round(
+            float(reference_frame) / float(fps2),
+            4,
+        )
+
+
+def _angle_confidence_valid(
+    confidence: Optional[np.ndarray],
+    frame: int,
+    indices: Tuple[int, int, int],
+    threshold: float,
+) -> bool:
+    if confidence is None:
+        return True
+    return bool(np.all(confidence[frame, list(indices)] >= threshold))
+
+
+def _joint_angle_error_report(
+    seq1: np.ndarray,
+    seq2: np.ndarray,
+    alignment_path: List[Tuple[int, int]],
+    joint_schema: Optional[str],
+    confidence1: Optional[np.ndarray],
+    confidence2: Optional[np.ndarray],
+    threshold: float,
+    fps1: Optional[float],
+    fps2: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    if joint_schema != "mediapipe_33" or seq1.shape[1] < 33:
+        return None
+
+    joints = []
+    worst: Optional[Dict[str, Any]] = None
+    for name, indices in MEDIAPIPE_ANGLE_SPECS.items():
+        errors: List[float] = []
+        max_error = 0.0
+        max_pair = (0, 0)
+        for left, right in alignment_path:
+            if not _angle_confidence_valid(confidence1, left, indices, threshold):
+                continue
+            if not _angle_confidence_valid(confidence2, right, indices, threshold):
+                continue
+            angle1 = compute_joint_angles(
+                seq1[left, indices[0]],
+                seq1[left, indices[1]],
+                seq1[left, indices[2]],
+            )
+            angle2 = compute_joint_angles(
+                seq2[right, indices[0]],
+                seq2[right, indices[1]],
+                seq2[right, indices[2]],
+            )
+            error = abs(float(np.degrees(angle1 - angle2)))
+            errors.append(error)
+            if error >= max_error:
+                max_error = error
+                max_pair = (left, right)
+
+        if errors:
+            item = {
+                "joint": name,
+                "mean_error_degrees": round(float(np.mean(errors)), 2),
+                "max_error_degrees": round(float(max_error), 2),
+                "valid_pairs": len(errors),
+                "max_error_frame": {
+                    "user_frame": int(max_pair[0]),
+                    "reference_frame": int(max_pair[1]),
+                    "user_time_seconds": (
+                        round(float(max_pair[0]) / float(fps1), 4)
+                        if fps1 and fps1 > 0
+                        else None
+                    ),
+                    "reference_time_seconds": (
+                        round(float(max_pair[1]) / float(fps2), 4)
+                        if fps2 and fps2 > 0
+                        else None
+                    ),
+                },
+            }
+            joints.append(item)
+            if worst is None or item["max_error_degrees"] > worst["max_error_degrees"]:
+                worst = item
+
+    return {
+        "unit": "degrees",
+        "joint_schema": joint_schema,
+        "joints": joints,
+        "worst": worst,
+    }
+
+
 def load_npz_pose_sequence(npz_path: str) -> ToolResult:
     """Load a validated PoseSequence while preserving schema metadata.
 
@@ -188,12 +408,20 @@ def compute_similarity(
     seq2: np.ndarray,
     *,
     center_indices: Optional[Tuple[int, int]] = None,
+    joint_schema: Optional[str] = None,
+    confidence1: Optional[np.ndarray] = None,
+    confidence2: Optional[np.ndarray] = None,
+    confidence_threshold: float = CONFIDENCE_THRESHOLD,
+    fps1: Optional[float] = None,
+    fps2: Optional[float] = None,
 ) -> ToolResult:
     """Compute multi-dimensional similarity between two motion sequences.
 
     Args:
         seq1: (T1, J, 3) first motion sequence.
         seq2: (T2, J, 3) second motion sequence.
+        confidence1/confidence2: Optional (T, J) confidence arrays used to
+            filter low-quality aligned joints.
 
     Returns:
         ToolResult.data = {
@@ -226,6 +454,19 @@ def compute_similarity(
             "Motion sequences must use the same joint count and coordinate dimensions, "
             f"got {seq1.shape[1:]} vs {seq2.shape[1:]}",
         )
+    try:
+        confidence1 = _validate_confidence(confidence1, seq1.shape, "confidence1")
+        confidence2 = _validate_confidence(confidence2, seq2.shape, "confidence2")
+    except ValueError as exc:
+        return ToolResult.fail(ErrorCode.INVALID_PARAM, str(exc))
+    if not isinstance(confidence_threshold, (int, float)) or not (
+        0.0 <= float(confidence_threshold) <= 1.0
+    ):
+        return ToolResult.fail(
+            ErrorCode.INVALID_PARAM,
+            "confidence_threshold must be between 0.0 and 1.0",
+        )
+    confidence_threshold = float(confidence_threshold)
 
     try:
         # Normalize each frame
@@ -256,11 +497,48 @@ def compute_similarity(
         # mean Euclidean distance between corresponding joints. The previous
         # implementation compared one Frobenius norm per frame, which could
         # hide large joint-level changes behind a similar global magnitude.
-        aligned_joint_distances = [
+        aligned_joint_distances = np.array([
             np.linalg.norm(seq1_norm[left] - seq2_norm[right], axis=1)
             for left, right in alignment_path
-        ]
-        shape_diff = float(np.mean(aligned_joint_distances))
+        ])
+        valid_mask = _alignment_valid_mask(
+            alignment_path,
+            seq1.shape[1],
+            confidence1,
+            confidence2,
+            confidence_threshold,
+        )
+        valid_alignment_ratio = float(valid_mask.mean()) if valid_mask.size else 0.0
+        if valid_mask.size and not valid_mask.any():
+            return ToolResult.fail(
+                ErrorCode.INVALID_PARAM,
+                "No aligned joints passed the confidence quality gate.",
+                meta={
+                    "confidence_threshold": confidence_threshold,
+                    "quality_gate": "no_valid_aligned_joints",
+                },
+            )
+        shape_diff = _nanmean_or_zero(
+            np.where(valid_mask, aligned_joint_distances, np.nan)
+        )
+        joint_diagnostics = _joint_distance_diagnostics(
+            aligned_joint_distances,
+            valid_mask,
+            fps1,
+            fps2,
+        )
+        _attach_worst_frame_times(joint_diagnostics, alignment_path, fps1, fps2)
+        angle_report = _joint_angle_error_report(
+            seq1,
+            seq2,
+            alignment_path,
+            joint_schema,
+            confidence1,
+            confidence2,
+            confidence_threshold,
+            fps1,
+            fps2,
+        )
     except Exception as e:
         return ToolResult.fail(
             ErrorCode.INTERNAL_ERROR,
@@ -290,11 +568,29 @@ def compute_similarity(
     else:
         overall = "动作与标准差异较大，建议在教练指导下调整动作模式。"
 
+    quality_report = {
+        "confidence_threshold": confidence_threshold,
+        "min_valid_alignment_ratio": MIN_VALID_ALIGNMENT_RATIO,
+        "valid_alignment_ratio": round(valid_alignment_ratio, 4),
+        "accepted": valid_alignment_ratio >= MIN_VALID_ALIGNMENT_RATIO,
+        "user_confidence": _confidence_basic_summary(
+            confidence1,
+            confidence_threshold,
+        ),
+        "reference_confidence": _confidence_basic_summary(
+            confidence2,
+            confidence_threshold,
+        ),
+    }
+
     return ToolResult.ok(
         data={
             "dtw_distance": round(dtw_normalized, 4),
             "cosine_similarity": round(cos_sim, 4),
             "shape_difference": round(shape_diff, 4),
+            "joint_distance": joint_diagnostics,
+            "joint_angle_errors": angle_report,
+            "quality": quality_report,
             "labels": {
                 "dtw": dtw_label,
                 "cosine": cos_label,
@@ -363,6 +659,11 @@ def compute_pose_sequence_similarity(
         user_sequence.analysis_keypoints(),
         reference_sequence.analysis_keypoints(),
         center_indices=center_indices,
+        joint_schema=user_sequence.joint_schema,
+        confidence1=user_sequence.confidence,
+        confidence2=reference_sequence.confidence,
+        fps1=user_sequence.fps,
+        fps2=reference_sequence.fps,
     )
     if result.ok:
         result.meta.update(
