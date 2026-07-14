@@ -680,8 +680,12 @@ class MilvusRetriever:
         if not ids:
             return 0
         client = self._ensure_client()
-        client.delete(collection_name=self.collection_name, ids=ids)
-        return len(ids)
+        result = client.delete(collection_name=self.collection_name, ids=ids)
+        if isinstance(result, dict):
+            deleted = result.get("delete_count")
+            if deleted is not None:
+                return int(deleted)
+        return 0
 
     def add_documents(
         self,
@@ -893,6 +897,7 @@ class ResilientRetriever:
         self._active_backend = "milvus"
         self._documents: List[str] = []
         self._sources: List[str] = []
+        self._latest_by_source: Dict[str, str] = {}
         self._fallback_hydrated = False
         self._fallback_reason = ""
 
@@ -902,9 +907,11 @@ class ResilientRetriever:
         self._active_backend = "memory"
         self._fallback_reason = failed.error_message or failed.error_code or "unknown"
         if not self._fallback_hydrated:
+            documents = list(self._latest_by_source.values()) or self._documents
+            sources = list(self._latest_by_source.keys()) or self._sources
             hydrated = self.fallback.add_documents(
-                self._documents,
-                self._sources,
+                documents,
+                sources,
             )
             if not hydrated.ok:
                 return hydrated
@@ -938,11 +945,15 @@ class ResilientRetriever:
         sources: Optional[Sequence[str]] = None,
     ) -> ToolResult:
         normalized_sources = list(sources or [])
-        self._documents.extend(docs)
-        self._sources.extend(
+        self._documents = list(docs)
+        self._sources = [
             normalized_sources[index] if index < len(normalized_sources) else ""
             for index in range(len(docs))
-        )
+        ]
+        for index, doc in enumerate(docs):
+            source = self._sources[index]
+            if source:
+                self._latest_by_source[source] = doc
         if self._active_backend == "memory":
             result = self.fallback.add_documents(docs, normalized_sources)
             return self._decorate(result)
@@ -975,6 +986,7 @@ class ResilientRetriever:
         fallback_result = self.fallback.clear()
         self._documents = []
         self._sources = []
+        self._latest_by_source = {}
         self._fallback_hydrated = False
         self._active_backend = "milvus"
         self._fallback_reason = ""

@@ -97,7 +97,9 @@ class FakeMilvusClient:
     def delete(self, collection_name, ids):
         self.deleted_ids.extend(ids)
         remove_ids = set(ids)
+        before = len(self.rows)
         self.rows = [row for row in self.rows if row["id"] not in remove_ids]
+        return {"delete_count": before - len(self.rows)}
 
     def flush(self, collection_name):
         self.flushed = True
@@ -189,6 +191,7 @@ def test_add_documents_creates_collection_index_and_upserts():
     assert result.data["manifest"]["sources"][0]["chunk_ids"] == [
         expected_entries[0]["id"]
     ]
+    assert result.data["removed"] == 0
 
 
 def test_upsert_is_idempotent_for_same_chunk():
@@ -196,9 +199,10 @@ def test_upsert_is_idempotent_for_same_chunk():
     docs = ["渐进超负荷需要逐步增加训练刺激。"]
 
     assert retriever.add_documents(docs).ok
-    assert retriever.add_documents(docs).ok
+    second = retriever.add_documents(docs)
 
     assert len(client.rows) == 1
+    assert second.data["removed"] == 1
     assert client.deleted_ids
 
 
@@ -216,7 +220,7 @@ def test_reingesting_same_source_removes_stale_chunks():
 
     assert first.ok
     assert second.ok
-    assert second.data["removed"] >= 1
+    assert second.data["removed"] == first.data["upserted"]
     assert len(client.rows) == 1
     assert client.rows[0]["content"] == "深蹲" * 10
 
@@ -283,6 +287,29 @@ class FailingPrimary:
         return None
 
 
+class FlakyPrimary:
+    document_count = 0
+
+    def __init__(self):
+        self.fail = False
+
+    def add_documents(self, docs, sources=None):
+        if self.fail:
+            return ToolResult.fail(ErrorCode.NETWORK_ERROR, "connection refused")
+        return ToolResult.ok(data={"upserted": len(docs)}, backend="milvus")
+
+    def search(self, query, top_k=5, threshold=0.3):
+        if self.fail:
+            return ToolResult.fail(ErrorCode.NETWORK_ERROR, "connection refused")
+        return ToolResult.ok(data=[], backend="milvus")
+
+    def clear(self):
+        return ToolResult.ok(data={"cleared": True}, backend="milvus")
+
+    def close(self):
+        return None
+
+
 def test_resilient_retriever_hydrates_memory_after_milvus_failure():
     fallback = MemoryRetriever(embedding_model="mock")
     fallback._encoder = make_encoder()
@@ -304,3 +331,24 @@ def test_resilient_retriever_hydrates_memory_after_milvus_failure():
     assert search_result.data[0]["source"] == "fitness.txt"
     assert search_result.meta["backend"] == "memory"
     assert "connection refused" in search_result.meta["fallback_reason"]
+
+
+def test_resilient_retriever_hydrates_latest_source_only_after_milvus_failure():
+    primary = FlakyPrimary()
+    fallback = MemoryRetriever(embedding_model="mock")
+    fallback._encoder = make_encoder()
+    retriever = ResilientRetriever(
+        primary=primary,
+        fallback=fallback,
+        fallback_enabled=True,
+    )
+
+    assert retriever.add_documents(["旧知识"], sources=["fitness.txt"]).ok
+    assert retriever.add_documents(["新知识"], sources=["fitness.txt"]).ok
+    primary.fail = True
+
+    result = retriever.search("新知识", top_k=5, threshold=0.0)
+
+    assert result.ok
+    assert fallback.document_count == 1
+    assert fallback._documents == ["新知识"]
