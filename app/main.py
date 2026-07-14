@@ -956,6 +956,11 @@ async def analyze_motion_video(
             warnings.append(
                 "相似度仅表示与所选标准样本的统计接近程度，不等同于专业教练的动作质量诊断。"
             )
+            quality = metrics.get("quality") if isinstance(metrics, dict) else None
+            if isinstance(quality, dict) and quality.get("accepted") is False:
+                warnings.append(
+                    "关键点有效对齐比例低于质量门控阈值，本次相似度仅作低置信参考，建议重新拍摄后再判断。"
+                )
         else:
             warnings.append(
                 "未选择标准动作，本次仅提取多帧 PoseSequence，不执行相似度评分。"

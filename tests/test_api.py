@@ -608,6 +608,65 @@ class TestMotionAnalyzeVideoEndpoint:
         assert data["execution"][0]["mode"] == "mediapipe_video_similarity"
         assert "统计接近程度" in data["warnings"][-1]
 
+    def test_motion_video_warns_when_similarity_quality_not_accepted(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        from app.config import config
+        from app.tools import motion_tool, pose_estimator
+
+        sequence = PoseSequence(
+            keypoints=np.random.RandomState(11).randn(12, 33, 3).astype(np.float32),
+            fps=10.0,
+            source_type="video",
+            pose_model="mediapipe_pose",
+            joint_schema="mediapipe_33",
+            confidence=np.ones((12, 33), dtype=np.float32) * 0.95,
+            metadata={
+                "sampled_frames": 12,
+                "valid_frames": 12,
+                "valid_frame_ratio": 1.0,
+            },
+        )
+        np.savez_compressed(
+            tmp_path / "squat_standard.npz",
+            **pose_sequence_to_npz_payload(sequence),
+        )
+        monkeypatch.setattr(config, "motion_library_dir", str(tmp_path))
+        monkeypatch.setattr(
+            pose_estimator,
+            "estimate_pose_from_video_path",
+            lambda *args, **kwargs: ToolResult.ok(data=sequence),
+        )
+        monkeypatch.setattr(
+            motion_tool,
+            "compute_pose_sequence_similarity",
+            lambda *args, **kwargs: ToolResult.ok(
+                data={
+                    "dtw_distance": 0.5,
+                    "cosine_similarity": 0.8,
+                    "shape_difference": 0.2,
+                    "quality": {
+                        "valid_alignment_ratio": 0.4,
+                        "min_valid_alignment_ratio": 0.6,
+                        "accepted": False,
+                    },
+                }
+            ),
+        )
+
+        response = client.post(
+            "/motion/analyze-video",
+            data={"reference_name": "squat_standard"},
+            files={"file": ("squat.mp4", io.BytesIO(b"fake-video"), "video/mp4")},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["metrics"]["quality"]["accepted"] is False
+        assert any("低置信参考" in warning for warning in data["warnings"])
+
     def test_motion_video_rejects_incompatible_reference(
         self,
         monkeypatch,
