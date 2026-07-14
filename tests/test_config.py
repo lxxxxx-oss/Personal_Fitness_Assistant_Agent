@@ -8,6 +8,7 @@ def test_float_environment_values_are_parsed(monkeypatch):
     monkeypatch.setenv("RETRIEVER_THRESHOLD", "0.42")
     monkeypatch.setenv("RETRIEVER_CHUNK_CHARS", "256")
     monkeypatch.setenv("RETRIEVER_CHUNK_OVERLAP_CHARS", "32")
+    monkeypatch.setenv("RETRIEVER_KNOWLEDGE_VERSION", "kb-2026-07")
 
     config = Config()
 
@@ -15,6 +16,7 @@ def test_float_environment_values_are_parsed(monkeypatch):
     assert config.retriever_threshold == 0.42
     assert config.retriever_chunk_chars == 256
     assert config.retriever_chunk_overlap_chars == 32
+    assert config.retriever_knowledge_version == "kb-2026-07"
 
 
 def test_invalid_float_environment_value_uses_default(monkeypatch):

@@ -54,6 +54,8 @@ class MemoryRetriever:
         self._encoder = None
         self._documents: List[str] = []
         self._sources: List[str] = []
+        self._chunk_ids: List[int] = []
+        self._source_latest_ids: Dict[str, List[int]] = {}
         self._embeddings: Optional[np.ndarray] = None
 
     def _ensure_encoder(self):
@@ -97,7 +99,7 @@ class MemoryRetriever:
                     results.append({
                         "content": self._documents[idx],
                         "score": score,
-                        "index": idx,
+                        "index": self._chunk_ids[idx],
                         "source": self._sources[idx],
                     })
 
@@ -120,12 +122,14 @@ class MemoryRetriever:
 
                 if substring_score > 0:
                     # 不重复添加已在方法1中的结果
-                    existing = [r for r in results if r["index"] == idx]
+                    existing = [
+                        r for r in results if r["index"] == self._chunk_ids[idx]
+                    ]
                     if not existing:
                         results.append({
                             "content": self._documents[idx],
                             "score": substring_score,
-                            "index": idx,
+                            "index": self._chunk_ids[idx],
                             "source": self._sources[idx],
                         })
 
@@ -136,6 +140,25 @@ class MemoryRetriever:
     def document_count(self) -> int:
         return len(self._documents)
 
+    def _remove_chunk_ids(self, ids_to_remove: Sequence[int]) -> int:
+        remove_set = set(ids_to_remove)
+        if not remove_set:
+            return 0
+        keep_indices = [
+            index
+            for index, chunk_id in enumerate(self._chunk_ids)
+            if chunk_id not in remove_set
+        ]
+        removed = len(self._chunk_ids) - len(keep_indices)
+        if removed <= 0:
+            return 0
+        self._documents = [self._documents[index] for index in keep_indices]
+        self._sources = [self._sources[index] for index in keep_indices]
+        self._chunk_ids = [self._chunk_ids[index] for index in keep_indices]
+        if self._embeddings is not None:
+            self._embeddings = self._embeddings[keep_indices]
+        return removed
+
     def add_documents(
         self,
         docs: List[str],
@@ -143,22 +166,31 @@ class MemoryRetriever:
     ) -> ToolResult:
         """Add documents to the in-memory store after sentence-aware chunking."""
         self._ensure_encoder()
-        chunks = []
-        chunk_sources = []
         normalized_sources = list(sources or [])
-        for index, doc in enumerate(docs):
-            doc_chunks = _chinese_sentence_split(
-                doc,
-                max_chunk_chars=config.retriever_chunk_chars,
-                overlap_chars=config.retriever_chunk_overlap_chars,
-            )
-            chunks.extend(doc_chunks)
-            source = normalized_sources[index] if index < len(normalized_sources) else ""
-            chunk_sources.extend([source] * len(doc_chunks))
+        entries = _build_chunk_entries(docs, normalized_sources)
+        chunks = [entry["content"] for entry in entries]
+        chunk_sources = [entry["source"] for entry in entries]
         if not chunks:
             return ToolResult.ok(data={"upserted": 0}, backend="memory")
+        incoming_ids = [int(entry["id"]) for entry in entries]
+        removed = self._remove_chunk_ids(incoming_ids)
+        source_groups: Dict[str, List[int]] = {}
+        for entry in entries:
+            source = str(entry["source"])
+            if source:
+                source_groups.setdefault(source, []).append(int(entry["id"]))
+        stale_removed = 0
+        for source, new_ids in source_groups.items():
+            stale_ids = [
+                chunk_id
+                for chunk_id in self._source_latest_ids.get(source, [])
+                if chunk_id not in set(new_ids)
+            ]
+            stale_removed += self._remove_chunk_ids(stale_ids)
+            self._source_latest_ids[source] = list(new_ids)
         self._documents.extend(chunks)
         self._sources.extend(chunk_sources)
+        self._chunk_ids.extend(incoming_ids)
         if self._encoder is not None:
             new_embeddings = self._encoder.encode(chunks, normalize_embeddings=True)
             if self._embeddings is None:
@@ -167,7 +199,11 @@ class MemoryRetriever:
                 self._embeddings = np.vstack([self._embeddings, new_embeddings])
         logger.info(f"Added {len(chunks)} chunks, total: {len(self._documents)}")
         return ToolResult.ok(
-            data={"upserted": len(chunks)},
+            data={
+                "upserted": len(chunks),
+                "removed": removed + stale_removed,
+                "manifest": _manifest_from_entries(entries),
+            },
             backend="memory",
             total_docs=len(self._documents),
         )
@@ -250,7 +286,7 @@ class MemoryRetriever:
             results.append({
                 "content": content,
                 "score": float(scores[int(idx)]),
-                "index": int(idx),
+                "index": int(self._chunk_ids[int(idx)]),
                 "source": self._sources[int(idx)],
             })
         return ToolResult.ok(
@@ -263,6 +299,8 @@ class MemoryRetriever:
         """清空全部文档和向量."""
         self._documents = []
         self._sources = []
+        self._chunk_ids = []
+        self._source_latest_ids = {}
         self._embeddings = None
         return ToolResult.ok(data={"cleared": True}, backend="memory")
 
@@ -320,10 +358,102 @@ def _chinese_sentence_split(
     return chunks or [text]
 
 
-def _stable_chunk_id(content: str) -> int:
-    """Build a deterministic positive INT64 primary key for a text chunk."""
-    digest = hashlib.blake2b(content.encode("utf-8"), digest_size=8).digest()
+def _content_hash(content: str) -> str:
+    """Build a stable content hash for manifest and chunk identity."""
+    return hashlib.blake2b(content.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _stable_chunk_id(
+    content: str,
+    source: str = "",
+    chunk_index: Optional[int] = None,
+    version: Optional[str] = None,
+) -> int:
+    """Build a deterministic positive INT64 primary key for a text chunk.
+
+    The default call keeps backward-compatible content-only behavior for tests
+    and ad-hoc callers. Retriever ingestion passes source, chunk_index, and
+    knowledge version so updated files do not collide with unrelated chunks.
+    """
+    if not source and chunk_index is None and version is None:
+        digest = hashlib.blake2b(content.encode("utf-8"), digest_size=8).digest()
+        return int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 63) - 1)
+
+    identity_parts = [version or "", source or ""]
+    if chunk_index is not None:
+        identity_parts.append(str(chunk_index))
+    identity_parts.append(_content_hash(content))
+    identity = "\x1f".join(identity_parts)
+    digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 63) - 1)
+
+
+def _build_chunk_entries(
+    docs: Sequence[str],
+    sources: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Chunk documents and attach versioned identity metadata."""
+    normalized_sources = list(sources or [])
+    entries: List[Dict[str, Any]] = []
+    version = str(config.retriever_knowledge_version or "v1")
+    for doc_index, doc in enumerate(docs):
+        source = (
+            str(normalized_sources[doc_index])[:1024]
+            if doc_index < len(normalized_sources)
+            else ""
+        )
+        chunks = [
+            chunk
+            for chunk in _chinese_sentence_split(
+                doc,
+                max_chunk_chars=config.retriever_chunk_chars,
+                overlap_chars=config.retriever_chunk_overlap_chars,
+            )
+            if chunk.strip()
+        ]
+        for chunk_index, content in enumerate(chunks):
+            entries.append(
+                {
+                    "id": _stable_chunk_id(
+                        content,
+                        source=source,
+                        chunk_index=chunk_index,
+                        version=version,
+                    ),
+                    "content": content,
+                    "source": source,
+                    "chunk_index": chunk_index,
+                    "content_hash": _content_hash(content),
+                    "version": version,
+                }
+            )
+    return entries
+
+
+def _manifest_from_entries(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return a compact ingestion manifest safe to expose in ToolResult."""
+    sources: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        source = str(entry.get("source") or "")
+        bucket = sources.setdefault(
+            source,
+            {
+                "source": source,
+                "version": entry.get("version", ""),
+                "chunk_count": 0,
+                "chunk_ids": [],
+                "content_hashes": [],
+            },
+        )
+        bucket["chunk_count"] += 1
+        bucket["chunk_ids"].append(int(entry["id"]))
+        bucket["content_hashes"].append(str(entry["content_hash"]))
+    return {
+        "version": str(config.retriever_knowledge_version or "v1"),
+        "source_count": len(sources),
+        "chunk_count": len(entries),
+        "sources": list(sources.values()),
+    }
 
 
 def _milvus_error_code(exc: Exception) -> str:
@@ -416,6 +546,7 @@ class MilvusRetriever:
         self._milvus_client_type = None
         self._data_type = None
         self._dimension: Optional[int] = None
+        self._source_latest_ids: Dict[str, List[int]] = {}
 
     def _ensure_encoder(self):
         if self._encoder is not None:
@@ -543,6 +674,15 @@ class MilvusRetriever:
         except Exception:
             return 0
 
+    def _delete_chunk_ids(self, chunk_ids: Sequence[int]) -> int:
+        """Delete known stale chunks by primary key from this collection."""
+        ids = [int(chunk_id) for chunk_id in chunk_ids]
+        if not ids:
+            return 0
+        client = self._ensure_client()
+        client.delete(collection_name=self.collection_name, ids=ids)
+        return len(ids)
+
     def add_documents(
         self,
         docs: List[str],
@@ -555,27 +695,14 @@ class MilvusRetriever:
                 "docs must be a list of strings",
             )
         normalized_sources = list(sources or [])
-        chunks: List[str] = []
-        chunk_sources: List[str] = []
-        for index, doc in enumerate(docs):
-            doc_chunks = [
-                chunk
-                for chunk in _chinese_sentence_split(
-                    doc,
-                    max_chunk_chars=config.retriever_chunk_chars,
-                    overlap_chars=config.retriever_chunk_overlap_chars,
-                )
-                if chunk.strip()
-            ]
-            chunks.extend(doc_chunks)
-            source = normalized_sources[index] if index < len(normalized_sources) else ""
-            chunk_sources.extend([str(source)[:1024]] * len(doc_chunks))
-        if not chunks:
+        entries = _build_chunk_entries(docs, normalized_sources)
+        if not entries:
             return ToolResult.ok(
                 data={"upserted": 0},
                 backend="milvus",
                 collection=self.collection_name,
             )
+        chunks = [str(entry["content"]) for entry in entries]
 
         try:
             self._ensure_encoder()
@@ -589,14 +716,31 @@ class MilvusRetriever:
                     f"{embeddings.shape}"
                 )
             self._ensure_collection(int(embeddings.shape[1]))
+            incoming_ids = [int(entry["id"]) for entry in entries]
+            removed = self._delete_chunk_ids(incoming_ids)
+            source_groups: Dict[str, List[int]] = {}
+            for entry in entries:
+                source = str(entry["source"])
+                if source:
+                    source_groups.setdefault(source, []).append(int(entry["id"]))
+            stale_removed = 0
+            for source, new_ids in source_groups.items():
+                new_id_set = set(new_ids)
+                stale_ids = [
+                    chunk_id
+                    for chunk_id in self._source_latest_ids.get(source, [])
+                    if chunk_id not in new_id_set
+                ]
+                stale_removed += self._delete_chunk_ids(stale_ids)
+                self._source_latest_ids[source] = list(new_ids)
             rows = [
                 {
-                    "id": _stable_chunk_id(content),
+                    "id": int(entry["id"]),
                     "vector": embeddings[index].tolist(),
-                    "content": content,
-                    "source": chunk_sources[index],
+                    "content": str(entry["content"]),
+                    "source": str(entry["source"]),
                 }
-                for index, content in enumerate(chunks)
+                for index, entry in enumerate(entries)
             ]
             result = self._client.upsert(
                 collection_name=self.collection_name,
@@ -606,7 +750,9 @@ class MilvusRetriever:
             return ToolResult.ok(
                 data={
                     "upserted": len(rows),
+                    "removed": removed + stale_removed,
                     "primary_keys": result.get("primary_keys", []),
+                    "manifest": _manifest_from_entries(entries),
                 },
                 backend="milvus",
                 collection=self.collection_name,
@@ -713,6 +859,7 @@ class MilvusRetriever:
             if client.has_collection(collection_name=self.collection_name):
                 client.drop_collection(collection_name=self.collection_name)
             self._dimension = None
+            self._source_latest_ids = {}
             return ToolResult.ok(
                 data={"cleared": True},
                 backend="milvus",

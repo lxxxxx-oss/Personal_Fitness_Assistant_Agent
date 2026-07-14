@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from app.tools.retriever import (
     MemoryRetriever,
+    _build_chunk_entries,
     _chinese_sentence_split,
 )
 
@@ -117,3 +118,39 @@ class TestMemoryRetriever:
         assert retriever.document_count == 0
         retriever.add_documents(sample_docs)
         assert retriever.document_count >= 1
+
+    def test_add_documents_returns_manifest_with_versioned_chunk_ids(
+        self,
+        retriever,
+    ):
+        result = retriever.add_documents(
+            ["深蹲训练需要保持核心稳定。"],
+            sources=["fitness.txt"],
+        )
+        expected_entries = _build_chunk_entries(
+            ["深蹲训练需要保持核心稳定。"],
+            ["fitness.txt"],
+        )
+
+        assert result.ok
+        assert result.data["manifest"]["chunk_count"] == 1
+        assert result.data["manifest"]["sources"][0]["source"] == "fitness.txt"
+        assert result.data["manifest"]["sources"][0]["chunk_ids"] == [
+            expected_entries[0]["id"]
+        ]
+
+    def test_reingesting_same_source_replaces_stale_chunks(self, retriever):
+        first = retriever.add_documents(
+            ["深蹲" * 300],
+            sources=["fitness.txt"],
+        )
+        second = retriever.add_documents(
+            ["深蹲" * 10],
+            sources=["fitness.txt"],
+        )
+
+        assert first.ok
+        assert second.ok
+        assert second.data["removed"] >= 1
+        assert retriever.document_count == 1
+        assert retriever._documents == ["深蹲" * 10]

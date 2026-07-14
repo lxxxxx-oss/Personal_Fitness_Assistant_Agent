@@ -9,7 +9,7 @@ from app.tools.retriever import (
     MemoryRetriever,
     MilvusRetriever,
     ResilientRetriever,
-    _stable_chunk_id,
+    _build_chunk_entries,
 )
 from app.tools.types import ErrorCode, ToolResult
 
@@ -56,6 +56,7 @@ class FakeMilvusClient:
         self.loaded = False
         self.flushed = False
         self.closed = False
+        self.deleted_ids = []
 
     def has_collection(self, collection_name):
         return self.collection_exists
@@ -92,6 +93,11 @@ class FakeMilvusClient:
         by_id.update({row["id"]: row for row in data})
         self.rows = list(by_id.values())
         return {"primary_keys": [row["id"] for row in data]}
+
+    def delete(self, collection_name, ids):
+        self.deleted_ids.extend(ids)
+        remove_ids = set(ids)
+        self.rows = [row for row in self.rows if row["id"] not in remove_ids]
 
     def flush(self, collection_name):
         self.flushed = True
@@ -173,8 +179,16 @@ def test_add_documents_creates_collection_index_and_upserts():
             "params": {"nlist": 32},
         }
     ]
+    expected_entries = _build_chunk_entries(
+        ["深蹲训练需要保持核心稳定。"],
+        ["fitness.txt"],
+    )
     assert client.rows[0]["source"] == "fitness.txt"
-    assert client.rows[0]["id"] == _stable_chunk_id(client.rows[0]["content"])
+    assert client.rows[0]["id"] == expected_entries[0]["id"]
+    assert result.data["manifest"]["sources"][0]["source"] == "fitness.txt"
+    assert result.data["manifest"]["sources"][0]["chunk_ids"] == [
+        expected_entries[0]["id"]
+    ]
 
 
 def test_upsert_is_idempotent_for_same_chunk():
@@ -185,6 +199,26 @@ def test_upsert_is_idempotent_for_same_chunk():
     assert retriever.add_documents(docs).ok
 
     assert len(client.rows) == 1
+    assert client.deleted_ids
+
+
+def test_reingesting_same_source_removes_stale_chunks():
+    retriever, client = make_retriever()
+
+    first = retriever.add_documents(
+        ["深蹲" * 300],
+        sources=["fitness.txt"],
+    )
+    second = retriever.add_documents(
+        ["深蹲" * 10],
+        sources=["fitness.txt"],
+    )
+
+    assert first.ok
+    assert second.ok
+    assert second.data["removed"] >= 1
+    assert len(client.rows) == 1
+    assert client.rows[0]["content"] == "深蹲" * 10
 
 
 def test_search_returns_thresholded_structured_results():

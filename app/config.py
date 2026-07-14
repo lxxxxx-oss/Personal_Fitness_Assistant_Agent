@@ -106,6 +106,9 @@ class Config:
     retriever_chunk_overlap_chars: int = field(
         default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_OVERLAP_CHARS", 0)
     )
+    retriever_knowledge_version: str = field(
+        default_factory=lambda: os.getenv("RETRIEVER_KNOWLEDGE_VERSION", "v1")
+    )
     embedding_model: str = field(
         default_factory=lambda: os.getenv(
             "EMBEDDING_MODEL",
