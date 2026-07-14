@@ -24,6 +24,25 @@ class TestChineseSentenceSplit:
         chunks = _chinese_sentence_split(text)
         assert chunks == [""]
 
+    def test_overlong_sentence_is_split_by_max_chunk_chars(self):
+        text = "深蹲" * 120
+        chunks = _chinese_sentence_split(text, max_chunk_chars=50)
+
+        assert len(chunks) > 1
+        assert all(len(chunk) <= 50 for chunk in chunks)
+        assert "".join(chunks) == text
+
+    def test_overlong_sentence_supports_overlap(self):
+        text = "abcdefghijklmnopqrstuvwxyz"
+        chunks = _chinese_sentence_split(
+            text,
+            max_chunk_chars=10,
+            overlap_chars=2,
+        )
+
+        assert chunks[:2] == ["abcdefghij", "ijklmnopqr"]
+        assert all(len(chunk) <= 10 for chunk in chunks)
+
 
 class TestMemoryRetriever:
     @pytest.fixture

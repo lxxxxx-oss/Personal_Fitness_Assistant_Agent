@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
+from app.config import config
 from app.tools.types import (
     ToolResult,
     ErrorCode,
@@ -146,7 +147,11 @@ class MemoryRetriever:
         chunk_sources = []
         normalized_sources = list(sources or [])
         for index, doc in enumerate(docs):
-            doc_chunks = _chinese_sentence_split(doc)
+            doc_chunks = _chinese_sentence_split(
+                doc,
+                max_chunk_chars=config.retriever_chunk_chars,
+                overlap_chars=config.retriever_chunk_overlap_chars,
+            )
             chunks.extend(doc_chunks)
             source = normalized_sources[index] if index < len(normalized_sources) else ""
             chunk_sources.extend([source] * len(doc_chunks))
@@ -262,18 +267,47 @@ class MemoryRetriever:
         return ToolResult.ok(data={"cleared": True}, backend="memory")
 
 
-def _chinese_sentence_split(text: str, max_chunk_chars: int = 500) -> List[str]:
+def _split_long_segment(
+    segment: str,
+    max_chunk_chars: int,
+    overlap_chars: int = 0,
+) -> List[str]:
+    """Split one overlong sentence into bounded windows."""
+    if len(segment) <= max_chunk_chars:
+        return [segment]
+    safe_overlap = max(0, min(overlap_chars, max_chunk_chars - 1))
+    step = max_chunk_chars - safe_overlap
+    return [
+        segment[start : start + max_chunk_chars]
+        for start in range(0, len(segment), step)
+        if segment[start : start + max_chunk_chars]
+    ]
+
+
+def _chinese_sentence_split(
+    text: str,
+    max_chunk_chars: int = 500,
+    overlap_chars: int = 0,
+) -> List[str]:
     """Sentence-aware text chunking (supports both Chinese and English).
 
     Splits on natural sentence boundaries — Chinese/English punctuation
     and newlines. Long sentences are further split by max_chunk_chars.
     """
+    max_chunk_chars = max(1, int(max_chunk_chars))
+    overlap_chars = max(0, int(overlap_chars))
     sentences = re.split(r"(?<=[。！？.!?\n])\s*", text)
     chunks = []
     current = ""
     for sent in sentences:
         sent = sent.strip()
         if not sent:
+            continue
+        if len(sent) > max_chunk_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_segment(sent, max_chunk_chars, overlap_chars))
             continue
         if len(current) + len(sent) <= max_chunk_chars:
             current += sent
@@ -525,7 +559,13 @@ class MilvusRetriever:
         chunk_sources: List[str] = []
         for index, doc in enumerate(docs):
             doc_chunks = [
-                chunk for chunk in _chinese_sentence_split(doc) if chunk.strip()
+                chunk
+                for chunk in _chinese_sentence_split(
+                    doc,
+                    max_chunk_chars=config.retriever_chunk_chars,
+                    overlap_chars=config.retriever_chunk_overlap_chars,
+                )
+                if chunk.strip()
             ]
             chunks.extend(doc_chunks)
             source = normalized_sources[index] if index < len(normalized_sources) else ""

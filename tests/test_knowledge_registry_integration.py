@@ -4,7 +4,12 @@ from app.tools.registry import ToolRegistry, ToolSpec
 from app.tools.types import ErrorCode, ToolResult
 
 
-def _knowledge_registry(result: ToolResult) -> ToolRegistry:
+def _knowledge_registry(result: ToolResult, captured_args=None) -> ToolRegistry:
+    def execute(args):
+        if captured_args is not None:
+            captured_args.append(args)
+        return result
+
     registry = ToolRegistry()
     registry.register(
         ToolSpec(
@@ -21,7 +26,7 @@ def _knowledge_registry(result: ToolResult) -> ToolRegistry:
                 },
             },
             permission="read_knowledge",
-            executor=lambda args: result,
+            executor=execute,
         )
     )
     return registry
@@ -87,6 +92,50 @@ def test_diet_retrieve_node_uses_registry(monkeypatch):
     assert result_state["_retrieved"] == tool_result.data
     assert result_state["_retrieval_meta"]["tool_name"] == "knowledge.retrieve"
     assert result_state["_execution"][0]["component"] == "rag"
+
+
+def test_retrieve_nodes_use_configured_rag_parameters(monkeypatch):
+    from app.config import config
+    from app.graph.subgraphs import rag_context
+    from app.graph.subgraphs.chat import retrieve_node
+    from app.graph.subgraphs.diet import retrieve_nutrition_node
+
+    captured_args = []
+    monkeypatch.setattr(config, "retriever_top_k", 3)
+    monkeypatch.setattr(config, "retriever_threshold", 0.72)
+    monkeypatch.setattr(
+        rag_context,
+        "_rag_tool_registry",
+        _knowledge_registry(
+            ToolResult.ok(data=[], backend="memory", mode="embedding"),
+            captured_args=captured_args,
+        ),
+    )
+    state = {
+        "user_input": "深蹲怎么做",
+        "user_id": "u1",
+        "intent": "chat",
+        "memory": [],
+        "result": "",
+        "error": None,
+    }
+
+    retrieve_node(state)
+    diet_state = {
+        "user_input": "减脂怎么吃",
+        "user_id": "u1",
+        "intent": "diet",
+        "memory": [],
+        "result": "",
+        "error": None,
+        "_user_profile": {"goal": "减脂"},
+    }
+    retrieve_nutrition_node(diet_state)
+
+    assert captured_args[0]["top_k"] == 3
+    assert captured_args[0]["threshold"] == 0.72
+    assert captured_args[1]["top_k"] == 3
+    assert captured_args[1]["threshold"] == 0.72
 
 
 def test_chat_retrieve_node_records_registry_failure(monkeypatch):

@@ -6,6 +6,7 @@ from typing import Any, Literal, Optional, Tuple
 from langgraph.graph import StateGraph, END
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from app.config import config
 from app.graph.prompt_builder import PromptBuilder
 from app.graph.state import RouterState, record_execution
 from app.graph.structured_state import add_knowledge_sources, merge_profile
@@ -97,7 +98,11 @@ def retrieve_nutrition_node(state: RouterState) -> RouterState:
     """RAG retrieval: search shared nutrition knowledge base."""
     profile = state.get("_user_profile", {})
     query = f"{state['user_input']} {json.dumps(profile, ensure_ascii=False)}"
-    result = retrieve_knowledge(query, top_k=5, threshold=0.3)
+    result = retrieve_knowledge(
+        query,
+        top_k=config.retriever_top_k,
+        threshold=config.retriever_threshold,
+    )
     state["_retrieved"] = result.data if result.ok and result.data else []  # type: ignore
     state["_retrieval_meta"] = result.meta  # type: ignore
     backend = str(result.meta.get("backend") or "memory")

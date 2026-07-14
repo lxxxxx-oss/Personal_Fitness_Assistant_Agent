@@ -3,6 +3,7 @@ import logging
 
 from langgraph.graph import StateGraph, END
 
+from app.config import config
 from app.graph.prompt_builder import PromptBuilder
 from app.graph.state import RouterState, record_execution
 from app.graph.structured_state import add_knowledge_sources
@@ -13,7 +14,11 @@ logger = logging.getLogger(__name__)
 
 def retrieve_node(state: RouterState) -> RouterState:
     """Retrieve relevant documents from the shared knowledge base."""
-    result = retrieve_knowledge(state["user_input"], top_k=5, threshold=0.3)
+    result = retrieve_knowledge(
+        state["user_input"],
+        top_k=config.retriever_top_k,
+        threshold=config.retriever_threshold,
+    )
     retrieved = result.data if result.ok and result.data else []
     state["_retrieved"] = retrieved  # type: ignore
     state["_retrieval_meta"] = result.meta  # type: ignore

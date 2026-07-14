@@ -100,6 +100,12 @@ class Config:
     retriever_threshold: float = field(
         default_factory=lambda: _get_float_env("RETRIEVER_THRESHOLD", 0.5)
     )
+    retriever_chunk_chars: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_CHARS", 500)
+    )
+    retriever_chunk_overlap_chars: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_OVERLAP_CHARS", 0)
+    )
     embedding_model: str = field(
         default_factory=lambda: os.getenv(
             "EMBEDDING_MODEL",
