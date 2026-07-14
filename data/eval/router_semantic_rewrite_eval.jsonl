@@ -1,0 +1,10 @@
+{"text":"想看看最近有没有靠谱的减脂研究","intent":"search","category":"semantic_rewrite","rewrite_of":"查一下最新减脂研究","note":"搜索意图改写：保留最新/研究信号"}
+{"text":"帮我找找近期关于力量训练的权威说法","intent":"search","category":"semantic_rewrite","rewrite_of":"帮我找一下最近训练资讯","note":"搜索意图改写：近期与权威来源"}
+{"text":"我上传的 sample.npz 帮我看看姿势","intent":"motion","category":"semantic_rewrite","rewrite_of":"帮我分析卧推动作","note":"动作意图改写：文件信号优先"}
+{"text":"这个深蹲动作帮我判断标准不标准","intent":"motion","category":"semantic_rewrite","rewrite_of":"这个动作标准吗","note":"动作意图改写：姿势判断"}
+{"text":"我想把体重往下控一点，饮食怎么安排","intent":"diet","category":"semantic_rewrite","rewrite_of":"我想控制体重","note":"饮食意图改写：体重控制与饮食安排"}
+{"text":"最近想吃得清淡健康一点，怎么搭配三餐","intent":"diet","category":"semantic_rewrite","rewrite_of":"我想吃得健康一点","note":"饮食意图改写：健康饮食规划"}
+{"text":"冰箱里有鸡胸肉，帮我推荐一道具体晚饭菜","intent":"mcp","category":"semantic_rewrite","rewrite_of":"晚饭做什么菜","note":"菜谱意图改写：具体一道菜与食材"}
+{"text":"番茄和鸡蛋可以怎么炒，给我步骤","intent":"mcp","category":"semantic_rewrite","rewrite_of":"番茄炒蛋怎么做","note":"菜谱意图改写：烹饪步骤"}
+{"text":"用简单的话解释一下渐进超负荷","intent":"chat","category":"semantic_rewrite","rewrite_of":"什么是渐进超负荷","note":"知识解释意图改写"}
+{"text":"蛋白质为什么对增肌有帮助","intent":"chat","category":"semantic_rewrite","rewrite_of":"蛋白质有什么作用","note":"概念解释不应误路由到 diet"}

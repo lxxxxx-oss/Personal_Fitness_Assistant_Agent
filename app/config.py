@@ -65,6 +65,19 @@ class Config:
     llm_router_max_tokens: int = field(
         default_factory=lambda: _get_int_env("LLM_ROUTER_MAX_TOKENS", 128)
     )
+    router_embedding_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("ROUTER_EMBEDDING_ENABLED", False)
+    )
+    router_embedding_model: str = field(
+        default_factory=lambda: os.getenv("ROUTER_EMBEDDING_MODEL")
+        or os.getenv("EMBEDDING_MODEL", "shibing624/text2vec-base-chinese")
+    )
+    router_embedding_min_confidence: float = field(
+        default_factory=lambda: _get_float_env("ROUTER_EMBEDDING_MIN_CONFIDENCE", 0.68)
+    )
+    router_embedding_min_margin: float = field(
+        default_factory=lambda: _get_float_env("ROUTER_EMBEDDING_MIN_MARGIN", 0.05)
+    )
 
     # Memory
     memory_max_turns: int = field(

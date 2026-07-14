@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from collections import Counter
-from typing import Any, Dict, List, Literal, NotRequired, Optional, Tuple, TypedDict
+from typing import Any, Dict, List, Literal, NotRequired, Optional, Sequence, Tuple, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -44,6 +44,10 @@ _LLM_ROUTER_OUTCOMES: Counter[str] = Counter()
 _LLM_ROUTER_SELECTIONS: Counter[str] = Counter()
 _LLM_ROUTER_TOTAL_LATENCY_MS = 0.0
 _LLM_ROUTER_MAX_LATENCY_MS = 0.0
+_EMBEDDING_ROUTER_LOCK = threading.Lock()
+_EMBEDDING_ROUTER_MODEL: Any = None
+_EMBEDDING_ROUTER_MODEL_NAME = ""
+_EMBEDDING_EXAMPLE_VECTORS: Dict[str, List[Tuple[Intent, str, Sequence[float]]]] = {}
 
 
 WEIGHTED_RULES: Dict[Intent, List[Tuple[str, float]]] = {
@@ -377,6 +381,154 @@ def _jaccard_similarity(left: set[str], right: set[str]) -> float:
     return intersection / union if union else 0.0
 
 
+def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
+    numerator = 0.0
+    left_norm = 0.0
+    right_norm = 0.0
+    for left_value, right_value in zip(left, right):
+        left_float = float(left_value)
+        right_float = float(right_value)
+        numerator += left_float * right_float
+        left_norm += left_float * left_float
+        right_norm += right_float * right_float
+    if left_norm <= 0.0 or right_norm <= 0.0:
+        return 0.0
+    return numerator / ((left_norm ** 0.5) * (right_norm ** 0.5))
+
+
+def _get_embedding_router_model(model_name: str) -> Any:
+    global _EMBEDDING_ROUTER_MODEL, _EMBEDDING_ROUTER_MODEL_NAME
+    with _EMBEDDING_ROUTER_LOCK:
+        if (
+            _EMBEDDING_ROUTER_MODEL is None
+            or _EMBEDDING_ROUTER_MODEL_NAME != model_name
+        ):
+            from sentence_transformers import SentenceTransformer
+
+            _EMBEDDING_ROUTER_MODEL = SentenceTransformer(model_name)
+            _EMBEDDING_ROUTER_MODEL_NAME = model_name
+        return _EMBEDDING_ROUTER_MODEL
+
+
+def _as_vector_list(vectors: Any) -> List[List[float]]:
+    if hasattr(vectors, "tolist"):
+        vectors = vectors.tolist()
+    if not isinstance(vectors, list):
+        return []
+    if vectors and not isinstance(vectors[0], list):
+        return [[float(value) for value in vectors]]
+    return [[float(value) for value in vector] for vector in vectors]
+
+
+def _get_embedding_example_vectors(
+    model: Any,
+    model_name: str,
+) -> List[Tuple[Intent, str, Sequence[float]]]:
+    with _EMBEDDING_ROUTER_LOCK:
+        cached = _EMBEDDING_EXAMPLE_VECTORS.get(model_name)
+        if cached is not None:
+            return cached
+
+        pairs: List[Tuple[Intent, str]] = [
+            (intent, example)
+            for intent, examples in SEMANTIC_EXAMPLES.items()
+            for example in examples
+        ]
+        encoded = _as_vector_list(
+            model.encode([example for _, example in pairs], normalize_embeddings=True)
+        )
+        vectors = [
+            (intent, example, vector)
+            for (intent, example), vector in zip(pairs, encoded)
+        ]
+        _EMBEDDING_EXAMPLE_VECTORS[model_name] = vectors
+        return vectors
+
+
+def _embedding_semantic_route(user_input: str) -> RouteDecision:
+    from app.config import config
+
+    scores = _empty_scores()
+    matches: List[str] = []
+    if not config.router_embedding_enabled:
+        return RouteDecision(
+            intent="chat",
+            confidence=0.0,
+            reason="Embedding semantic router is disabled.",
+            source="embedding_disabled",
+            scores=scores,
+            matches=matches,
+        )
+
+    try:
+        model = _get_embedding_router_model(config.router_embedding_model)
+        query_vector = _as_vector_list(
+            model.encode([user_input], normalize_embeddings=True)
+        )[0]
+        example_vectors = _get_embedding_example_vectors(
+            model,
+            config.router_embedding_model,
+        )
+    except Exception as exc:
+        logger.warning("Embedding semantic router unavailable: %s", exc)
+        return RouteDecision(
+            intent="chat",
+            confidence=0.0,
+            reason=f"Embedding semantic router is unavailable: {exc}",
+            source="embedding_unavailable",
+            scores=scores,
+            matches=[f"embedding_error:{type(exc).__name__}"],
+        )
+
+    best_examples: Dict[Intent, Tuple[str, float]] = {
+        intent: ("", 0.0) for intent in ALLOWED_INTENTS
+    }
+    for intent, example, vector in example_vectors:
+        score = _cosine_similarity(query_vector, vector)
+        if score > best_examples[intent][1]:
+            best_examples[intent] = (example, score)
+
+    for intent, (example, score) in best_examples.items():
+        scores[intent] = round(score, 4)
+        if example and score > 0:
+            matches.append(f"{intent}:embedding_example({example})={score:.2f}")
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_intent, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin = best_score - second_score
+    confidence = round(min(0.50 + best_score * 0.35 + margin * 0.35, 0.92), 2)
+
+    if (
+        confidence < config.router_embedding_min_confidence
+        or margin < config.router_embedding_min_margin
+    ):
+        return RouteDecision(
+            intent="chat",
+            confidence=confidence,
+            reason=(
+                "Embedding semantic router did not pass confidence/margin gates: "
+                f"score={best_score:.2f}, margin={margin:.2f}, "
+                f"confidence={confidence:g}."
+            ),
+            source="embedding_rejected",
+            scores=scores,
+            matches=matches,
+        )
+
+    return RouteDecision(
+        intent=best_intent,  # type: ignore[typeddict-item]
+        confidence=confidence,
+        reason=(
+            f"Selected {best_intent} by embedding examples: "
+            f"score={best_score:.2f}, margin={margin:.2f}, confidence={confidence:g}."
+        ),
+        source="embedding_examples",
+        scores=scores,
+        matches=matches,
+    )
+
+
 def _semantic_route(user_input: str) -> RouteDecision:
     query_features = _semantic_features(user_input)
     scores = _empty_scores()
@@ -688,6 +840,10 @@ def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
         if semantic_decision["source"] == "semantic_examples":
             semantic_decision["ambiguity_signals"] = ambiguity_signals
             return semantic_decision
+        embedding_decision = _embedding_semantic_route(user_input)
+        if embedding_decision["source"] == "embedding_examples":
+            embedding_decision["ambiguity_signals"] = ambiguity_signals
+            return embedding_decision
         llm_decision = _llm_classifier_route(user_input)
         if llm_decision["source"] == "llm_classifier":
             _record_llm_router_selection("selected")
@@ -698,11 +854,13 @@ def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
             confidence=0.0,
             reason=(
                 "No route rule reached the minimum score; semantic fallback "
-                f"did not decide; {llm_decision['reason']} Falling back to chat."
+                f"did not decide; {embedding_decision['reason']} "
+                f"{llm_decision['reason']} Falling back to chat."
             ),
             source="fallback",
             scores=scores,
-            matches=matches + llm_decision["matches"],
+            matches=matches + semantic_decision["matches"]
+            + embedding_decision["matches"] + llm_decision["matches"],
             ambiguity_signals=ambiguity_signals,
         )
 
@@ -767,6 +925,19 @@ def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
             )
             semantic_decision["ambiguity_signals"] = ambiguity_signals
             return semantic_decision
+        embedding_decision = _embedding_semantic_route(user_input)
+        if (
+            embedding_decision["source"] == "embedding_examples"
+            and embedding_decision["confidence"] > max(
+                confidence,
+                semantic_decision["confidence"],
+            )
+        ):
+            embedding_decision["reason"] += (
+                f" Rule router was low confidence: {reason}"
+            )
+            embedding_decision["ambiguity_signals"] = ambiguity_signals
+            return embedding_decision
         llm_decision = _llm_classifier_route(user_input)
         if (
             llm_decision["source"] == "llm_classifier"

@@ -17,6 +17,9 @@ from app.graph.router import (
 
 
 ROUTER_EVAL_PATH = Path("data/eval/router_eval.jsonl")
+ROUTER_SEMANTIC_REWRITE_EVAL_PATH = Path(
+    "data/eval/router_semantic_rewrite_eval.jsonl"
+)
 
 
 class TestIntentClassification:
@@ -70,6 +73,56 @@ class TestIntentClassification:
         assert decision["intent"] == "mcp"
         assert decision["source"] == "semantic_examples"
         assert decision["confidence"] >= 0.62
+
+    def test_embedding_examples_are_disabled_by_default(self, monkeypatch):
+        from app.config import config
+
+        monkeypatch.setattr(config, "router_embedding_enabled", False)
+
+        def fail_if_called(model_name: str):
+            raise AssertionError("embedding model should not load when disabled")
+
+        monkeypatch.setattr(router_module, "_get_embedding_router_model", fail_if_called)
+
+        decision = classify_intent_with_scores("zzzzqqqq")
+
+        assert decision["intent"] == "chat"
+        assert decision["source"] == "fallback"
+
+    def test_embedding_examples_can_handle_low_confidence_rewrites(self, monkeypatch):
+        from app.config import config
+
+        class FakeEmbeddingModel:
+            def encode(self, texts, normalize_embeddings=True):
+                vectors = []
+                for text in texts:
+                    if (
+                        text == "zzzzqqqq"
+                        or text in router_module.SEMANTIC_EXAMPLES["diet"]
+                    ):
+                        vectors.append([1.0, 0.0])
+                    elif text in router_module.SEMANTIC_EXAMPLES["search"]:
+                        vectors.append([0.0, 1.0])
+                    else:
+                        vectors.append([0.0, 0.0])
+                return vectors
+
+        monkeypatch.setattr(config, "router_embedding_enabled", True)
+        monkeypatch.setattr(config, "router_embedding_model", "fake-router-model")
+        monkeypatch.setattr(config, "router_embedding_min_confidence", 0.68)
+        monkeypatch.setattr(config, "router_embedding_min_margin", 0.05)
+        monkeypatch.setattr(
+            router_module,
+            "_get_embedding_router_model",
+            lambda model_name: FakeEmbeddingModel(),
+        )
+        router_module._EMBEDDING_EXAMPLE_VECTORS.clear()
+
+        decision = classify_intent_with_scores("zzzzqqqq")
+
+        assert decision["intent"] == "diet"
+        assert decision["source"] == "embedding_examples"
+        assert decision["confidence"] >= 0.68
 
     def test_chat_can_win_conceptual_questions(self):
         decision = classify_intent_with_scores("深蹲有哪些好处？")
@@ -454,6 +507,20 @@ class TestRouterEvalDataset:
     def test_router_eval_dataset_matches_current_router(self):
         assert ROUTER_EVAL_PATH.exists()
         with ROUTER_EVAL_PATH.open("r", encoding="utf-8") as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+
+        assert rows
+        mismatches = []
+        for row in rows:
+            actual = classify_intent(row["text"])
+            if actual != row["intent"]:
+                mismatches.append((row["text"], row["intent"], actual))
+
+        assert not mismatches
+
+    def test_router_semantic_rewrite_dataset_matches_current_router(self):
+        assert ROUTER_SEMANTIC_REWRITE_EVAL_PATH.exists()
+        with ROUTER_SEMANTIC_REWRITE_EVAL_PATH.open("r", encoding="utf-8") as f:
             rows = [json.loads(line) for line in f if line.strip()]
 
         assert rows

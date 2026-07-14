@@ -25,3 +25,17 @@ def test_boolean_environment_values_are_real_booleans(monkeypatch):
 
     monkeypatch.setenv("RETRIEVER_FALLBACK_TO_MEMORY", "yes")
     assert Config().retriever_fallback_to_memory is True
+
+
+def test_router_embedding_config_is_feature_flagged(monkeypatch):
+    monkeypatch.setenv("ROUTER_EMBEDDING_ENABLED", "true")
+    monkeypatch.setenv("ROUTER_EMBEDDING_MODEL", "test-router-model")
+    monkeypatch.setenv("ROUTER_EMBEDDING_MIN_CONFIDENCE", "0.7")
+    monkeypatch.setenv("ROUTER_EMBEDDING_MIN_MARGIN", "0.08")
+
+    config = Config()
+
+    assert config.router_embedding_enabled is True
+    assert config.router_embedding_model == "test-router-model"
+    assert config.router_embedding_min_confidence == 0.7
+    assert config.router_embedding_min_margin == 0.08
