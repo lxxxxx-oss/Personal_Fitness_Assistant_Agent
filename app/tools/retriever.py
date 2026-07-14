@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from app.config import config
+from app.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_KNOWLEDGE_COLLECTION, config
 from app.tools.types import (
     ToolResult,
     ErrorCode,
@@ -46,13 +46,14 @@ class MemoryRetriever:
 
     def __init__(
         self,
-        embedding_model: str = "shibing624/text2vec-base-chinese",
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         device: str = "cpu",
     ):
         self.embedding_model_name = embedding_model
         self.device = device
         self._encoder = None
         self._encoder_load_attempted = False
+        self._encoder_error = ""
         self._documents: List[str] = []
         self._sources: List[str] = []
         self._chunk_ids: List[int] = []
@@ -73,6 +74,7 @@ class MemoryRetriever:
                 self.embedding_model_name, device=self.device
             )
         except Exception as e:
+            self._encoder_error = str(e)[:500]
             logger.warning(
                 f"Cannot load embedding model '{self.embedding_model_name}': {e}. "
                 f"Falling back to keyword-based matching."
@@ -255,6 +257,8 @@ class MemoryRetriever:
                 mode="keyword",
                 total_docs=len(self._documents),
                 note="Embedding model unavailable, using keyword matching",
+                embedding_model=self.embedding_model_name,
+                fallback_reason=self._encoder_error,
             )
 
         if self._embeddings is None:
@@ -295,6 +299,7 @@ class MemoryRetriever:
             data=results,
             mode="embedding",
             total_docs=len(self._documents),
+            embedding_model=self.embedding_model_name,
         )
 
     def clear(self) -> ToolResult:
@@ -477,6 +482,44 @@ def _milvus_error_code(exc: Exception) -> str:
     return ErrorCode.INTERNAL_ERROR
 
 
+class CollectionDimensionMismatch(ValueError):
+    """Raised when an embedding model cannot reuse an existing collection."""
+
+    def __init__(
+        self,
+        *,
+        collection: str,
+        existing_dimension: int,
+        expected_dimension: int,
+        embedding_model: str,
+    ) -> None:
+        self.collection = collection
+        self.existing_dimension = existing_dimension
+        self.expected_dimension = expected_dimension
+        self.embedding_model = embedding_model
+        self.recommended_collection = f"{collection}_dim{expected_dimension}"
+        super().__init__(
+            f"Milvus collection '{collection}' has vector dimension "
+            f"{existing_dimension}, but embedding model '{embedding_model}' returns "
+            f"{expected_dimension}. Keep the old collection for rollback and set "
+            f"MILVUS_COLLECTION_NAME={self.recommended_collection}, then re-index "
+            "the knowledge files."
+        )
+
+
+class EmbeddingModelUnavailable(RuntimeError):
+    """Raised when the configured Sentence-Transformer cannot be loaded."""
+
+    def __init__(self, embedding_model: str, reason: str) -> None:
+        self.embedding_model = embedding_model
+        self.reason = reason[:500]
+        super().__init__(
+            f"Embedding model '{embedding_model}' could not be loaded: "
+            f"{self.reason}. Download/cache the model or set EMBEDDING_MODEL "
+            "to an available Sentence-Transformer."
+        )
+
+
 class MilvusRetriever:
     """Persistent vector retriever backed by a configured Milvus collection.
 
@@ -501,9 +544,9 @@ class MilvusRetriever:
     def __init__(
         self,
         uri: str,
-        collection_name: str = "fitness_knowledge",
+        collection_name: str = DEFAULT_KNOWLEDGE_COLLECTION,
         token: str = "",
-        embedding_model: str = "shibing624/text2vec-base-chinese",
+        embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         device: str = "cpu",
         index_type: str = "IVF_FLAT",
         metric_type: str = "COSINE",
@@ -553,12 +596,18 @@ class MilvusRetriever:
     def _ensure_encoder(self):
         if self._encoder is not None:
             return
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
 
-        self._encoder = SentenceTransformer(
-            self.embedding_model_name,
-            device=self.device,
-        )
+            self._encoder = SentenceTransformer(
+                self.embedding_model_name,
+                device=self.device,
+            )
+        except Exception as exc:
+            raise EmbeddingModelUnavailable(
+                self.embedding_model_name,
+                str(exc),
+            ) from exc
 
     def _ensure_client(self):
         if self._client is not None:
@@ -594,9 +643,11 @@ class MilvusRetriever:
             )
             existing_dimension = self._vector_dimension(description)
             if existing_dimension is not None and existing_dimension != dimension:
-                raise ValueError(
-                    f"Milvus collection '{self.collection_name}' has vector "
-                    f"dimension {existing_dimension}, expected {dimension}"
+                raise CollectionDimensionMismatch(
+                    collection=self.collection_name,
+                    existing_dimension=existing_dimension,
+                    expected_dimension=dimension,
+                    embedding_model=self.embedding_model_name,
                 )
             self._dimension = dimension
             self._ensure_index()
@@ -764,6 +815,24 @@ class MilvusRetriever:
                 collection=self.collection_name,
                 dimension=int(embeddings.shape[1]),
             )
+        except EmbeddingModelUnavailable as exc:
+            return ToolResult.fail(
+                ErrorCode.CONFIG_MISSING,
+                str(exc),
+                collection=self.collection_name,
+                embedding_model=exc.embedding_model,
+                fallback_reason=exc.reason,
+            )
+        except CollectionDimensionMismatch as exc:
+            return ToolResult.fail(
+                ErrorCode.CONFIG_CONFLICT,
+                str(exc),
+                collection=exc.collection,
+                embedding_model=exc.embedding_model,
+                existing_dimension=exc.existing_dimension,
+                expected_dimension=exc.expected_dimension,
+                recommended_collection=exc.recommended_collection,
+            )
         except ValueError as exc:
             return ToolResult.fail(ErrorCode.INVALID_PARAM, str(exc))
         except Exception as exc:
@@ -810,6 +879,7 @@ class MilvusRetriever:
                 self._encoder.encode([query], normalize_embeddings=True),
                 dtype=np.float32,
             )
+            self._ensure_collection(int(query_vector.shape[1]))
             raw = client.search(
                 collection_name=self.collection_name,
                 data=[query_vector[0].tolist()],
@@ -849,6 +919,25 @@ class MilvusRetriever:
                 total_docs=self.document_count,
                 metric_type=self.metric_type,
                 index_type=self.index_type,
+                embedding_model=self.embedding_model_name,
+            )
+        except EmbeddingModelUnavailable as exc:
+            return ToolResult.fail(
+                ErrorCode.CONFIG_MISSING,
+                str(exc),
+                collection=self.collection_name,
+                embedding_model=exc.embedding_model,
+                fallback_reason=exc.reason,
+            )
+        except CollectionDimensionMismatch as exc:
+            return ToolResult.fail(
+                ErrorCode.CONFIG_CONFLICT,
+                str(exc),
+                collection=exc.collection,
+                embedding_model=exc.embedding_model,
+                existing_dimension=exc.existing_dimension,
+                expected_dimension=exc.expected_dimension,
+                recommended_collection=exc.recommended_collection,
             )
         except Exception as exc:
             logger.warning("Milvus search failed: %s", exc)

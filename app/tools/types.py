@@ -19,6 +19,7 @@ class ErrorCode:
 
     # Environment / configuration
     CONFIG_MISSING = "CONFIG_MISSING"       # API key, model path, etc. not set
+    CONFIG_CONFLICT = "CONFIG_CONFLICT"     # Model/index/schema settings disagree
     NETWORK_ERROR = "NETWORK_ERROR"         # DNS, timeout, connection refused
     PERMISSION_DENIED = "PERMISSION_DENIED" # Operation not allowed
 

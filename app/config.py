@@ -3,6 +3,11 @@ import os
 from dataclasses import dataclass, field
 
 
+DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
+DEFAULT_KNOWLEDGE_COLLECTION = "fitness_knowledge_bge_small_zh_v15"
+DEFAULT_MEMORY_COLLECTION = "fitness_user_memory_bge_small_zh_v15"
+
+
 def _get_int_env(name: str, default: int) -> int:
     """Read an integer environment variable with a safe fallback."""
     value = os.getenv(name)
@@ -70,7 +75,7 @@ class Config:
     )
     router_embedding_model: str = field(
         default_factory=lambda: os.getenv("ROUTER_EMBEDDING_MODEL")
-        or os.getenv("EMBEDDING_MODEL", "shibing624/text2vec-base-chinese")
+        or os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
     )
     router_embedding_min_confidence: float = field(
         default_factory=lambda: _get_float_env("ROUTER_EMBEDDING_MIN_CONFIDENCE", 0.68)
@@ -112,7 +117,7 @@ class Config:
     embedding_model: str = field(
         default_factory=lambda: os.getenv(
             "EMBEDDING_MODEL",
-            "shibing624/text2vec-base-chinese",
+            DEFAULT_EMBEDDING_MODEL,
         )
     )
     retriever_backend: str = field(
@@ -134,7 +139,7 @@ class Config:
     )
     milvus_collection_name: str = field(
         default_factory=lambda: os.getenv("MILVUS_COLLECTION_NAME")
-        or os.getenv("MILVUS_COLLECTION", "fitness_knowledge")
+        or os.getenv("MILVUS_COLLECTION", DEFAULT_KNOWLEDGE_COLLECTION)
     )
     memory_milvus_enabled: bool = field(
         default_factory=lambda: _get_bool_env("MEMORY_MILVUS_ENABLED", False)
@@ -142,7 +147,7 @@ class Config:
     memory_milvus_collection_name: str = field(
         default_factory=lambda: os.getenv(
             "MEMORY_MILVUS_COLLECTION_NAME",
-            "fitness_user_memory",
+            DEFAULT_MEMORY_COLLECTION,
         )
     )
     milvus_index_type: str = field(

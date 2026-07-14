@@ -1,6 +1,29 @@
 """Configuration environment parsing regression tests."""
 
-from app.config import Config
+from app.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_KNOWLEDGE_COLLECTION,
+    DEFAULT_MEMORY_COLLECTION,
+    Config,
+)
+
+
+def test_embedding_defaults_use_model_specific_collections(monkeypatch):
+    for name in (
+        "EMBEDDING_MODEL",
+        "ROUTER_EMBEDDING_MODEL",
+        "MILVUS_COLLECTION_NAME",
+        "MILVUS_COLLECTION",
+        "MEMORY_MILVUS_COLLECTION_NAME",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = Config()
+
+    assert config.embedding_model == DEFAULT_EMBEDDING_MODEL
+    assert config.router_embedding_model == DEFAULT_EMBEDDING_MODEL
+    assert config.milvus_collection_name == DEFAULT_KNOWLEDGE_COLLECTION
+    assert config.memory_milvus_collection_name == DEFAULT_MEMORY_COLLECTION
 
 
 def test_float_environment_values_are_parsed(monkeypatch):

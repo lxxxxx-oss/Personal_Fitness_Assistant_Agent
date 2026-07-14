@@ -1,6 +1,6 @@
 """Milvus RAG retriever contract tests without a live Milvus service."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -267,8 +267,42 @@ def test_existing_collection_dimension_mismatch_is_actionable():
     result = retriever.add_documents(["测试知识"])
 
     assert not result.ok
-    assert result.error_code == ErrorCode.INVALID_PARAM
+    assert result.error_code == ErrorCode.CONFIG_CONFLICT
     assert "dimension 8" in result.error_message
+    assert "MILVUS_COLLECTION_NAME=fitness_knowledge_dim4" in result.error_message
+    assert result.meta["existing_dimension"] == 8
+    assert result.meta["expected_dimension"] == 4
+    assert result.meta["recommended_collection"] == "fitness_knowledge_dim4"
+
+
+def test_missing_embedding_model_is_reported_as_configuration_error():
+    retriever, _ = make_retriever()
+    retriever._encoder = None
+
+    with patch(
+        "sentence_transformers.SentenceTransformer",
+        side_effect=OSError("model files missing"),
+    ):
+        result = retriever.add_documents(["测试知识"])
+
+    assert not result.ok
+    assert result.error_code == ErrorCode.CONFIG_MISSING
+    assert result.meta["embedding_model"] == retriever.embedding_model_name
+    assert "model files missing" in result.meta["fallback_reason"]
+
+
+def test_search_detects_existing_collection_dimension_mismatch():
+    retriever, client = make_retriever()
+    client.collection_exists = True
+    client.schema = FakeSchema()
+    client.schema.add_field(field_name="vector", datatype="FLOAT_VECTOR", dim=8)
+
+    result = retriever.search("测试知识", top_k=3, threshold=0.0)
+
+    assert not result.ok
+    assert result.error_code == ErrorCode.CONFIG_CONFLICT
+    assert result.meta["existing_dimension"] == 8
+    assert result.meta["expected_dimension"] == 4
 
 
 class FailingPrimary:

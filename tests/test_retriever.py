@@ -104,6 +104,8 @@ class TestMemoryRetriever:
 
         assert first.ok and first.meta["mode"] == "keyword"
         assert second.ok and second.meta["mode"] == "keyword"
+        assert first.meta["embedding_model"] == "missing-model"
+        assert "model unavailable" in first.meta["fallback_reason"]
         assert loader.call_count == 1
 
     def test_search_returns_scores(self, retriever, sample_docs):
