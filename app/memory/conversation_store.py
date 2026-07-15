@@ -199,8 +199,48 @@ class ConversationStore:
         user_msg: str,
         assistant_msg: str,
     ) -> None:
-        self.add_message(conversation_id, user_id, "user", user_msg)
-        self.add_message(conversation_id, user_id, "assistant", assistant_msg)
+        """Persist one complete user/assistant turn in a single transaction."""
+        now = _utc_now()
+        rows = [
+            (str(uuid.uuid4()), conversation_id, user_id, "user", user_msg, now),
+            (
+                str(uuid.uuid4()),
+                conversation_id,
+                user_id,
+                "assistant",
+                assistant_msg,
+                now,
+            ),
+        ]
+        with self._lock, self._connect() as conn:
+            conversation = conn.execute(
+                """
+                SELECT id FROM conversations
+                WHERE id = ? AND user_id = ? AND status = 'active'
+                """,
+                (conversation_id, user_id),
+            ).fetchone()
+            if conversation is None:
+                raise ValueError("active conversation was not found for this user")
+            conn.executemany(
+                """
+                INSERT INTO messages (
+                    id, conversation_id, user_id, role, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            conn.execute(
+                """
+                UPDATE conversations
+                SET version = version + 1,
+                    updated_at = ?,
+                    last_active_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (now, now, conversation_id, user_id),
+            )
 
     def get_messages(
         self,
@@ -219,7 +259,7 @@ class ConversationStore:
                 SELECT role, content
                 FROM messages
                 WHERE conversation_id = ? AND user_id = ?
-                ORDER BY created_at ASC
+                ORDER BY created_at ASC, rowid ASC
                 {limit_clause}
                 """,
                 params,
@@ -228,6 +268,134 @@ class ConversationStore:
             {"role": str(row["role"]), "content": str(row["content"])}
             for row in rows
         ]
+
+    def get_message_records(
+        self,
+        conversation_id: str,
+        user_id: str,
+    ) -> List[Dict[str, str]]:
+        """Return ordered message records including IDs for compact boundaries."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, role, content, created_at
+                FROM messages
+                WHERE conversation_id = ? AND user_id = ?
+                ORDER BY rowid ASC
+                """,
+                (conversation_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_active_summary(
+        self,
+        conversation_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, str]]:
+        """Return the one active compact summary for an active conversation."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT s.id, s.content, s.created_at,
+                       c.last_compacted_message_id
+                FROM summaries AS s
+                JOIN conversations AS c ON c.id = s.conversation_id
+                WHERE s.conversation_id = ?
+                  AND s.user_id = ?
+                  AND s.type = 'compact'
+                  AND s.status = 'active'
+                  AND c.status = 'active'
+                ORDER BY s.created_at DESC
+                LIMIT 1
+                """,
+                (conversation_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_uncompacted_messages(
+        self,
+        conversation_id: str,
+        user_id: str,
+    ) -> List[Dict[str, str]]:
+        """Return messages after the current compact boundary, or all messages."""
+        records = self.get_message_records(conversation_id, user_id)
+        summary = self.get_active_summary(conversation_id, user_id)
+        boundary = summary.get("last_compacted_message_id") if summary else None
+        if not boundary:
+            return records
+        for index, record in enumerate(records):
+            if record["id"] == boundary:
+                return records[index + 1 :]
+        return records
+
+    def save_compact_summary(
+        self,
+        conversation_id: str,
+        user_id: str,
+        content: str,
+        through_message_id: str,
+    ) -> Dict[str, str]:
+        """Atomically replace the active summary and advance its message boundary."""
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("summary content must be a non-empty string")
+        if not isinstance(through_message_id, str) or not through_message_id.strip():
+            raise ValueError("through_message_id must be a non-empty string")
+
+        summary_id = str(uuid.uuid4())
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            boundary = conn.execute(
+                """
+                SELECT m.id
+                FROM messages AS m
+                JOIN conversations AS c ON c.id = m.conversation_id
+                WHERE m.id = ?
+                  AND m.conversation_id = ?
+                  AND m.user_id = ?
+                  AND c.status = 'active'
+                """,
+                (through_message_id, conversation_id, user_id),
+            ).fetchone()
+            if boundary is None:
+                raise ValueError(
+                    "compact boundary message was not found in the active conversation"
+                )
+            conn.execute(
+                """
+                UPDATE summaries
+                SET status = 'superseded'
+                WHERE conversation_id = ?
+                  AND user_id = ?
+                  AND type = 'compact'
+                  AND status = 'active'
+                """,
+                (conversation_id, user_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO summaries (
+                    id, conversation_id, user_id, type, content, status, created_at
+                )
+                VALUES (?, ?, ?, 'compact', ?, 'active', ?)
+                """,
+                (summary_id, conversation_id, user_id, content.strip(), now),
+            )
+            conn.execute(
+                """
+                UPDATE conversations
+                SET last_compacted_message_id = ?,
+                    version = version + 1,
+                    updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'active'
+                """,
+                (through_message_id, now, conversation_id, user_id),
+            )
+        return {
+            "id": summary_id,
+            "content": content.strip(),
+            "last_compacted_message_id": through_message_id,
+            "created_at": now,
+        }
 
     def archive_user_conversations(self, user_id: str) -> None:
         now = _utc_now()
