@@ -89,6 +89,26 @@ def test_search_and_mcp_final_prompts_include_conversation_summary():
     assert "用户正在制定每周三练计划" in mcp_prompt
 
 
+def test_recent_conversation_uses_configured_turn_count(monkeypatch):
+    from app.config import config
+
+    monkeypatch.setattr(config, "memory_max_turns", 6)
+    memory = []
+    for index in range(6):
+        memory.extend(
+            [
+                {"role": "user", "content": f"第{index}轮问题"},
+                {"role": "assistant", "content": f"第{index}轮回答"},
+            ]
+        )
+
+    block = PromptBuilder.recent_conversation(memory)
+
+    assert "第0轮问题" in block
+    assert "第5轮回答" in block
+    assert len(block.splitlines()) == 12
+
+
 def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
     from app.config import config
 

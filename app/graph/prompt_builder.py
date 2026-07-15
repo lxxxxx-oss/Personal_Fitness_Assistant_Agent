@@ -1,6 +1,6 @@
 """Central prompt builder for text-based subgraphs."""
 import json
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from app.config import config
 from app.graph.state import RouterState, record_execution
@@ -77,7 +77,15 @@ class PromptBuilder:
         return json.dumps(summary, ensure_ascii=False, indent=2)
 
     @staticmethod
-    def recent_conversation(memory: Iterable[Mapping[str, str]], *, limit: int = 6) -> str:
+    def recent_conversation(
+        memory: Iterable[Mapping[str, str]],
+        *,
+        limit: Optional[int] = None,
+    ) -> str:
+        if limit is None:
+            limit = max(1, int(config.memory_max_turns)) * 2
+        else:
+            limit = max(1, int(limit))
         recent = list(memory)[-limit:]
         if not recent:
             return "无历史对话"

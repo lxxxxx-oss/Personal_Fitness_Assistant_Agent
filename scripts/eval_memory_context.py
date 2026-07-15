@@ -242,22 +242,45 @@ def _eval_rag_source(row: Dict[str, Any]) -> Dict[str, Any]:
 def _eval_conversation_summary(row: Dict[str, Any], db_path: Path) -> Dict[str, Any]:
     store = ConversationStore(str(db_path))
     user_id = row.get("user_id", "benchmark_user")
-    conversation_id = store.get_or_create_conversation(user_id)
-    for turn in row.get("turns", []):
+
+    isolation_markers: List[str] = []
+    other_turns = row.get("other_conversation_turns", [])
+    if other_turns:
+        other_conversation_id = store.create_conversation(user_id)
+        for turn in other_turns:
+            store.add_turn(
+                other_conversation_id,
+                user_id,
+                turn["user"],
+                turn["assistant"],
+            )
+        isolation_markers = _string_list(row.get("isolation_markers"))
+
+    conversation_id = store.create_conversation(user_id)
+    turns = row.get("turns", [])
+    compaction_points = {
+        int(point) for point in row.get("compaction_points", [len(turns)])
+    }
+    compact_results: List[Dict[str, Any]] = []
+    for index, turn in enumerate(turns, start=1):
         store.add_turn(
             conversation_id,
             user_id,
             turn["user"],
             turn["assistant"],
         )
-    compact = maybe_compact_conversation(
-        store,
-        conversation_id,
-        user_id,
-        trigger_chars=int(row.get("trigger_chars", 1)),
-        keep_recent_messages=int(row.get("keep_recent_messages", 6)),
-        max_summary_chars=int(row.get("max_summary_chars", 1200)),
-    )
+        if index in compaction_points:
+            compact_results.append(
+                maybe_compact_conversation(
+                    store,
+                    conversation_id,
+                    user_id,
+                    trigger_chars=int(row.get("trigger_chars", 1)),
+                    keep_recent_messages=int(row.get("keep_recent_messages", 6)),
+                    max_summary_chars=int(row.get("max_summary_chars", 1200)),
+                )
+            )
+
     active = store.get_active_summary(conversation_id, user_id) or {}
     summary = str(active.get("content", ""))
     recent = store.get_uncompacted_messages(conversation_id, user_id)
@@ -268,25 +291,75 @@ def _eval_conversation_summary(row: Dict[str, Any], db_path: Path) -> Dict[str, 
         "_conversation_summary": summary,
     }
     prompt = PromptBuilder.chat_answer(state, context_text="", sources=[])
-    expected = row["expected_summary_contains"]
-    expected_recent = int(row.get("expected_recent_messages", 6))
-    passed = (
-        bool(compact.get("updated"))
-        and expected in summary
-        and expected in prompt
-        and expected not in recent_text
-        and len(recent) == expected_recent
+    expected_summary_contains = _string_list(
+        row.get("expected_summary_contains")
     )
+    expected_summary_excludes = _string_list(
+        row.get("expected_summary_excludes")
+    )
+    expected_recent_contains = _string_list(row.get("expected_recent_contains"))
+    expected_recent_excludes = _string_list(row.get("expected_recent_excludes"))
+    expected_prompt_contains = _string_list(row.get("expected_prompt_contains"))
+    expected_prompt_excludes = _string_list(row.get("expected_prompt_excludes"))
+    expected_updates = int(row.get("expected_compaction_updates", 1))
+    actual_updates = sum(bool(item.get("updated")) for item in compact_results)
+
+    checks = {
+        "compaction_updates": actual_updates == expected_updates,
+        "summary_contains": all(
+            marker in summary for marker in expected_summary_contains
+        ),
+        "summary_excludes": all(
+            marker not in summary for marker in expected_summary_excludes
+        ),
+        "recent_contains": all(
+            marker in recent_text for marker in expected_recent_contains
+        ),
+        "recent_excludes": all(
+            marker not in recent_text for marker in expected_recent_excludes
+        ),
+        "prompt_contains": all(
+            marker in prompt
+            for marker in expected_summary_contains + expected_prompt_contains
+        ),
+        "prompt_excludes": all(
+            marker not in prompt
+            for marker in expected_prompt_excludes + isolation_markers
+        ),
+        "conversation_isolation": all(
+            marker not in summary and marker not in recent_text
+            for marker in isolation_markers
+        ),
+        "summary_bounded": len(summary) <= int(row.get("max_summary_chars", 1200)),
+    }
+    if "expected_recent_messages" in row:
+        checks["recent_message_count"] = len(recent) == int(
+            row["expected_recent_messages"]
+        )
+    passed = all(checks.values())
     return _base_result(
         row,
         passed,
         {
+            "scenario": row.get("scenario", ""),
             "summary": summary,
             "recent_message_count": len(recent),
-            "compact": compact,
+            "compact_results": compact_results,
+            "checks": checks,
             "prompt_sections": state.get("_prompt_meta", {}).get("sections", []),
         },
     )
+
+
+def _string_list(value: Any) -> List[str]:
+    """Normalize one optional benchmark marker or a marker list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return value
+    raise ValueError("benchmark marker must be a string or a list of strings")
 
 
 def print_report(result: Dict[str, Any], *, include_cases: bool = False) -> None:
