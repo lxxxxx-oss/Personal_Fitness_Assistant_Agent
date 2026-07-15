@@ -97,6 +97,18 @@ class Config:
     context_max_prompt_chars: int = field(
         default_factory=lambda: _get_int_env("MAX_PROMPT_CHARS", 8192)
     )
+    conversation_summary_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("CONVERSATION_SUMMARY_ENABLED", True)
+    )
+    conversation_summary_trigger_chars: int = field(
+        default_factory=lambda: _get_int_env(
+            "CONVERSATION_SUMMARY_TRIGGER_CHARS",
+            3000,
+        )
+    )
+    conversation_summary_max_chars: int = field(
+        default_factory=lambda: _get_int_env("CONVERSATION_SUMMARY_MAX_CHARS", 1200)
+    )
 
     # Retriever
     retriever_top_k: int = field(

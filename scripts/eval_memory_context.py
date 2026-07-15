@@ -16,6 +16,8 @@ if str(ROOT_DIR) not in sys.path:
 from app.config import config
 from app.graph.prompt_builder import PromptBuilder
 from app.graph.subgraphs.rag_context import build_rag_context
+from app.memory.conversation_store import ConversationStore
+from app.memory.conversation_summary import maybe_compact_conversation
 from app.memory.memory_store import MemoryStore
 
 
@@ -41,6 +43,7 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
                 "prompt_memory_injection",
                 "compact",
                 "rag_source",
+                "conversation_summary",
             }:
                 raise ValueError(f"Line {line_no} has invalid category")
             rows.append(row)
@@ -101,6 +104,8 @@ def evaluate_case(row: Dict[str, Any]) -> Dict[str, Any]:
             return _eval_compact(row)
         if category == "rag_source":
             return _eval_rag_source(row)
+        if category == "conversation_summary":
+            return _eval_conversation_summary(row, Path(tmpdir) / "conversation.db")
     raise ValueError(f"Unsupported category: {category}")
 
 
@@ -230,6 +235,56 @@ def _eval_rag_source(row: Dict[str, Any]) -> Dict[str, Any]:
             "sources": sources,
             "expected_sources": expected_sources,
             "context": context,
+        },
+    )
+
+
+def _eval_conversation_summary(row: Dict[str, Any], db_path: Path) -> Dict[str, Any]:
+    store = ConversationStore(str(db_path))
+    user_id = row.get("user_id", "benchmark_user")
+    conversation_id = store.get_or_create_conversation(user_id)
+    for turn in row.get("turns", []):
+        store.add_turn(
+            conversation_id,
+            user_id,
+            turn["user"],
+            turn["assistant"],
+        )
+    compact = maybe_compact_conversation(
+        store,
+        conversation_id,
+        user_id,
+        trigger_chars=int(row.get("trigger_chars", 1)),
+        keep_recent_messages=int(row.get("keep_recent_messages", 6)),
+        max_summary_chars=int(row.get("max_summary_chars", 1200)),
+    )
+    active = store.get_active_summary(conversation_id, user_id) or {}
+    summary = str(active.get("content", ""))
+    recent = store.get_uncompacted_messages(conversation_id, user_id)
+    recent_text = " ".join(str(item.get("content", "")) for item in recent)
+    state = {
+        "user_input": row.get("follow_up", "继续"),
+        "memory": recent,
+        "_conversation_summary": summary,
+    }
+    prompt = PromptBuilder.chat_answer(state, context_text="", sources=[])
+    expected = row["expected_summary_contains"]
+    expected_recent = int(row.get("expected_recent_messages", 6))
+    passed = (
+        bool(compact.get("updated"))
+        and expected in summary
+        and expected in prompt
+        and expected not in recent_text
+        and len(recent) == expected_recent
+    )
+    return _base_result(
+        row,
+        passed,
+        {
+            "summary": summary,
+            "recent_message_count": len(recent),
+            "compact": compact,
+            "prompt_sections": state.get("_prompt_meta", {}).get("sections", []),
         },
     )
 

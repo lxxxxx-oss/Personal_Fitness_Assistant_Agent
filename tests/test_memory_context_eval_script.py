@@ -18,6 +18,7 @@ def test_load_memory_context_benchmark_dataset():
         "prompt_memory_injection",
         "compact",
         "rag_source",
+        "conversation_summary",
     } <= categories
 
 
@@ -30,3 +31,4 @@ def test_memory_context_benchmark_is_currently_green():
     assert result["pass_rate"] == 1.0
     assert result["by_category"]["memory_recall"]["pass_rate"] == 1.0
     assert result["by_category"]["compact"]["pass_rate"] == 1.0
+    assert result["by_category"]["conversation_summary"]["pass_rate"] == 1.0

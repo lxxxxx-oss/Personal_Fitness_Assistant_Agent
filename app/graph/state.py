@@ -41,6 +41,7 @@ class RouterState(TypedDict, total=False):
     _prompt_meta: Dict[str, Any]
     _structured_state: Dict[str, Any]
     _long_term_memories: List[Dict[str, Any]]
+    _conversation_summary: str
     _streaming: bool  # Build the final prompt without generating twice.
     _route_scores: Dict[str, float]
     _route_confidence: float

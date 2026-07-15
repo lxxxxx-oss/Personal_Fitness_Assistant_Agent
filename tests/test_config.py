@@ -56,6 +56,18 @@ def test_boolean_environment_values_are_real_booleans(monkeypatch):
     assert Config().retriever_fallback_to_memory is True
 
 
+def test_conversation_summary_config_is_bounded_by_explicit_values(monkeypatch):
+    monkeypatch.setenv("CONVERSATION_SUMMARY_ENABLED", "false")
+    monkeypatch.setenv("CONVERSATION_SUMMARY_TRIGGER_CHARS", "2400")
+    monkeypatch.setenv("CONVERSATION_SUMMARY_MAX_CHARS", "900")
+
+    config = Config()
+
+    assert config.conversation_summary_enabled is False
+    assert config.conversation_summary_trigger_chars == 2400
+    assert config.conversation_summary_max_chars == 900
+
+
 def test_router_embedding_config_is_feature_flagged(monkeypatch):
     monkeypatch.setenv("ROUTER_EMBEDDING_ENABLED", "true")
     monkeypatch.setenv("ROUTER_EMBEDDING_MODEL", "test-router-model")

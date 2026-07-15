@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.config import config
 from app.graph.router import build_router_graph
-from app.graph.state import RouterState
+from app.graph.state import RouterState, record_execution
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -234,6 +234,89 @@ def _get_or_restore_memory(user_id: str, conversation_id: str):
             memory.add(message)
         _sessions[key] = memory
     return _sessions[key]
+
+
+def _attach_conversation_summary(
+    state: RouterState,
+    user_id: str,
+    conversation_id: str,
+) -> None:
+    """Load one active summary; failures preserve the existing chat path."""
+    state["_conversation_summary"] = ""
+    if not config.conversation_summary_enabled:
+        return
+    try:
+        store = _get_conversation_store()
+        summary = store.get_active_summary(
+            conversation_id,
+            user_id,
+        )
+        if summary:
+            content = str(summary.get("content", ""))
+            uncompacted = store.get_uncompacted_messages(conversation_id, user_id)
+            recent_limit = max(1, int(config.memory_max_turns)) * 2
+            state["_conversation_summary"] = content
+            state["memory"] = [
+                {"role": item["role"], "content": item["content"]}
+                for item in uncompacted[-recent_limit:]
+            ]
+            record_execution(
+                state,
+                "conversation_summary",
+                "loaded",
+                detail=(
+                    f"loaded persisted summary ({len(content)} chars) with "
+                    f"{len(state['memory'])} uncompacted recent messages"
+                ),
+            )
+    except Exception:
+        state["_conversation_summary"] = ""
+        logger.exception("Conversation summary load failed; using recent messages")
+        record_execution(
+            state,
+            "conversation_summary",
+            "recent_messages_fallback",
+            degraded=True,
+            detail="persisted summary unavailable",
+        )
+
+
+def _persist_conversation_turn(
+    memory: Any,
+    conversation_id: str,
+    user_id: str,
+    user_message: str,
+    assistant_message: str,
+) -> Dict[str, Any]:
+    """Persist one turn and best-effort update its deterministic summary."""
+    _get_conversation_store().add_turn(
+        conversation_id,
+        user_id,
+        user_message,
+        assistant_message,
+    )
+    memory.add_turn(user_message, assistant_message)
+    _remember_explicit_user_memory(user_id, user_message)
+    if not config.conversation_summary_enabled:
+        return {"updated": False, "reason": "disabled"}
+    try:
+        from app.memory.conversation_summary import maybe_compact_conversation
+
+        return maybe_compact_conversation(
+            _get_conversation_store(),
+            conversation_id,
+            user_id,
+            trigger_chars=config.conversation_summary_trigger_chars,
+            keep_recent_messages=6,
+            max_summary_chars=config.conversation_summary_max_chars,
+        )
+    except Exception as exc:
+        logger.exception("Conversation summary update failed; turn remains persisted")
+        return {
+            "updated": False,
+            "reason": "summary_error",
+            "error": str(exc)[:200],
+        }
 
 
 def _resolve_conversation_id(user_id: str, conversation_id: Optional[str]) -> str:
@@ -582,6 +665,7 @@ async def chat(request: ChatRequest):
         "result": "",
         "error": None,
     }
+    _attach_conversation_summary(state, request.user_id, conversation_id)
 
     try:
         graph = _get_router_graph()
@@ -589,16 +673,24 @@ async def chat(request: ChatRequest):
 
         reply = result_state.get("result", "")
         intent = result_state.get("intent", "chat")
-        sources, warnings, execution = _result_metadata(result_state)
-
-        memory.add_turn(request.message, reply)
-        _get_conversation_store().add_turn(
+        summary_result = _persist_conversation_turn(
+            memory,
             conversation_id,
             request.user_id,
             request.message,
             reply,
         )
-        _remember_explicit_user_memory(request.user_id, request.message)
+        if summary_result.get("updated"):
+            record_execution(
+                result_state,
+                "conversation_summary",
+                "deterministic_extractive",
+                detail=(
+                    f"compacted {summary_result['compacted_message_count']} messages; "
+                    f"kept {summary_result['remaining_message_count']} recent messages"
+                ),
+            )
+        sources, warnings, execution = _result_metadata(result_state)
 
         return ChatResponse(
             user_id=request.user_id,
@@ -1023,6 +1115,7 @@ async def chat_stream(request: ChatRequest):
         "error": None,
         "_streaming": True,
     }
+    _attach_conversation_summary(state, request.user_id, conversation_id)
 
     async def event_stream():
         # Step 1: Run the graph to get context + prompt
@@ -1046,6 +1139,13 @@ async def chat_stream(request: ChatRequest):
             # No prompt stored — graph couldn't prepare context
             fallback = result_state.get("result", "Sorry, I couldn't process that.")
             yield f"data: {fallback}\n\n"
+            _persist_conversation_turn(
+                memory,
+                conversation_id,
+                request.user_id,
+                request.message,
+                fallback,
+            )
             yield "event: done\ndata: {}\n\n"
             return
 
@@ -1070,14 +1170,13 @@ async def chat_stream(request: ChatRequest):
             yield f"data: [Error: {e}]\n\n"
 
         # Save to memory
-        memory.add_turn(request.message, full_reply)
-        _get_conversation_store().add_turn(
+        _persist_conversation_turn(
+            memory,
             conversation_id,
             request.user_id,
             request.message,
             full_reply,
         )
-        _remember_explicit_user_memory(request.user_id, request.message)
 
         # Signal completion
         yield "event: done\ndata: {}\n\n"
@@ -1154,6 +1253,7 @@ async def chat_websocket(websocket: WebSocket):
             "error": None,
             "_streaming": True,
         }
+        _attach_conversation_summary(state, user_id, conversation_id)
 
         # Step 1: Run graph to build context + get prompt
         graph = _get_router_graph()
@@ -1177,14 +1277,13 @@ async def chat_websocket(websocket: WebSocket):
             fallback = result_state.get("result", "Sorry, I couldn't process that.")
             await websocket.send_json({"type": "token", "text": fallback})
             await websocket.send_json({"type": "done"})
-            memory.add_turn(message, fallback)
-            _get_conversation_store().add_turn(
+            _persist_conversation_turn(
+                memory,
                 conversation_id,
                 user_id,
                 message,
                 fallback,
             )
-            _remember_explicit_user_memory(user_id, message)
             await websocket.close()
             return
 
@@ -1207,14 +1306,13 @@ async def chat_websocket(websocket: WebSocket):
         await websocket.send_json({"type": "done"})
 
         # Save to memory
-        memory.add_turn(message, full_reply)
-        _get_conversation_store().add_turn(
+        _persist_conversation_turn(
+            memory,
             conversation_id,
             user_id,
             message,
             full_reply,
         )
-        _remember_explicit_user_memory(user_id, message)
         logger.info(f"WebSocket stream complete: {len(full_reply)} chars, intent={intent}")
 
     except WebSocketDisconnect:

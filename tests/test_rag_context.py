@@ -2,6 +2,7 @@
 from app.graph.subgraphs.chat import generate_node
 from app.graph.subgraphs.diet import recommend_node
 from app.graph.subgraphs.rag_context import build_rag_context
+from app.graph.prompt_builder import PromptBuilder
 
 
 def test_build_rag_context_numbers_evidence_and_deduplicates_sources():
@@ -28,6 +29,7 @@ def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
         "_long_term_memories": [
             {"kind": "preference", "content": "不喜欢吃香菜", "importance": 0.8, "score": 0.7}
         ],
+        "_conversation_summary": "用户正在制定深蹲训练计划。",
     }
 
     result = generate_node(state)
@@ -40,6 +42,8 @@ def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
     assert "recent_conversation" in result["_prompt_meta"]["sections"]
     assert "不喜欢吃香菜" in result["_prompt"]
     assert "long_term_memory" in result["_prompt_meta"]["sections"]
+    assert "用户正在制定深蹲训练计划" in result["_prompt"]
+    assert "conversation_summary" in result["_prompt_meta"]["sections"]
 
 
 def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():
@@ -50,6 +54,7 @@ def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():
         "_retrieved": [
             {"content": "优先选择营养密度高的食物。", "source": "nutrition.txt"},
         ],
+        "_conversation_summary": "用户当前目标是减脂。",
     }
 
     result = recommend_node(state)
@@ -60,6 +65,28 @@ def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():
     assert result["_prompt_meta"]["kind"] == "diet.recommendation"
     assert result["_prompt_meta"]["chars"] == len(result["_prompt"])
     assert "user_profile" in result["_prompt_meta"]["sections"]
+    assert "用户当前目标是减脂" in result["_prompt"]
+    assert "conversation_summary" in result["_prompt_meta"]["sections"]
+
+
+def test_search_and_mcp_final_prompts_include_conversation_summary():
+    state = {
+        "user_input": "继续",
+        "_conversation_summary": "用户正在制定每周三练计划。",
+    }
+
+    search_prompt = PromptBuilder.search_synthesis(
+        state,
+        result_text="搜索结果",
+        sources=[],
+    )
+    mcp_prompt = PromptBuilder.mcp_format_result(
+        state,
+        payload={"name": "示例菜谱"},
+    )
+
+    assert "用户正在制定每周三练计划" in search_prompt
+    assert "用户正在制定每周三练计划" in mcp_prompt
 
 
 def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):

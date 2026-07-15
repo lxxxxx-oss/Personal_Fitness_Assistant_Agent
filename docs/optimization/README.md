@@ -24,6 +24,7 @@
 - 会话与长期记忆使用 SQLite 持久化。
 - `summaries`、active/superseded 状态和 `last_compacted_message_id` 已投入存储层，完整一轮问答使用事务写入。
 - 确定性抽取式摘要器已完成增量边界、字符阈值、总长度限制和最近三轮保留。
+- HTTP、SSE、WebSocket 已共用摘要更新入口，active summary 已注入主要最终回答 Prompt，失败时回退到滑动窗口。
 - 长期记忆支持基本管理和检索。
 - 敏感内容支持候选确认流程。
 - SQLite FTS/LIKE 提供基础检索。
@@ -34,7 +35,7 @@
 
 ## 仍属于后续优化
 
-- 抽取式摘要接入三种聊天协议并注入 Prompt；模型摘要仅保留为生产化方向。
+- 模型摘要、精确 token 预算和多实例并发治理；这些只作为生产化方向。
 - 完整候选确认界面。
 - 常驻异步 embedding worker。
 - 用户授权、加密、过期和审计清理。
