@@ -1,5 +1,6 @@
 """Central prompt builder for text-based subgraphs."""
 import json
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from app.config import config
@@ -39,22 +40,62 @@ class PromptBuilder:
     def compact_prompt(state: RouterState, prompt: str) -> str:
         max_chars = max(1200, config.context_max_prompt_chars)
         summary = PromptBuilder.structured_compact_summary(state)
-        head_budget = min(2200, max_chars // 3)
-        summary_budget = min(1800, max_chars // 4)
-        fixed = (
-            prompt[:head_budget].rstrip()
-            + "\n\n## 对话压缩摘要\n"
-            + summary[:summary_budget].rstrip()
-            + "\n\n## 最近上下文尾部\n"
+        sections = [
+            section.strip()
+            for section in re.split(r"(?=^#{1,3}\s+)", prompt, flags=re.MULTILINE)
+            if section.strip()
+        ]
+        user_sections = [
+            section
+            for section in sections
+            if re.search(r"^#{1,3}\s+.*(?:用户问题|用户输入|当前问题)", section)
+        ]
+        user_section = user_sections[-1] if user_sections else sections[-1]
+        remaining = [section for section in sections if section is not user_section]
+
+        head = PromptBuilder._clip_section(
+            "\n\n".join(remaining[:2]),
+            max_chars * 30 // 100,
         )
-        tail_budget = max(400, max_chars - len(fixed) - 80)
-        compacted = fixed + prompt[-tail_budget:].lstrip()
+        summary_block = "## 对话压缩摘要\n" + PromptBuilder._clip_section(
+            summary,
+            max_chars * 20 // 100,
+        )
+        middle = PromptBuilder._clip_section(
+            "\n\n".join(remaining[2:]),
+            max_chars * 15 // 100,
+        )
+        prefix = "\n\n".join(part for part in (head, summary_block, middle) if part)
+        user_budget = max(200, max_chars - len(prefix) - 2)
+        user = PromptBuilder._clip_section(
+            user_section,
+            user_budget,
+            keep_tail=True,
+        )
+        compacted = "\n\n".join(part for part in (prefix, user) if part)
         if len(compacted) > max_chars:
-            compacted = compacted[: max_chars - 32].rstrip() + "\n...[truncated]"
+            compacted = compacted[-max_chars:]
         structured = state.setdefault("_structured_state", {})
         structured["compact_summary"] = summary
         structured["compact_triggered"] = True
         return compacted
+
+    @staticmethod
+    def _clip_section(text: str, limit: int, *, keep_tail: bool = False) -> str:
+        """Clip one logical prompt section without cutting away its heading."""
+        text = text.strip()
+        limit = max(0, int(limit))
+        if len(text) <= limit:
+            return text
+        if limit < 40:
+            return text[:limit]
+        marker = "\n...[section compacted]...\n"
+        first_line, separator, body = text.partition("\n")
+        if not separator or len(first_line) + len(marker) >= limit:
+            return text[-limit:] if keep_tail else text[:limit]
+        body_budget = limit - len(first_line) - len(marker)
+        body_part = body[-body_budget:] if keep_tail else body[:body_budget]
+        return first_line + marker + body_part.strip()
 
     @staticmethod
     def structured_compact_summary(state: RouterState) -> str:

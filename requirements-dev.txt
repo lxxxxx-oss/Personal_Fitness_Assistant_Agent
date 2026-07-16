@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Static correctness checks; style-only rules stay out of the interview prototype gate.
+ruff>=0.12.0,<1.0.0

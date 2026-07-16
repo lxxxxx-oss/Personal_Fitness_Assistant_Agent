@@ -109,6 +109,12 @@ class Config:
     conversation_summary_max_chars: int = field(
         default_factory=lambda: _get_int_env("CONVERSATION_SUMMARY_MAX_CHARS", 1200)
     )
+    conversation_summary_keep_recent_messages: int = field(
+        default_factory=lambda: _get_int_env(
+            "CONVERSATION_SUMMARY_KEEP_RECENT_MESSAGES",
+            6,
+        )
+    )
 
     # Retriever
     retriever_top_k: int = field(
@@ -194,6 +200,42 @@ class Config:
     # API
     api_host: str = field(default_factory=lambda: os.getenv("API_HOST", "127.0.0.1"))
     api_port: int = field(default_factory=lambda: _get_int_env("API_PORT", 8000))
+
+    def __post_init__(self) -> None:
+        """Reject internally inconsistent settings before serving requests."""
+        positive_values = {
+            "model_max_tokens": self.model_max_tokens,
+            "memory_max_turns": self.memory_max_turns,
+            "context_compact_trigger_chars": self.context_compact_trigger_chars,
+            "context_max_prompt_chars": self.context_max_prompt_chars,
+            "conversation_summary_trigger_chars": self.conversation_summary_trigger_chars,
+            "conversation_summary_max_chars": self.conversation_summary_max_chars,
+            "conversation_summary_keep_recent_messages": (
+                self.conversation_summary_keep_recent_messages
+            ),
+            "retriever_top_k": self.retriever_top_k,
+            "retriever_chunk_chars": self.retriever_chunk_chars,
+            "milvus_nlist": self.milvus_nlist,
+            "milvus_nprobe": self.milvus_nprobe,
+            "api_port": self.api_port,
+        }
+        invalid = [name for name, value in positive_values.items() if value <= 0]
+        if invalid:
+            raise ValueError(f"configuration values must be positive: {', '.join(invalid)}")
+        if self.context_max_prompt_chars < 1200:
+            raise ValueError("MAX_PROMPT_CHARS must be at least 1200")
+        if self.context_compact_trigger_chars > self.context_max_prompt_chars:
+            raise ValueError("COMPACT_TRIGGER_CHARS must not exceed MAX_PROMPT_CHARS")
+        if not 0.0 <= self.retriever_threshold <= 1.0:
+            raise ValueError("RETRIEVER_THRESHOLD must be between 0 and 1")
+        if not 0.0 <= self.router_embedding_min_confidence <= 1.0:
+            raise ValueError("ROUTER_EMBEDDING_MIN_CONFIDENCE must be between 0 and 1")
+        if not 0.0 <= self.router_embedding_min_margin <= 1.0:
+            raise ValueError("ROUTER_EMBEDDING_MIN_MARGIN must be between 0 and 1")
+        if not 0.0 < self.model_top_p <= 1.0:
+            raise ValueError("MODEL_TOP_P must be greater than 0 and at most 1")
+        if self.model_temperature < 0.0:
+            raise ValueError("MODEL_TEMPERATURE must not be negative")
 
 
 # 全局单例

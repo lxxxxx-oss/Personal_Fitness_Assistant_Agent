@@ -14,12 +14,9 @@ import os
 import threading
 from typing import Any, Dict, Generator, Optional, Tuple
 
-from app.tools.types import ToolResult, ErrorCode, check_str_nonempty, check_str_len
+from app.tools.types import ErrorCode, ToolResult
 
 logger = logging.getLogger(__name__)
-
-# --- Constants ---
-MAX_PROMPT_CHARS = 8192  # ~4096 tokens in Chinese
 
 # A model is a process-level resource. Subgraph nodes may create lightweight
 # LLMLoader wrappers with different generation settings, but they must reuse
@@ -29,11 +26,20 @@ _MODEL_LOAD_LOCK = threading.Lock()
 _MODEL_GENERATION_LOCK = threading.Lock()
 
 
+class LLMGenerationError(RuntimeError):
+    """Stable generation failure that callers can map to a transport error."""
+
+    def __init__(self, error_code: str, public_message: str):
+        super().__init__(public_message)
+        self.error_code = error_code
+        self.public_message = public_message
+
+
 class LLMLoader:
     """加载本地 Qwen3-0.6B 模型,提供统一的 generate() 和流式 generate_stream() 接口.
 
     Input:
-        prompt: str, 1-8192 chars
+        prompt: non-empty str, bounded by MAX_PROMPT_CHARS
         max_new_tokens: int (optional)
         temperature: float (optional)
         top_p: float (optional)
@@ -134,26 +140,44 @@ class LLMLoader:
                     shared_cache_entries=len(_MODEL_CACHE),
                 )
 
+    @staticmethod
+    def _validate_prompt(prompt: str) -> None:
+        """Validate the transport-independent prompt contract."""
+        from app.config import config
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            logger.error("prompt must be a non-empty string")
+            raise LLMGenerationError(
+                ErrorCode.INVALID_PARAM,
+                "The model prompt is empty or invalid.",
+            )
+        max_prompt_chars = config.context_max_prompt_chars
+        if len(prompt) > max_prompt_chars:
+            logger.error(
+                "prompt too long: %s chars (max %s)",
+                len(prompt),
+                max_prompt_chars,
+            )
+            raise LLMGenerationError(
+                ErrorCode.INVALID_PARAM,
+                "The model prompt exceeds the configured size limit.",
+            )
+
     def _prepare_inputs(self, prompt: str):
         """Validate prompt and convert to model input tensors.
 
-        Returns:
-            (inputs_dict, text) or (None, None) on failure.
+        Raises:
+            LLMGenerationError: If the prompt is invalid or the model is unavailable.
         """
-        # Validate prompt
-        if not isinstance(prompt, str) or not prompt.strip():
-            logger.error("prompt must be a non-empty string")
-            return None, None
-        if len(prompt) > MAX_PROMPT_CHARS:
-            logger.error(
-                f"prompt too long: {len(prompt)} chars (max {MAX_PROMPT_CHARS})"
-            )
-            return None, None
+        self._validate_prompt(prompt)
 
         result = self._ensure_loaded()
         if not result.ok:
-            logger.error(f"Model load failed: {result.error_message}")
-            return None, None
+            logger.error("Model load failed: %s", result.error_message)
+            raise LLMGenerationError(
+                result.error_code or ErrorCode.INTERNAL_ERROR,
+                "The local language model is unavailable.",
+            )
 
         messages = [{"role": "user", "content": prompt}]
         text = self._tokenizer.apply_chat_template(
@@ -170,11 +194,12 @@ class LLMLoader:
     ) -> str:
         """给定提示词,生成文本回复.
 
-        Returns:
-            生成的完整文本，出错时返回以"[Error]"开头的错误字符串。
+        Raises:
+            LLMGenerationError: Prompt validation or model loading failed.
         """
         from app.config import config
 
+        self._validate_prompt(prompt)
         if config.llm_mock:
             return _mock_response(prompt)
 
@@ -185,8 +210,6 @@ class LLMLoader:
         p = self.top_p if top_p is None else top_p
 
         inputs, _ = self._prepare_inputs(prompt)
-        if inputs is None:
-            return "[Error: Model not loaded or prompt invalid]"
 
         # The shared model is intentionally serialized. Concurrent generation
         # would create multiple KV caches and can exhaust CPU/GPU memory.
@@ -220,11 +243,12 @@ class LLMLoader:
     ) -> Generator[str, None, None]:
         """流式生成 — 逐 token yield 文本增量.
 
-        Yields:
-            每个 token 片段，出错时 yield 一个 "[Error]" 前缀标记。
+        Raises:
+            LLMGenerationError: Prompt validation or model loading failed.
         """
         from app.config import config
 
+        self._validate_prompt(prompt)
         if config.llm_mock:
             for token in _mock_response(prompt):
                 yield token
@@ -237,9 +261,6 @@ class LLMLoader:
         p = self.top_p if top_p is None else top_p
 
         inputs, _ = self._prepare_inputs(prompt)
-        if inputs is None:
-            yield "[Error: Model not loaded or prompt invalid]"
-            return
         with _MODEL_GENERATION_LOCK:
             past_key_values = None
             current_ids = inputs["input_ids"]
@@ -320,7 +341,7 @@ def _mock_recipe_response(prompt: str) -> str:
     import re
 
     match = re.search(
-        r"# 工具返回数据\s*(.*?)\n\n# 用户问题",
+        r"# 工具返回数据\s*(.*?)(?=\n\n# |\Z)",
         prompt,
         flags=re.S,
     )
@@ -332,6 +353,19 @@ def _mock_recipe_response(prompt: str) -> str:
         payload = json.loads(raw_payload)
     except json.JSONDecodeError:
         return raw_payload if raw_payload else ""
+
+    if isinstance(payload, dict) and isinstance(payload.get("content"), list):
+        for item in payload["content"]:
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            text = str(item.get("text", "")).strip()
+            if not text:
+                continue
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                return text
+            break
 
     if isinstance(payload, dict) and payload.get("error"):
         return f"【Demo 模式】{payload.get('error')}。{payload.get('suggestion', '')}".strip()

@@ -325,6 +325,70 @@ class TestChatEndpoint:
         assert '"execution":' in response.text
         assert calls == {"generate": 0, "generate_stream": 1}
 
+    def test_sse_token_with_newline_uses_json_framing(self, monkeypatch):
+        from app.llm.loader import LLMLoader
+
+        def fake_generate_stream(self, prompt, *args, **kwargs):
+            yield "line one\nline two"
+
+        monkeypatch.setattr(LLMLoader, "generate_stream", fake_generate_stream)
+        response = client.post(
+            "/chat/stream",
+            json={"user_id": "sse_newline_user", "message": "hello"},
+        )
+
+        assert response.status_code == 200
+        assert "event: token" in response.text
+        assert 'data: {"text": "line one\\nline two"}' in response.text
+
+    def test_sse_generation_error_is_structured_and_not_persisted(self, monkeypatch):
+        from app.llm.loader import LLMGenerationError, LLMLoader
+        from app.tools.types import ErrorCode
+
+        client.delete("/chat/sse_error_user/history")
+
+        def fail_generate_stream(self, prompt, *args, **kwargs):
+            raise LLMGenerationError(ErrorCode.CONFIG_MISSING, "Model unavailable.")
+            yield  # pragma: no cover - keeps this a generator
+
+        monkeypatch.setattr(LLMLoader, "generate_stream", fail_generate_stream)
+        response = client.post(
+            "/chat/stream",
+            json={"user_id": "sse_error_user", "message": "hello"},
+        )
+
+        assert response.status_code == 200
+        assert "event: error" in response.text
+        assert '"code": "CONFIG_MISSING"' in response.text
+        assert "Model unavailable." in response.text
+        assert client.get("/chat/sse_error_user/history").json()["history"] == []
+
+    def test_websocket_generation_error_is_structured_and_not_persisted(
+        self,
+        monkeypatch,
+    ):
+        from app.llm.loader import LLMGenerationError, LLMLoader
+        from app.tools.types import ErrorCode
+
+        client.delete("/chat/ws_error_user/history")
+
+        def fail_generate_stream(self, prompt, *args, **kwargs):
+            raise LLMGenerationError(ErrorCode.CONFIG_MISSING, "Model unavailable.")
+            yield  # pragma: no cover - keeps this a generator
+
+        monkeypatch.setattr(LLMLoader, "generate_stream", fail_generate_stream)
+        with client.websocket_connect("/chat/ws") as websocket:
+            websocket.send_json({"user_id": "ws_error_user", "message": "hello"})
+            assert websocket.receive_json()["type"] == "meta"
+            error = websocket.receive_json()
+
+        assert error == {
+            "type": "error",
+            "code": "CONFIG_MISSING",
+            "message": "Model unavailable.",
+        }
+        assert client.get("/chat/ws_error_user/history").json()["history"] == []
+
     def test_websocket_forwards_first_token_before_generation_finishes(self):
         from app.main import _stream_llm_to_websocket
 

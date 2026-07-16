@@ -60,3 +60,10 @@ class RouterState(TypedDict, total=False):
     _route_results: List[Dict[str, Any]]
     _route_execution_warnings: List[str]
     _execution: List[Dict[str, Any]]
+    _mcp_tools: List[Dict[str, Any]]
+    _mcp_mode: str
+    _mcp_configured_command: str
+    _mcp_fallback_reason: str
+    _tool_plan: str
+    _tool_result: Any
+    _mcp_tool_meta: Dict[str, Any]

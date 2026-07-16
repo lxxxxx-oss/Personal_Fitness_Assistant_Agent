@@ -211,12 +211,27 @@ async function send() {
                         currentEvent = 'message';
                         continue;
                     }
-                    try {
-                        JSON.parse(raw);
-                        continue;
-                    } catch(e) {
-                        // Raw token text
-                        let token = raw;
+                    if (currentEvent === 'error') {
+                        let detail = 'stream failed';
+                        try {
+                            const payload = JSON.parse(raw);
+                            detail = payload.message || detail;
+                        } catch(e) {}
+                        throw new Error(detail);
+                    }
+                    let token = raw;
+                    if (currentEvent === 'token') {
+                        try {
+                            const payload = JSON.parse(raw);
+                            token = typeof payload.text === 'string' ? payload.text : '';
+                        } catch(e) {}
+                    } else {
+                        try {
+                            JSON.parse(raw);
+                            continue;
+                        } catch(e) {}
+                    }
+                    currentEvent = 'message';
                         // Strip Qwen3 thinking tags
                         token = token.replace(/<\/?think>/g, '');
                         if (token) {
@@ -228,7 +243,7 @@ async function send() {
                             }
                             contentSpan.textContent += token;
                         }
-                }
+
             }
             }
 

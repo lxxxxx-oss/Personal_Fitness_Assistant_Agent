@@ -250,3 +250,40 @@ class TestMCPRegistryIntegration:
         registry = mcp_subgraph.get_mcp_tool_registry()
         assert registry.audit_log[-1]["ok"] is False
         assert registry.audit_log[-1]["error_code"] == ErrorCode.INVALID_PARAM
+
+    def test_mcp_subgraph_preserves_tool_result_for_formatting(
+        self,
+        monkeypatch,
+    ):
+        pytest.importorskip("langgraph")
+
+        from app.config import config
+        from app.graph.subgraphs import mcp as mcp_subgraph
+        from app.llm.loader import LLMLoader, _mock_response
+
+        mcp_subgraph._mcp_client = None
+        mcp_subgraph._mcp_configured_command = None
+        mcp_subgraph._mcp_fallback_reason = None
+        mcp_subgraph._mcp_tool_registry = None
+        monkeypatch.setattr(config, "llm_mock", True)
+        monkeypatch.setattr(config, "mcp_server_command", "mock")
+        monkeypatch.setattr(
+            LLMLoader,
+            "generate",
+            lambda self, prompt, *args, **kwargs: _mock_response(prompt),
+        )
+
+        state = mcp_subgraph.build_mcp_subgraph().invoke({
+            "user_input": "菜谱：番茄炒蛋怎么做？",
+            "user_id": "u1",
+            "intent": "mcp",
+            "memory": [],
+            "result": "",
+            "error": None,
+        })
+
+        assert state["_tool_result"].ok
+        assert state["_tool_result"].data["name"] == "番茄炒蛋"
+        assert "番茄炒蛋" in state["result"]
+        assert "当前会话摘要" not in state["result"]
+        assert "工具返回数据" not in state["result"]

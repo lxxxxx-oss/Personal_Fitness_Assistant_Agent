@@ -1,0 +1,10 @@
+# Keep long Codex tasks below the point where compaction becomes expensive.
+# Project config is loaded only when this repository is trusted.
+model_auto_compact_token_limit = 32000
+model_auto_compact_token_limit_scope = "body_after_prefix"
+
+# A single test log or file dump must not consume most of the conversation.
+tool_output_token_limit = 4000
+
+# Relative paths in project config resolve from this .codex directory.
+experimental_compact_prompt_file = "compact_prompt.md"

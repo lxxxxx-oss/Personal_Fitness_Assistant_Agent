@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import app.llm.loader as loader_module
-from app.llm.loader import LLMLoader, _mock_response
+from app.llm.loader import LLMGenerationError, LLMLoader, _mock_response
+from app.tools.types import ErrorCode
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +43,23 @@ def _install_fake_model_runtime(monkeypatch, model_factory):
 
 
 class TestLLMLoader:
+    def test_prompt_contract_rejects_empty_input(self):
+        with pytest.raises(LLMGenerationError) as exc_info:
+            LLMLoader._validate_prompt("  ")
+
+        assert exc_info.value.error_code == ErrorCode.INVALID_PARAM
+        assert "empty or invalid" in exc_info.value.public_message
+
+    def test_prompt_contract_uses_configured_limit(self, monkeypatch):
+        from app.config import config
+
+        monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+        with pytest.raises(LLMGenerationError) as exc_info:
+            LLMLoader._validate_prompt("x" * 1201)
+
+        assert exc_info.value.error_code == ErrorCode.INVALID_PARAM
+        assert "configured size limit" in exc_info.value.public_message
+
     def test_loader_initializes_with_config(self):
         from app.config import config
         loader = LLMLoader(
@@ -84,6 +102,62 @@ class TestLLMLoader:
         assert "蛋炒饭" in result
         assert "米饭" in result
         assert "番茄炒蛋" not in result
+
+    def test_mock_recipe_response_ignores_conversation_summary_block(self):
+        payload = {
+            "name": "番茄炒蛋",
+            "ingredients": [
+                {"name": "番茄", "text_quantity": "番茄 2个"},
+                {"name": "鸡蛋", "text_quantity": "鸡蛋 3个"},
+            ],
+            "steps": ["鸡蛋打散炒熟", "番茄炒出汁", "倒回鸡蛋调味"],
+        }
+        prompt = (
+            "# 工具返回数据\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+            "# 当前会话摘要\n"
+            "用户正在测试 MCP 菜谱演示。\n\n"
+            "# 用户问题\n菜谱：番茄炒蛋怎么做？\n"
+        )
+
+        result = _mock_response(prompt)
+
+        assert "番茄炒蛋" in result
+        assert "番茄 2个" in result
+        assert "当前会话摘要" not in result
+        assert "# 用户问题" not in result
+
+    def test_mock_recipe_response_unwraps_mcp_text_content(self):
+        recipe = {
+            "name": "番茄炒蛋",
+            "ingredients": [
+                {"name": "番茄", "text_quantity": "番茄 2个"},
+                {"name": "鸡蛋", "text_quantity": "鸡蛋 3个"},
+            ],
+            "steps": ["鸡蛋打散炒熟", "番茄炒出汁", "倒回鸡蛋调味"],
+        }
+        payload = {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(recipe, ensure_ascii=False),
+                }
+            ]
+        }
+        prompt = (
+            "# 工具返回数据\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+            "# 当前会话摘要\n"
+            "用户正在测试 MCP 菜谱演示。\n\n"
+            "# 用户问题\n菜谱：番茄炒蛋怎么做？\n"
+        )
+
+        result = _mock_response(prompt)
+
+        assert "番茄炒蛋" in result
+        assert "鸡蛋 3个" in result
+        assert "工具返回数据" not in result
+        assert "当前会话摘要" not in result
 
     def test_multiple_loaders_reuse_one_process_model(
         self,

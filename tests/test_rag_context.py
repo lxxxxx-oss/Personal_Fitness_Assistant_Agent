@@ -136,5 +136,7 @@ def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
     assert result["_prompt_meta"]["original_chars"] > result["_prompt_meta"]["chars"]
     assert len(result["_prompt"]) <= 1200
     assert "## 对话压缩摘要" in result["_prompt"]
+    assert "## 用户问题" in result["_prompt"]
+    assert "深蹲怎么做？" in result["_prompt"]
     assert result["_structured_state"]["compact_triggered"] is True
     assert result["_execution"][0]["component"] == "compact"

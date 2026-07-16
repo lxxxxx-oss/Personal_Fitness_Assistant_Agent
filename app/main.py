@@ -1,9 +1,10 @@
 """FastAPI application entry point — Fitness Assistant API."""
 import logging
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
 
 import asyncio
 from contextlib import suppress
+from dataclasses import dataclass
 import json
 import os
 import tempfile
@@ -13,11 +14,34 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, W
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
+from app.api.schemas import (
+    CandidateMemoryListResponse,
+    CandidateMemoryResponse,
+    ChatRequest,
+    ChatResponse,
+    ClearResponse,
+    EmbeddingJobListResponse,
+    EmbeddingJobProcessResponse,
+    ExecutionTraceItem,
+    HistoryResponse,
+    MemoryCreateRequest,
+    MemoryItemResponse,
+    MemoryListResponse,
+    MemoryUpdateRequest,
+    MotionAnalyzeImageResponse,
+    MotionAnalyzeResponse,
+    MotionAnalyzeVideoResponse,
+    MotionReferenceItem,
+    MotionReferencesResponse,
+)
 from app.config import config
 from app.graph.router import build_router_graph
 from app.graph.state import RouterState, record_execution
+
+if TYPE_CHECKING:
+    from app.memory.sliding_window import SlidingWindowMemory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,6 +60,8 @@ _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
 _conversation_store = None
 _memory_store = None
+_DEPENDENCY_LOCK = threading.Lock()
+_SESSION_LOCK = threading.RLock()
 
 
 async def _read_upload_with_limit(
@@ -124,13 +150,6 @@ async def _iterate_llm_tokens(llm: Any, prompt: str) -> AsyncIterator[str]:
                 await producer_task
 
 
-class ExecutionTraceItem(BaseModel):
-    component: str
-    mode: str
-    degraded: bool = False
-    detail: str = ""
-
-
 def _result_metadata(
     result_state: RouterState,
 ) -> tuple[List[str], List[str], List[Dict]]:
@@ -167,36 +186,34 @@ def _result_metadata(
 def _get_router_graph():
     global _router_graph
     if _router_graph is None:
-        _router_graph = build_router_graph()
+        with _DEPENDENCY_LOCK:
+            if _router_graph is None:
+                _router_graph = build_router_graph()
     return _router_graph
-
-
-def _get_or_create_memory(user_id: str):
-    from app.memory.sliding_window import SlidingWindowMemory
-
-    if user_id not in _sessions:
-        _sessions[user_id] = SlidingWindowMemory(max_turns=config.memory_max_turns)
-    return _sessions[user_id]
 
 
 def _get_conversation_store():
     global _conversation_store
     if _conversation_store is None:
-        from app.memory.conversation_store import ConversationStore
+        with _DEPENDENCY_LOCK:
+            if _conversation_store is None:
+                from app.memory.conversation_store import ConversationStore
 
-        _conversation_store = ConversationStore(config.memory_db_path)
+                _conversation_store = ConversationStore(config.memory_db_path)
     return _conversation_store
 
 
 def _get_memory_store():
     global _memory_store
     if _memory_store is None:
-        from app.memory.memory_store import MemoryStore
+        with _DEPENDENCY_LOCK:
+            if _memory_store is None:
+                from app.memory.memory_store import MemoryStore
 
-        _memory_store = MemoryStore(
-            config.memory_db_path,
-            semantic_enabled=config.memory_milvus_enabled,
-        )
+                _memory_store = MemoryStore(
+                    config.memory_db_path,
+                    semantic_enabled=config.memory_milvus_enabled,
+                )
     return _memory_store
 
 
@@ -225,15 +242,16 @@ def _get_or_restore_memory(user_id: str, conversation_id: str):
     from app.memory.sliding_window import SlidingWindowMemory
 
     key = _session_key(user_id, conversation_id)
-    if key not in _sessions:
-        memory = SlidingWindowMemory(max_turns=config.memory_max_turns)
-        for message in _get_conversation_store().get_messages(
-            conversation_id,
-            user_id,
-        ):
-            memory.add(message)
-        _sessions[key] = memory
-    return _sessions[key]
+    with _SESSION_LOCK:
+        if key not in _sessions:
+            memory = SlidingWindowMemory(max_turns=config.memory_max_turns)
+            for message in _get_conversation_store().get_messages(
+                conversation_id,
+                user_id,
+            ):
+                memory.add(message)
+            _sessions[key] = memory
+        return _sessions[key]
 
 
 def _attach_conversation_summary(
@@ -307,7 +325,7 @@ def _persist_conversation_turn(
             conversation_id,
             user_id,
             trigger_chars=config.conversation_summary_trigger_chars,
-            keep_recent_messages=6,
+            keep_recent_messages=config.conversation_summary_keep_recent_messages,
             max_summary_chars=config.conversation_summary_max_chars,
         )
     except Exception as exc:
@@ -329,178 +347,90 @@ def _resolve_conversation_id(user_id: str, conversation_id: Optional[str]) -> st
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-# --- Request/Response Models ---
+@dataclass
+class PreparedChat:
+    """Transport-neutral inputs required to execute one chat request."""
 
-class ChatRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64)
-    message: str = Field(..., min_length=1, max_length=4096)
-    conversation_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
-
-
-class ChatResponse(BaseModel):
     user_id: str
+    message: str
     conversation_id: str
-    intent: str
-    reply: str
-    sources: List[str] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
-    execution: List[ExecutionTraceItem] = Field(default_factory=list)
+    memory: Any
+    state: RouterState
 
 
-class HistoryResponse(BaseModel):
-    user_id: str
-    conversation_id: Optional[str] = None
-    history: List[Dict[str, str]]
+def _prepare_chat_sync(
+    user_id: str,
+    message: str,
+    conversation_id: Optional[str],
+    *,
+    streaming: bool,
+) -> PreparedChat:
+    """Resolve persistence and build one shared RouterState."""
+    resolved_id = _resolve_conversation_id(user_id, conversation_id)
+    memory = _get_or_restore_memory(user_id, resolved_id)
+    state: RouterState = {
+        "user_input": message,
+        "user_id": user_id,
+        "conversation_id": resolved_id,
+        "intent": "",
+        "memory": memory.get_all(),
+        "_long_term_memories": _retrieve_long_term_memories(user_id, message),
+        "result": "",
+        "error": None,
+    }
+    if streaming:
+        state["_streaming"] = True
+    _attach_conversation_summary(state, user_id, resolved_id)
+    return PreparedChat(user_id, message, resolved_id, memory, state)
 
 
-class ClearResponse(BaseModel):
-    user_id: str
-    conversation_id: Optional[str] = None
-    status: str
+async def _prepare_chat(
+    user_id: str,
+    message: str,
+    conversation_id: Optional[str],
+    *,
+    streaming: bool,
+) -> PreparedChat:
+    """Prepare chat state without blocking the event loop on SQLite/retrieval."""
+    return await asyncio.to_thread(
+        _prepare_chat_sync,
+        user_id,
+        message,
+        conversation_id,
+        streaming=streaming,
+    )
 
 
-class MemoryCreateRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64)
-    kind: str = Field(default="note", min_length=1, max_length=32)
-    content: str = Field(..., min_length=1, max_length=2000)
-    scope: str = Field(default="global", min_length=1, max_length=128)
-    source_type: str = Field(default="manual_import", min_length=1, max_length=64)
-    importance: float = Field(default=0.5, ge=0.0, le=1.0)
-    metadata: Dict = Field(default_factory=dict)
+async def _persist_prepared_chat(prepared: PreparedChat, reply: str) -> Dict[str, Any]:
+    """Persist one successful complete turn outside the event loop."""
+    return await asyncio.to_thread(
+        _persist_conversation_turn,
+        prepared.memory,
+        prepared.conversation_id,
+        prepared.user_id,
+        prepared.message,
+        reply,
+    )
 
 
-class MemoryUpdateRequest(BaseModel):
-    user_id: str = Field(..., min_length=1, max_length=64)
-    kind: Optional[str] = Field(default=None, min_length=1, max_length=32)
-    content: Optional[str] = Field(default=None, min_length=1, max_length=2000)
-    scope: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    source_type: Optional[str] = Field(default=None, min_length=1, max_length=64)
-    importance: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    status: Optional[str] = Field(default=None, min_length=1, max_length=32)
-    metadata: Optional[Dict] = None
+def _create_llm():
+    from app.llm.loader import LLMLoader
+
+    return LLMLoader(
+        model_path=config.model_path,
+        device=config.model_device,
+        max_tokens=config.model_max_tokens,
+        temperature=config.model_temperature,
+        top_p=config.model_top_p,
+    )
 
 
-class MemoryItemResponse(BaseModel):
-    id: str
-    user_id: str
-    kind: str
-    content: str
-    scope: str
-    source_type: str
-    importance: float
-    status: str
-    access_count: int
-    last_accessed_at: Optional[str] = None
-    memory_key: str
-    metadata: Dict = Field(default_factory=dict)
-    created_at: str
-    updated_at: str
-    deduplicated: bool = False
-    score: Optional[float] = None
-
-
-class MemoryListResponse(BaseModel):
-    user_id: str
-    memories: List[MemoryItemResponse] = Field(default_factory=list)
-
-
-class CandidateMemoryResponse(BaseModel):
-    id: str
-    user_id: str
-    kind: str
-    content: str
-    scope: str
-    source_type: str
-    importance: float
-    privacy_level: str
-    status: str
-    metadata: Dict = Field(default_factory=dict)
-    created_at: str
-    updated_at: str
-    candidate: bool = False
-
-
-class CandidateMemoryListResponse(BaseModel):
-    user_id: str
-    candidates: List[CandidateMemoryResponse] = Field(default_factory=list)
-
-
-class EmbeddingJobResponse(BaseModel):
-    id: str
-    memory_id: str
-    user_id: str
-    status: str
-    attempts: int
-    last_error: Optional[str] = None
-    next_run_at: str
-    created_at: str
-    updated_at: str
-
-
-class EmbeddingJobListResponse(BaseModel):
-    jobs: List[EmbeddingJobResponse] = Field(default_factory=list)
-
-
-class EmbeddingJobProcessResponse(BaseModel):
-    processed: int
-    completed: int
-    failed: int
-    enabled: bool
-
-
-class MotionAnalyzeResponse(BaseModel):
-    filename: str
-    frames: int
-    joints: int
-    reference: str | None = None
-    metrics: dict | None = None
-    message: str
-
-
-class MotionAnalyzeImageResponse(BaseModel):
-    filename: str
-    source_type: str
-    frames: int
-    joints: int
-    pose_model: str
-    joint_schema: str
-    confidence_summary: dict | None = None
-    warnings: List[str] = Field(default_factory=list)
-    execution: List[ExecutionTraceItem] = Field(default_factory=list)
-    message: str
-
-
-class MotionAnalyzeVideoResponse(BaseModel):
-    filename: str
-    source_type: str
-    frames: int
-    joints: int
-    fps: float
-    pose_model: str
-    joint_schema: str
-    sampled_frames: int
-    valid_frame_ratio: float
-    confidence_summary: dict | None = None
-    reference: str | None = None
-    metrics: dict | None = None
-    warnings: List[str] = Field(default_factory=list)
-    execution: List[ExecutionTraceItem] = Field(default_factory=list)
-    message: str
-
-
-class MotionReferenceItem(BaseModel):
-    name: str
-    frames: int | None = None
-    joints: int | None = None
-    pose_model: str = "unknown"
-    joint_schema: str = "unknown"
-    coordinate_space: str = "unknown"
-    compatible_with_video: bool = False
-    reason: str = ""
-
-
-class MotionReferencesResponse(BaseModel):
-    references: List[MotionReferenceItem] = Field(default_factory=list)
+def _sse_event(event: str, payload: Dict[str, Any]) -> str:
+    """Encode one SSE event as a single JSON data record."""
+    return (
+        f"event: {event}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
 
 
 # --- API Endpoints ---
@@ -511,7 +441,7 @@ async def health_check():
 
 
 @app.get("/memory", response_model=MemoryListResponse)
-async def list_memories(
+def list_memories(
     user_id: str,
     kind: Optional[str] = None,
     include_deleted: bool = False,
@@ -531,7 +461,7 @@ async def list_memories(
 
 
 @app.post("/memory", response_model=MemoryItemResponse)
-async def create_memory(request: MemoryCreateRequest):
+def create_memory(request: MemoryCreateRequest):
     """Create one explicit long-term memory."""
     try:
         return _get_memory_store().create_memory(
@@ -548,14 +478,14 @@ async def create_memory(request: MemoryCreateRequest):
 
 
 @app.get("/memory/search", response_model=MemoryListResponse)
-async def search_memories(user_id: str, query: str, limit: int = 5):
+def search_memories(user_id: str, query: str, limit: int = 5):
     """Search active long-term memories using SQLite FTS5 with LIKE fallback."""
     memories = _get_memory_store().search_memories(user_id, query, limit=limit)
     return MemoryListResponse(user_id=user_id, memories=memories)
 
 
 @app.get("/memory/candidates", response_model=CandidateMemoryListResponse)
-async def list_candidate_memories(
+def list_candidate_memories(
     user_id: str,
     status: str = "pending",
     limit: int = 50,
@@ -573,7 +503,7 @@ async def list_candidate_memories(
 
 
 @app.post("/memory/candidates/{candidate_id}/confirm", response_model=MemoryItemResponse)
-async def confirm_candidate_memory(candidate_id: str, user_id: str):
+def confirm_candidate_memory(candidate_id: str, user_id: str):
     """Confirm one candidate memory and promote it into memory_items."""
     item = _get_memory_store().confirm_candidate_memory(user_id, candidate_id)
     if item is None:
@@ -582,7 +512,7 @@ async def confirm_candidate_memory(candidate_id: str, user_id: str):
 
 
 @app.post("/memory/candidates/{candidate_id}/reject")
-async def reject_candidate_memory(candidate_id: str, user_id: str):
+def reject_candidate_memory(candidate_id: str, user_id: str):
     """Reject one candidate memory."""
     rejected = _get_memory_store().reject_candidate_memory(user_id, candidate_id)
     if not rejected:
@@ -591,7 +521,7 @@ async def reject_candidate_memory(candidate_id: str, user_id: str):
 
 
 @app.get("/memory/embedding-jobs", response_model=EmbeddingJobListResponse)
-async def list_memory_embedding_jobs(status: str = "pending", limit: int = 50):
+def list_memory_embedding_jobs(status: str = "pending", limit: int = 50):
     """List memory embedding jobs for the optional Milvus sync worker."""
     try:
         jobs = _get_memory_store().list_embedding_jobs(status=status, limit=limit)
@@ -601,14 +531,14 @@ async def list_memory_embedding_jobs(status: str = "pending", limit: int = 50):
 
 
 @app.post("/memory/embedding-jobs/process", response_model=EmbeddingJobProcessResponse)
-async def process_memory_embedding_jobs(limit: int = 20):
+def process_memory_embedding_jobs(limit: int = 20):
     """Process pending memory embedding jobs synchronously for local demos/tests."""
     result = _get_memory_store().process_embedding_jobs(limit=limit)
     return EmbeddingJobProcessResponse(**result)
 
 
 @app.get("/memory/{memory_id}", response_model=MemoryItemResponse)
-async def get_memory(memory_id: str, user_id: str):
+def get_memory(memory_id: str, user_id: str):
     """Read one long-term memory by id."""
     item = _get_memory_store().get_memory(user_id, memory_id)
     if item is None:
@@ -617,7 +547,7 @@ async def get_memory(memory_id: str, user_id: str):
 
 
 @app.patch("/memory/{memory_id}", response_model=MemoryItemResponse)
-async def update_memory(memory_id: str, request: MemoryUpdateRequest):
+def update_memory(memory_id: str, request: MemoryUpdateRequest):
     """Update one long-term memory."""
     updates = request.model_dump(exclude_none=True)
     updates.pop("user_id", None)
@@ -635,7 +565,7 @@ async def update_memory(memory_id: str, request: MemoryUpdateRequest):
 
 
 @app.delete("/memory/{memory_id}")
-async def delete_memory(memory_id: str, user_id: str):
+def delete_memory(memory_id: str, user_id: str):
     """Logically delete one long-term memory."""
     deleted = _get_memory_store().delete_memory(user_id, memory_id)
     if not deleted:
@@ -646,40 +576,21 @@ async def delete_memory(memory_id: str, user_id: str):
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Process user message, route to subgraph, return reply."""
-    conversation_id = _resolve_conversation_id(
-        request.user_id,
-        request.conversation_id,
-    )
-    memory = _get_or_restore_memory(request.user_id, conversation_id)
-
-    state: RouterState = {
-        "user_input": request.message,
-        "user_id": request.user_id,
-        "conversation_id": conversation_id,
-        "intent": "",
-        "memory": memory.get_all(),
-        "_long_term_memories": _retrieve_long_term_memories(
+    try:
+        prepared = await _prepare_chat(
             request.user_id,
             request.message,
-        ),
-        "result": "",
-        "error": None,
-    }
-    _attach_conversation_summary(state, request.user_id, conversation_id)
-
-    try:
+            request.conversation_id,
+            streaming=False,
+        )
         graph = _get_router_graph()
-        result_state = await _invoke_graph(graph, state)
+        result_state = await _invoke_graph(graph, prepared.state)
 
         reply = result_state.get("result", "")
+        if not isinstance(reply, str) or not reply.strip():
+            raise RuntimeError("chat graph completed without reply text")
         intent = result_state.get("intent", "chat")
-        summary_result = _persist_conversation_turn(
-            memory,
-            conversation_id,
-            request.user_id,
-            request.message,
-            reply,
-        )
+        summary_result = await _persist_prepared_chat(prepared, reply)
         if summary_result.get("updated"):
             record_execution(
                 result_state,
@@ -694,25 +605,40 @@ async def chat(request: ChatRequest):
 
         return ChatResponse(
             user_id=request.user_id,
-            conversation_id=conversation_id,
+            conversation_id=prepared.conversation_id,
             intent=intent,
             reply=reply,
             sources=sources,
             warnings=warnings,
             execution=execution,
         )
-    except Exception as e:
-        logger.exception(f"Error processing chat: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        from app.llm.loader import LLMGenerationError
+
+        logger.exception("Error processing chat")
+        if isinstance(exc, LLMGenerationError):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": exc.error_code, "message": exc.public_message},
+            ) from exc
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_ERROR", "message": "Chat request failed."},
+        ) from exc
 
 
 @app.get("/chat/{user_id}/history", response_model=HistoryResponse)
 async def get_history(user_id: str):
     """Get user conversation history."""
-    conversation_id = _get_conversation_store().get_latest_active_conversation(user_id)
+    conversation_id = await asyncio.to_thread(
+        _get_conversation_store().get_latest_active_conversation,
+        user_id,
+    )
     if conversation_id is None:
         return HistoryResponse(user_id=user_id, conversation_id=None, history=[])
-    memory = _get_or_restore_memory(user_id, conversation_id)
+    memory = await asyncio.to_thread(_get_or_restore_memory, user_id, conversation_id)
     return HistoryResponse(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -723,12 +649,17 @@ async def get_history(user_id: str):
 @app.delete("/chat/{user_id}/history", response_model=ClearResponse)
 async def clear_history(user_id: str):
     """Clear user conversation history."""
-    conversation_id = _get_conversation_store().get_latest_active_conversation(user_id)
-    _get_conversation_store().archive_user_conversations(user_id)
-    for key in list(_sessions.keys()):
-        if key.startswith(f"{user_id}:") or key == user_id:
-            _sessions[key].clear()
-            _sessions.pop(key, None)
+    store = _get_conversation_store()
+    conversation_id = await asyncio.to_thread(
+        store.get_latest_active_conversation,
+        user_id,
+    )
+    await asyncio.to_thread(store.archive_user_conversations, user_id)
+    with _SESSION_LOCK:
+        for key in list(_sessions.keys()):
+            if key.startswith(f"{user_id}:") or key == user_id:
+                _sessions[key].clear()
+                _sessions.pop(key, None)
     return ClearResponse(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -762,7 +693,7 @@ async def analyze_motion(
                     break
                 tmp.write(chunk)
 
-        pose_result = load_npz_pose(tmp_path)
+        pose_result = await asyncio.to_thread(load_npz_pose, tmp_path)
         if not pose_result.ok:
             raise HTTPException(
                 status_code=422,
@@ -781,7 +712,10 @@ async def analyze_motion(
         )
 
         if reference_name:
-            library_result = list_motion_library(config.motion_library_dir)
+            library_result = await asyncio.to_thread(
+                list_motion_library,
+                config.motion_library_dir,
+            )
             library = library_result.data if library_result.ok else {}
             ref_path = library.get(reference_name)
             if ref_path is None:
@@ -790,14 +724,18 @@ async def analyze_motion(
                     detail=f"Reference motion not found: {reference_name}",
                 )
 
-            ref_result = load_npz_pose(ref_path)
+            ref_result = await asyncio.to_thread(load_npz_pose, ref_path)
             if not ref_result.ok:
                 raise HTTPException(
                     status_code=422,
                     detail=ref_result.error_message or "Invalid reference pose file",
                 )
 
-            metrics_result = compute_similarity(pose, ref_result.data)
+            metrics_result = await asyncio.to_thread(
+                compute_similarity,
+                pose,
+                ref_result.data,
+            )
             if not metrics_result.ok:
                 raise HTTPException(
                     status_code=422,
@@ -839,7 +777,11 @@ async def analyze_motion_image(file: UploadFile = File(...)):
             max_bytes=MAX_IMAGE_BYTES,
             media_label="Image",
         )
-        image_result = decode_image_bytes_to_rgb(content, filename=file.filename)
+        image_result = await asyncio.to_thread(
+            decode_image_bytes_to_rgb,
+            content,
+            filename=file.filename,
+        )
         if not image_result.ok:
             status_code = 503 if image_result.error_code == ErrorCode.CONFIG_MISSING else 422
             raise HTTPException(
@@ -847,7 +789,8 @@ async def analyze_motion_image(file: UploadFile = File(...)):
                 detail=image_result.error_message or "Invalid image file",
             )
 
-        pose_result = estimate_pose_from_image(
+        pose_result = await asyncio.to_thread(
+            estimate_pose_from_image,
             image_result.data,
             source_name=file.filename,
         )
@@ -900,7 +843,7 @@ async def analyze_motion_image(file: UploadFile = File(...)):
 
 
 @app.get("/motion/references", response_model=MotionReferencesResponse)
-async def list_motion_references():
+def list_motion_references():
     """List standard references and whether they match the video pose schema."""
     from app.tools.motion_tool import list_motion_library, load_npz_pose_sequence
 
@@ -985,7 +928,8 @@ async def analyze_motion_video(
                     )
                 tmp.write(chunk)
 
-        pose_result = estimate_pose_from_video_path(
+        pose_result = await asyncio.to_thread(
+            estimate_pose_from_video_path,
             tmp_path,
             source_name=file.filename,
         )
@@ -1018,7 +962,10 @@ async def analyze_motion_video(
             normalized_reference = reference_name.strip()
             if len(normalized_reference) > 64:
                 raise HTTPException(status_code=422, detail="reference_name is too long")
-            library_result = list_motion_library(config.motion_library_dir)
+            library_result = await asyncio.to_thread(
+                list_motion_library,
+                config.motion_library_dir,
+            )
             library = library_result.data if library_result.ok else {}
             reference_path = library.get(normalized_reference)
             if reference_path is None:
@@ -1026,13 +973,17 @@ async def analyze_motion_video(
                     status_code=404,
                     detail=f"Reference motion not found: {normalized_reference}",
                 )
-            reference_result = load_npz_pose_sequence(reference_path)
+            reference_result = await asyncio.to_thread(
+                load_npz_pose_sequence,
+                reference_path,
+            )
             if not reference_result.ok:
                 raise HTTPException(
                     status_code=422,
                     detail=reference_result.error_message or "Invalid reference motion",
                 )
-            similarity_result = compute_pose_sequence_similarity(
+            similarity_result = await asyncio.to_thread(
+                compute_pose_sequence_similarity,
                 sequence,
                 reference_result.data,
             )
@@ -1095,91 +1046,64 @@ async def analyze_motion_video(
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Streaming chat: SSE token-by-token output."""
-    conversation_id = _resolve_conversation_id(
+    prepared = await _prepare_chat(
         request.user_id,
+        request.message,
         request.conversation_id,
+        streaming=True,
     )
-    memory = _get_or_restore_memory(request.user_id, conversation_id)
-
-    state: RouterState = {
-        "user_input": request.message,
-        "user_id": request.user_id,
-        "conversation_id": conversation_id,
-        "intent": "",
-        "memory": memory.get_all(),
-        "_long_term_memories": _retrieve_long_term_memories(
-            request.user_id,
-            request.message,
-        ),
-        "result": "",
-        "error": None,
-        "_streaming": True,
-    }
-    _attach_conversation_summary(state, request.user_id, conversation_id)
 
     async def event_stream():
-        # Step 1: Run the graph to get context + prompt
-        graph = _get_router_graph()
-        result_state = await _invoke_graph(graph, state)
-        prompt = result_state.get("_prompt", "")
-        intent = result_state.get("intent", "chat")
-        sources, warnings, execution = _result_metadata(result_state)
-
-        # Send metadata first
-        meta = {
-            "conversation_id": conversation_id,
-            "intent": intent,
-            "sources": sources,
-            "warnings": warnings,
-            "execution": execution,
-        }
-        yield f"event: meta\ndata: {json.dumps(meta, ensure_ascii=False)}\n\n"
-
-        if not prompt:
-            # No prompt stored — graph couldn't prepare context
-            fallback = result_state.get("result", "Sorry, I couldn't process that.")
-            yield f"data: {fallback}\n\n"
-            _persist_conversation_turn(
-                memory,
-                conversation_id,
-                request.user_id,
-                request.message,
-                fallback,
-            )
-            yield "event: done\ndata: {}\n\n"
-            return
-
-        # Step 2: Stream LLM generation token by token
-        from app.llm.loader import LLMLoader
-
-        llm = LLMLoader(
-            model_path=config.model_path,
-            device=config.model_device,
-            max_tokens=config.model_max_tokens,
-            temperature=config.model_temperature,
-            top_p=config.model_top_p,
-        )
-
-        full_reply = ""
         try:
+            graph = _get_router_graph()
+            result_state = await _invoke_graph(graph, prepared.state)
+            prompt = result_state.get("_prompt", "")
+            intent = result_state.get("intent", "chat")
+            sources, warnings, execution = _result_metadata(result_state)
+            yield _sse_event("meta", {
+                "conversation_id": prepared.conversation_id,
+                "intent": intent,
+                "sources": sources,
+                "warnings": warnings,
+                "execution": execution,
+            })
+
+            if not prompt:
+                fallback = result_state.get(
+                    "result",
+                    "Sorry, I couldn't process that.",
+                )
+                yield _sse_event("token", {"text": fallback})
+                await _persist_prepared_chat(prepared, fallback)
+                yield _sse_event("done", {})
+                return
+
+            full_reply = ""
+            llm = _create_llm()
             async for token in _iterate_llm_tokens(llm, prompt):
                 full_reply += token
-                yield f"data: {token}\n\n"
-        except Exception as e:
-            logger.error(f"Stream error: {e}")
-            yield f"data: [Error: {e}]\n\n"
+                yield _sse_event("token", {"text": token})
+            if not full_reply.strip():
+                raise RuntimeError("LLM stream completed without reply text")
+            await _persist_prepared_chat(prepared, full_reply)
+            yield _sse_event("done", {})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            from app.llm.loader import LLMGenerationError
 
-        # Save to memory
-        _persist_conversation_turn(
-            memory,
-            conversation_id,
-            request.user_id,
-            request.message,
-            full_reply,
-        )
-
-        # Signal completion
-        yield "event: done\ndata: {}\n\n"
+            logger.exception("SSE chat stream failed")
+            code = (
+                exc.error_code
+                if isinstance(exc, LLMGenerationError)
+                else "STREAM_ERROR"
+            )
+            message = (
+                exc.public_message
+                if isinstance(exc, LLMGenerationError)
+                else "Streaming chat failed."
+            )
+            yield _sse_event("error", {"code": code, "message": message})
 
     return StreamingResponse(
         event_stream(),
@@ -1202,7 +1126,7 @@ async def chat_websocket(websocket: WebSocket):
       Server → Client:  {"type": "token", "text": "你"}
       Server → Client:  {"type": "token", "text": "好"}
       Server → Client:  {"type": "done"}
-      Server → Client:  {"type": "error", "message": "..."}
+      Server → Client:  {"type": "error", "code": "...", "message": "..."}
     """
     await websocket.accept()
     logger.info("WebSocket connected")
@@ -1224,12 +1148,12 @@ async def chat_websocket(websocket: WebSocket):
             })
             await websocket.close()
             return
-        user_id = request.user_id
-        message = request.message
         try:
-            conversation_id = _resolve_conversation_id(
-                user_id,
+            prepared = await _prepare_chat(
+                request.user_id,
+                request.message,
                 request.conversation_id,
+                streaming=True,
             )
         except HTTPException as exc:
             await websocket.send_json({
@@ -1240,24 +1164,9 @@ async def chat_websocket(websocket: WebSocket):
             await websocket.close()
             return
 
-        memory = _get_or_restore_memory(user_id, conversation_id)
-
-        state: RouterState = {
-            "user_input": message,
-            "user_id": user_id,
-            "conversation_id": conversation_id,
-            "intent": "",
-            "memory": memory.get_all(),
-            "_long_term_memories": _retrieve_long_term_memories(user_id, message),
-            "result": "",
-            "error": None,
-            "_streaming": True,
-        }
-        _attach_conversation_summary(state, user_id, conversation_id)
-
         # Step 1: Run graph to build context + get prompt
         graph = _get_router_graph()
-        result_state = await _invoke_graph(graph, state)
+        result_state = await _invoke_graph(graph, prepared.state)
         prompt = result_state.get("_prompt", "")
         intent = result_state.get("intent", "chat")
         sources, warnings, execution = _result_metadata(result_state)
@@ -1265,7 +1174,7 @@ async def chat_websocket(websocket: WebSocket):
         # Send metadata
         await websocket.send_json({
             "type": "meta",
-            "conversation_id": conversation_id,
+            "conversation_id": prepared.conversation_id,
             "intent": intent,
             "sources": sources,
             "warnings": warnings,
@@ -1277,52 +1186,47 @@ async def chat_websocket(websocket: WebSocket):
             fallback = result_state.get("result", "Sorry, I couldn't process that.")
             await websocket.send_json({"type": "token", "text": fallback})
             await websocket.send_json({"type": "done"})
-            _persist_conversation_turn(
-                memory,
-                conversation_id,
-                user_id,
-                message,
-                fallback,
-            )
+            await _persist_prepared_chat(prepared, fallback)
             await websocket.close()
             return
 
         # Step 2: Stream LLM tokens via WebSocket
         # Bridge sync generation through an async queue so each token is sent
         # as soon as it is produced without blocking the event loop.
-        from app.llm.loader import LLMLoader
-
-        llm = LLMLoader(
-            model_path=config.model_path,
-            device=config.model_device,
-            max_tokens=config.model_max_tokens,
-            temperature=config.model_temperature,
-            top_p=config.model_top_p,
-        )
-
+        llm = _create_llm()
         full_reply = await _stream_llm_to_websocket(websocket, llm, prompt)
+        if not full_reply.strip():
+            raise RuntimeError("LLM stream completed without reply text")
 
-        # Signal completion
+        # Persist before declaring success so "done" has a stable meaning.
+        await _persist_prepared_chat(prepared, full_reply)
         await websocket.send_json({"type": "done"})
-
-        # Save to memory
-        _persist_conversation_turn(
-            memory,
-            conversation_id,
-            user_id,
-            message,
-            full_reply,
-        )
         logger.info(f"WebSocket stream complete: {len(full_reply)} chars, intent={intent}")
 
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected by client")
     except json.JSONDecodeError:
-        await websocket.send_json({"type": "error", "message": "Invalid JSON"})
-    except Exception as e:
-        logger.exception(f"WebSocket error: {e}")
+        await websocket.send_json({
+            "type": "error",
+            "code": "INVALID_JSON",
+            "message": "Invalid JSON",
+        })
+    except Exception as exc:
+        from app.llm.loader import LLMGenerationError
+
+        logger.exception("WebSocket error")
+        code = (
+            exc.error_code
+            if isinstance(exc, LLMGenerationError)
+            else "STREAM_ERROR"
+        )
+        message = (
+            exc.public_message
+            if isinstance(exc, LLMGenerationError)
+            else "WebSocket chat failed."
+        )
         try:
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json({"type": "error", "code": code, "message": message})
         except Exception:
             pass
     finally:

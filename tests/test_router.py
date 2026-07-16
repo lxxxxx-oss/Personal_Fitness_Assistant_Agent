@@ -57,6 +57,7 @@ class TestIntentClassification:
 
     def test_recipe_steps_intent(self):
         assert classify_intent("番茄炒蛋步骤是什么？") == "mcp"
+        assert classify_intent("糖醋排骨怎么做") == "mcp"
 
     def test_general_protein_question_stays_chat(self):
         assert classify_intent("蛋白质有什么作用？") == "chat"

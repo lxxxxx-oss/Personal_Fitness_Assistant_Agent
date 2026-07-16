@@ -1,4 +1,6 @@
 """滑动窗口记忆测试."""
+from concurrent.futures import ThreadPoolExecutor
+
 from app.memory.sliding_window import SlidingWindowMemory
 
 
@@ -41,3 +43,21 @@ class TestSlidingWindowMemory:
         recent = mem.get_last_n(2)
         assert len(recent) == 2
         assert recent[0]["content"] == "b"
+
+    def test_concurrent_turns_remain_atomic(self):
+        mem = SlidingWindowMemory(max_turns=6)
+
+        def add(index):
+            mem.add_turn(f"question-{index}", f"answer-{index}")
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(add, range(40)))
+
+        history = mem.get_all()
+        assert len(history) == 12
+        for index in range(0, len(history), 2):
+            assert history[index]["role"] == "user"
+            assert history[index + 1]["role"] == "assistant"
+            assert history[index]["content"].split("-")[-1] == (
+                history[index + 1]["content"].split("-")[-1]
+            )

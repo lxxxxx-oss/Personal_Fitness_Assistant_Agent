@@ -1,5 +1,7 @@
 """Configuration environment parsing regression tests."""
 
+import pytest
+
 from app.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_KNOWLEDGE_COLLECTION,
@@ -60,12 +62,30 @@ def test_conversation_summary_config_is_bounded_by_explicit_values(monkeypatch):
     monkeypatch.setenv("CONVERSATION_SUMMARY_ENABLED", "false")
     monkeypatch.setenv("CONVERSATION_SUMMARY_TRIGGER_CHARS", "2400")
     monkeypatch.setenv("CONVERSATION_SUMMARY_MAX_CHARS", "900")
+    monkeypatch.setenv("CONVERSATION_SUMMARY_KEEP_RECENT_MESSAGES", "8")
 
     config = Config()
 
     assert config.conversation_summary_enabled is False
     assert config.conversation_summary_trigger_chars == 2400
     assert config.conversation_summary_max_chars == 900
+    assert config.conversation_summary_keep_recent_messages == 8
+
+
+def test_config_rejects_prompt_limits_that_cannot_compact_safely():
+    with pytest.raises(ValueError, match="MAX_PROMPT_CHARS"):
+        Config(
+            context_compact_trigger_chars=1000,
+            context_max_prompt_chars=1199,
+        )
+
+
+def test_config_rejects_compact_trigger_above_prompt_limit():
+    with pytest.raises(ValueError, match="COMPACT_TRIGGER_CHARS"):
+        Config(
+            context_compact_trigger_chars=2000,
+            context_max_prompt_chars=1500,
+        )
 
 
 def test_router_embedding_config_is_feature_flagged(monkeypatch):

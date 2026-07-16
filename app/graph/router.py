@@ -607,7 +607,7 @@ def _call_llm_router(prompt: str) -> Optional[str]:
     if not config.llm_router_enabled:
         return None
 
-    from app.llm.loader import LLMLoader
+    from app.llm.loader import LLMGenerationError, LLMLoader
 
     llm = LLMLoader(
         model_path=config.model_path,
@@ -616,16 +616,16 @@ def _call_llm_router(prompt: str) -> Optional[str]:
         temperature=0.0,
         top_p=1.0,
     )
-    result = llm.generate(
-        prompt,
-        max_new_tokens=config.llm_router_max_tokens,
-        temperature=0.0,
-        top_p=1.0,
-    )
-    if result.startswith("[Error:"):
-        logger.error("Local LLM router failed: %s", result)
+    try:
+        return llm.generate(
+            prompt,
+            max_new_tokens=config.llm_router_max_tokens,
+            temperature=0.0,
+            top_p=1.0,
+        )
+    except LLMGenerationError as exc:
+        logger.error("Local LLM router failed [%s]", exc.error_code)
         return None
-    return result
 
 
 def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -1401,7 +1401,7 @@ def synthesize_route_results_node(state: RouterState) -> RouterState:
         return state
 
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.loader import LLMGenerationError, LLMLoader
 
     llm = LLMLoader(
         model_path=config.model_path,
@@ -1410,16 +1410,17 @@ def synthesize_route_results_node(state: RouterState) -> RouterState:
         temperature=config.model_temperature,
         top_p=config.model_top_p,
     )
-    synthesized = llm.generate(prompt)
-    if synthesized.startswith("[Error:"):
+    try:
+        synthesized = llm.generate(prompt)
+    except LLMGenerationError:
         state["_route_execution_warnings"].append("synthesis_failed:llm_error")
         state["result"] = "\n\n".join(
             f"[{record['intent']}] {record.get('result', '')}"
             for record in successful
             if record.get("result")
-        ) or synthesized
-    else:
-        state["result"] = synthesized
+        ) or "组合回答生成失败，请稍后重试。"
+        return state
+    state["result"] = synthesized
     return state
 
 
@@ -1429,9 +1430,13 @@ def _safe_subgraph_node(intent: Intent, subgraph):
         try:
             return subgraph.invoke(state)
         except Exception as exc:
+            from app.llm.loader import LLMGenerationError
+
+            if isinstance(exc, LLMGenerationError):
+                raise
             logger.exception("%s subgraph failed", intent)
             state["result"] = ""
-            state["error"] = f"{intent} subgraph failed: {exc}"
+            state["error"] = f"{intent} subgraph failed"
             state.setdefault("_route_execution_warnings", []).append(
                 f"subgraph_failed:{intent}"
             )
@@ -1443,7 +1448,7 @@ def _safe_subgraph_node(intent: Intent, subgraph):
 def finalize_node(state: RouterState) -> RouterState:
     """Final node: ensure result is valid, log any errors."""
     if state.get("error"):
-        state["result"] = f"Error: {state['error']}"
+        state["result"] = "This request could not be completed. Please try again."
     return state
 
 

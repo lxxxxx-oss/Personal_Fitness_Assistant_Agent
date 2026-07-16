@@ -63,6 +63,17 @@ class TestIntegration:
         assert resp.status_code == 200
         assert resp.json()["intent"] == "mcp"
 
+    def test_unlisted_recipe_still_routes_to_mcp(self):
+        """Unlisted recipes should still route to the MCP path."""
+        resp = client.post("/chat", json={
+            "user_id": "test_user",
+            "message": "糖醋排骨怎么做",
+        })
+        data = resp.json()
+        assert resp.status_code == 200
+        assert data["intent"] == "mcp"
+        assert len(data["reply"]) > 0
+
     def test_intent_routing_search(self):
         """Verify search intent routing."""
         resp = client.post("/chat", json={
