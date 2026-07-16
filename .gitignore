@@ -12,3 +12,6 @@ data/models/
 docs/interview/agent.json
 volumes/
 *.db
+*.db-journal
+*.db-shm
+*.db-wal
