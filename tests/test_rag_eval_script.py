@@ -1,10 +1,19 @@
+import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.tools.types import ToolResult
-from scripts.eval_rag import evaluate, load_knowledge, load_rows
+from scripts.eval_rag import (
+    build_ragas_metrics,
+    collect_samples,
+    evaluate_with_ragas,
+    generate_with_project_rag,
+    load_knowledge,
+    load_rows,
+)
 
 
 DATASET_PATH = Path("data/eval/rag_eval.jsonl")
@@ -29,68 +38,120 @@ class IngestionStub:
         )
 
 
-def test_rag_eval_dataset_has_answerable_and_no_answer_cases():
+class StubMetric:
+    def __init__(self, value):
+        self.value = value
+        self.calls = []
+
+    async def ascore(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(value=self.value)
+
+
+def test_rag_eval_dataset_has_reference_and_no_answer_cases():
     rows = load_rows(DATASET_PATH)
 
     assert len(rows) == 15
-    assert any(row["answerable"] for row in rows)
-    assert any(not row["answerable"] for row in rows)
-    assert {row["category"] for row in rows} >= {
-        "guideline",
-        "exercise",
-        "nutrition",
-        "no_answer",
-    }
+    assert all(row["reference"].strip() for row in rows)
+    assert sum(row["answerable"] for row in rows) == 12
+    assert sum(not row["answerable"] for row in rows) == 3
 
 
-def test_evaluate_calculates_retrieval_and_rejection_metrics():
+def test_collect_samples_runs_retrieval_and_generation_for_answerable_only():
     rows = [
         {
-            "id": "hit_at_two",
-            "query": "q1",
+            "id": "answerable",
+            "category": "test",
+            "query": "问题",
+            "reference": "参考答案",
             "answerable": True,
-            "expected_sources": ["gold.txt"],
-            "relevant_contains": ["正确事实"],
         },
         {
-            "id": "miss",
-            "query": "q2",
-            "answerable": True,
-            "expected_sources": ["gold.txt"],
-            "relevant_contains": ["正确事实"],
-        },
-        {
-            "id": "rejected",
-            "query": "q3",
+            "id": "no_answer",
+            "category": "test",
+            "query": "知识库外问题",
+            "reference": "应拒答",
             "answerable": False,
-            "expected_sources": [],
-            "relevant_contains": [],
         },
     ]
-    retriever = StubRetriever(
-        {
-            "q1": [
-                {"source": "other.txt", "content": "干扰", "score": 0.9},
-                {"source": "gold.txt", "content": "这里有正确事实", "score": 0.8},
-            ],
-            "q2": [
-                {"source": "gold.txt", "content": "同源但片段无关", "score": 0.7}
-            ],
-            "q3": [],
-        }
+    retrieved = [{"source": "gold.txt", "content": "证据", "score": 0.9}]
+    calls = []
+
+    def generator(query, contexts):
+        calls.append((query, contexts))
+        return "生成答案"
+
+    result = collect_samples(
+        rows,
+        StubRetriever({"问题": retrieved}),
+        top_k=3,
+        threshold=0.5,
+        answer_generator=generator,
     )
 
-    result = evaluate(rows, retriever, top_k=3, threshold=0.5)
-
-    assert result["recall_at_k"] == 0.5
-    assert result["mrr"] == 0.25
-    assert result["source_hit_rate"] == 1.0
-    assert result["no_answer_rejection_rate"] == 1.0
-    assert result["mode_counts"] == {"embedding": 3}
-    assert {case["id"] for case in result["failures"]} == {"miss"}
+    assert result["skipped_unanswerable"] == 1
+    assert result["retrieval_mode_counts"] == {"embedding": 1}
+    assert calls == [("问题", retrieved)]
+    assert result["samples"][0]["retrieved_contexts"] == ["证据"]
+    assert result["samples"][0]["response"] == "生成答案"
 
 
-def test_load_rows_rejects_answerable_case_without_gold_evidence(tmp_path):
+def test_evaluate_with_ragas_uses_the_three_expected_inputs():
+    sample = {
+        "id": "case",
+        "category": "test",
+        "user_input": "问题",
+        "reference": "参考答案",
+        "response": "生成答案",
+        "retrieved_contexts": ["证据"],
+        "sources": ["gold.txt"],
+        "latency_ms": 1.0,
+    }
+    metrics = {
+        "context_relevance": StubMetric(0.8),
+        "faithfulness": StubMetric(0.7),
+        "answer_relevance": StubMetric(0.9),
+    }
+
+    result = asyncio.run(evaluate_with_ragas([sample], metrics))
+
+    assert result["metrics"] == {
+        "context_relevance": 0.8,
+        "faithfulness": 0.7,
+        "answer_relevance": 0.9,
+    }
+    assert metrics["context_relevance"].calls == [
+        {
+            "user_input": "问题",
+            "retrieved_contexts": ["证据"],
+        }
+    ]
+    assert metrics["faithfulness"].calls[0]["response"] == "生成答案"
+    assert metrics["answer_relevance"].calls == [
+        {"user_input": "问题", "response": "生成答案"}
+    ]
+
+
+def test_generate_with_project_rag_uses_chat_generation_node(monkeypatch):
+    captured = {}
+
+    def fake_generate_node(state):
+        captured.update(state)
+        state["result"] = "真实链路答案"
+        return state
+
+    monkeypatch.setattr("scripts.eval_rag.generate_node", fake_generate_node)
+
+    response = generate_with_project_rag(
+        "问题", [{"source": "a.txt", "content": "证据"}]
+    )
+
+    assert response == "真实链路答案"
+    assert captured["_retrieved"][0]["content"] == "证据"
+    assert captured["memory"] == []
+
+
+def test_load_rows_rejects_case_without_reference(tmp_path):
     dataset = tmp_path / "invalid.jsonl"
     dataset.write_text(
         json.dumps(
@@ -98,15 +159,15 @@ def test_load_rows_rejects_answerable_case_without_gold_evidence(tmp_path):
                 "id": "invalid",
                 "query": "问题",
                 "answerable": True,
-                "expected_sources": [],
-                "relevant_contains": [],
+                "expected_sources": ["gold.txt"],
+                "relevant_contains": ["事实"],
             },
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="needs sources and relevant text"):
+    with pytest.raises(ValueError, match="non-empty reference"):
         load_rows(dataset)
 
 
@@ -118,3 +179,14 @@ def test_load_knowledge_indexes_supported_files_only(tmp_path):
     result = load_knowledge(IngestionStub(), tmp_path)
 
     assert result == {"file_count": 2, "chunk_count": 2, "backend": "memory"}
+
+
+def test_build_ragas_metrics_rejects_unknown_embedding_provider():
+    with pytest.raises(ValueError, match="embedding provider"):
+        build_ragas_metrics(
+            api_key="local-only",
+            judge_model="local-judge",
+            embedding_model="local-embedding",
+            embedding_provider="unknown",
+            base_url="http://127.0.0.1:8081/v1",
+        )

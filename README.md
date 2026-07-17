@@ -73,7 +73,7 @@ pip install -r requirements-motion.txt
 当前自动化回归：
 
 ```text
-238 passed, 2 skipped, 1 warning
+240 passed, 2 skipped, 1 warning
 ```
 
 默认 pytest 会 mock 本地 LLM 与部分 embedding，因此该数字主要证明代码、接口、算法和降级契约可回归。当前 warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响测试结论。项目另有真实 Milvus 链路验证、RAG 检索评测、MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。
@@ -85,7 +85,7 @@ pip install -r requirements-motion.txt
 - 会话缓冲区最多保存 6 轮，当前由 Knowledge 问答链路优先消费；跨 Search/Motion/MCP 的长期画像联动仍可继续增强。
 - MCP 默认使用 mock，是工具协议补充；真实 Server 的响应 ID、inputSchema、通知语义和兼容性治理可继续补强。
 - Motion 已完成媒体输入、标准参考构建、相似度比较、关节级定位和质量门控；正式标准样本集、动作周期切分、关键点平滑及专业专项评分仍需继续补齐。
-- Milvus 已完成真实写入/检索链路验证；RAG 检索效果已建立 15 条小规模基线，后续继续扩充 Recall@K、MRR、拒答率和端到端 P95 延迟评测。
+- Milvus 已完成真实写入/检索链路验证；15 条 RAG 黄金集已补齐参考答案，单一 RAGAS 入口会让 12 条可回答样例走真实检索与生成链路，并评估上下文相关性、忠实度和答案相关性；3 条无答案样例暂不混入这三项均分。
 - 微信小程序代码链路已接通，开发者工具、真机、HTTPS 和弱网验收待完成。
 - 当前 Dockerfile 不包含 Motion 可选依赖和 MediaPipe task 模型，完整跨机器构建尚未验证。
 

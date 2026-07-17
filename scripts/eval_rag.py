@@ -1,29 +1,45 @@
-"""Evaluate RAG retrieval quality on a JSONL golden set."""
+"""Evaluate the project's real RAG chain with three RAGAS metrics."""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
-import math
+import os
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.config import config
+from app.graph.subgraphs.chat import generate_node
 from app.tools.retriever import MemoryRetriever
 
 
 DEFAULT_DATASET = Path("data/eval/rag_eval.jsonl")
 DEFAULT_KNOWLEDGE_DIR = Path("data/knowledge")
+DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
+DEFAULT_JUDGE_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_JUDGE_EMBEDDING_PROVIDER = "openai"
+METRIC_LABELS = {
+    "context_relevance": "上下文相关性",
+    "faithfulness": "忠实度",
+    "answer_relevance": "答案相关性",
+}
+
+
+class RagasMetric(Protocol):
+    """Small seam around RAGAS scorers so data flow can be unit-tested."""
+
+    async def ascore(self, **kwargs: Any) -> Any: ...
 
 
 def load_rows(path: Path) -> List[Dict[str, Any]]:
-    """Load and validate retrieval cases from a JSONL file."""
+    """Load and validate RAG cases from JSONL."""
     rows: List[Dict[str, Any]] = []
     seen_ids = set()
     with path.open("r", encoding="utf-8") as handle:
@@ -38,6 +54,7 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
 
             case_id = row.get("id")
             query = row.get("query")
+            reference = row.get("reference")
             answerable = row.get("answerable")
             expected_sources = row.get("expected_sources", [])
             relevant_contains = row.get("relevant_contains", [])
@@ -47,6 +64,8 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
                 raise ValueError(f"Line {line_no} has duplicate id {case_id!r}")
             if not isinstance(query, str) or not query.strip():
                 raise ValueError(f"Line {line_no} must include non-empty query")
+            if not isinstance(reference, str) or not reference.strip():
+                raise ValueError(f"Line {line_no} must include non-empty reference")
             if not isinstance(answerable, bool):
                 raise ValueError(f"Line {line_no} must include boolean answerable")
             if not _is_string_list(expected_sources):
@@ -96,170 +115,201 @@ def load_knowledge(retriever: Any, knowledge_dir: Path) -> Dict[str, Any]:
     }
 
 
-def evaluate(
+def collect_samples(
     rows: Iterable[Dict[str, Any]],
     retriever: Any,
     *,
     top_k: int,
     threshold: float,
+    answer_generator: Any,
 ) -> Dict[str, Any]:
-    """Calculate retrieval, source, rejection and latency metrics."""
-    cases = []
-    answerable_total = 0
-    relevant_hits = 0
-    source_hits = 0
-    reciprocal_rank_sum = 0.0
-    unanswerable_total = 0
-    rejected = 0
-    latencies_ms: List[float] = []
+    """Run retrieval and the same prompt/generation node used by the chat RAG path."""
+    samples: List[Dict[str, Any]] = []
+    skipped_unanswerable = 0
     mode_counts: Counter[str] = Counter()
 
     for row in rows:
+        if not row["answerable"]:
+            skipped_unanswerable += 1
+            continue
         started = time.perf_counter()
         result = retriever.search(row["query"], top_k=top_k, threshold=threshold)
-        latency_ms = (time.perf_counter() - started) * 1000
-        latencies_ms.append(latency_ms)
         if not result.ok:
             raise RuntimeError(
                 f"Search failed for {row['id']}: "
                 f"{result.error_code} {result.error_message}"
             )
         retrieved = list(result.data or [])
-        mode = str(result.meta.get("mode", "unknown"))
-        mode_counts[mode] += 1
-        rank = _first_relevant_rank(row, retrieved)
-        source_hit = _has_expected_source(row, retrieved)
-
-        if row["answerable"]:
-            answerable_total += 1
-            relevant_hits += int(rank is not None)
-            source_hits += int(source_hit)
-            if rank is not None:
-                reciprocal_rank_sum += 1.0 / rank
-            passed = rank is not None
-        else:
-            unanswerable_total += 1
-            was_rejected = len(retrieved) == 0
-            rejected += int(was_rejected)
-            passed = was_rejected
-
-        cases.append(
+        mode_counts[str(result.meta.get("mode", "unknown"))] += 1
+        response = answer_generator(row["query"], retrieved)
+        if not isinstance(response, str) or not response.strip():
+            raise RuntimeError(f"Generation returned an empty response for {row['id']}")
+        samples.append(
             {
                 "id": row["id"],
                 "category": row.get("category", "uncategorized"),
-                "query": row["query"],
-                "answerable": row["answerable"],
-                "passed": passed,
-                "first_relevant_rank": rank,
-                "source_hit": source_hit,
-                "mode": mode,
-                "latency_ms": latency_ms,
-                "retrieved": [
-                    {
-                        "source": item.get("source", ""),
-                        "score": float(item.get("score", 0.0)),
-                        "content": str(item.get("content", "")),
-                    }
+                "user_input": row["query"],
+                "reference": row["reference"],
+                "response": response.strip(),
+                "retrieved_contexts": [
+                    str(item.get("content", "")).strip()
                     for item in retrieved
+                    if str(item.get("content", "")).strip()
                 ],
+                "sources": [
+                    str(item.get("source", "")).strip()
+                    for item in retrieved
+                    if str(item.get("source", "")).strip()
+                ],
+                "latency_ms": (time.perf_counter() - started) * 1000,
             }
         )
-
-    recall_at_k = relevant_hits / answerable_total if answerable_total else 0.0
-    mrr = reciprocal_rank_sum / answerable_total if answerable_total else 0.0
-    source_hit_rate = source_hits / answerable_total if answerable_total else 0.0
-    no_answer_rejection_rate = (
-        rejected / unanswerable_total if unanswerable_total else 0.0
-    )
+    if not samples:
+        raise ValueError("RAGAS needs at least one answerable evaluation case")
     return {
-        "total": len(cases),
-        "answerable_total": answerable_total,
-        "unanswerable_total": unanswerable_total,
-        "top_k": top_k,
-        "threshold": threshold,
-        "recall_at_k": recall_at_k,
-        "mrr": mrr,
-        "source_hit_rate": source_hit_rate,
-        "no_answer_rejection_rate": no_answer_rejection_rate,
-        "average_latency_ms": _mean(latencies_ms),
-        "p95_latency_ms": _percentile(latencies_ms, 0.95),
-        "mode_counts": dict(mode_counts),
-        "failures": [case for case in cases if not case["passed"]],
-        "cases": cases,
+        "samples": samples,
+        "skipped_unanswerable": skipped_unanswerable,
+        "retrieval_mode_counts": dict(mode_counts),
     }
 
 
-def _first_relevant_rank(
-    row: Dict[str, Any], retrieved: Sequence[Dict[str, Any]]
-) -> int | None:
-    if not row["answerable"]:
-        return None
-    expected_sources = set(row["expected_sources"])
-    expected_text = row["relevant_contains"]
-    for rank, item in enumerate(retrieved, start=1):
-        content = str(item.get("content", ""))
-        if item.get("source") in expected_sources and any(
-            phrase in content for phrase in expected_text
-        ):
-            return rank
-    return None
+def generate_with_project_rag(query: str, retrieved: Sequence[Dict[str, Any]]) -> str:
+    """Generate through the production chat RAG node, without routing side effects."""
+    state: Dict[str, Any] = {
+        "user_input": query,
+        "memory": [],
+        "_long_term_memories": [],
+        "_conversation_summary": "",
+        "_retrieved": list(retrieved),
+    }
+    return str(generate_node(state).get("result", ""))
 
 
-def _has_expected_source(
-    row: Dict[str, Any], retrieved: Sequence[Dict[str, Any]]
-) -> bool:
-    expected_sources = set(row.get("expected_sources", []))
-    return bool(expected_sources) and any(
-        item.get("source") in expected_sources for item in retrieved
-    )
+def build_ragas_metrics(
+    *,
+    api_key: str,
+    judge_model: str,
+    embedding_model: str,
+    embedding_provider: str = DEFAULT_JUDGE_EMBEDDING_PROVIDER,
+    base_url: str | None = None,
+) -> Dict[str, RagasMetric]:
+    """Build three RAGAS scorers; credentials remain input-only and are never returned."""
+    if not api_key.strip():
+        raise ValueError("OPENAI_API_KEY is required for the RAGAS judge")
+    try:
+        from openai import AsyncOpenAI
+        from ragas.embeddings import HuggingFaceEmbeddings
+        from ragas.embeddings.base import embedding_factory
+        from ragas.llms import llm_factory
+        from ragas.metrics.collections import (
+            AnswerRelevancy,
+            ContextRelevance,
+            Faithfulness,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            "RAGAS dependencies are missing; install requirements-eval.txt"
+        ) from exc
+
+    client_kwargs: Dict[str, Any] = {"api_key": api_key}
+    if base_url:
+        client_kwargs["base_url"] = base_url
+    client = AsyncOpenAI(**client_kwargs)
+    judge_llm = llm_factory(judge_model, client=client)
+    if embedding_provider == "openai":
+        judge_embeddings = embedding_factory(
+            "openai", model=embedding_model, client=client
+        )
+    elif embedding_provider == "huggingface":
+        judge_embeddings = HuggingFaceEmbeddings(model=embedding_model)
+    else:
+        raise ValueError(
+            "judge embedding provider must be 'openai' or 'huggingface'"
+        )
+    return {
+        "context_relevance": ContextRelevance(llm=judge_llm),
+        "faithfulness": Faithfulness(llm=judge_llm),
+        "answer_relevance": AnswerRelevancy(
+            llm=judge_llm,
+            embeddings=judge_embeddings,
+        ),
+    }
 
 
-def _mean(values: Sequence[float]) -> float:
-    return sum(values) / len(values) if values else 0.0
+async def evaluate_with_ragas(
+    samples: Sequence[Dict[str, Any]],
+    metrics: Mapping[str, RagasMetric],
+) -> Dict[str, Any]:
+    """Score each sample and return transparent per-case and aggregate results."""
+    expected = set(METRIC_LABELS)
+    if set(metrics) != expected:
+        raise ValueError(f"metrics must be exactly: {', '.join(sorted(expected))}")
+    cases: List[Dict[str, Any]] = []
+    for sample in samples:
+        try:
+            context_result = await metrics["context_relevance"].ascore(
+                user_input=sample["user_input"],
+                retrieved_contexts=sample["retrieved_contexts"],
+            )
+            faithfulness_result = await metrics["faithfulness"].ascore(
+                user_input=sample["user_input"],
+                response=sample["response"],
+                retrieved_contexts=sample["retrieved_contexts"],
+            )
+            relevance_result = await metrics["answer_relevance"].ascore(
+                user_input=sample["user_input"],
+                response=sample["response"],
+            )
+        except Exception as exc:
+            raise RuntimeError(f"RAGAS scoring failed for {sample['id']}: {exc}") from exc
+        scores = {
+            "context_relevance": _score_value(context_result),
+            "faithfulness": _score_value(faithfulness_result),
+            "answer_relevance": _score_value(relevance_result),
+        }
+        cases.append({**sample, "scores": scores})
+
+    aggregates = {
+        name: sum(case["scores"][name] for case in cases) / len(cases)
+        for name in METRIC_LABELS
+    }
+    return {"metrics": aggregates, "cases": cases}
 
 
-def _percentile(values: Sequence[float], quantile: float) -> float:
-    if not values:
-        return 0.0
-    ordered = sorted(values)
-    index = max(0, math.ceil(len(ordered) * quantile) - 1)
-    return ordered[index]
+def _score_value(result: Any) -> float:
+    value = getattr(result, "value", result)
+    try:
+        score = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"RAGAS returned a non-numeric score: {value!r}") from exc
+    if not -1.0 <= score <= 1.0:
+        raise RuntimeError(f"RAGAS returned an out-of-range score: {score}")
+    return score
 
 
 def print_report(result: Dict[str, Any], *, show_cases: bool = False) -> None:
-    print("RAG Retrieval Eval")
+    print("RAGAS Evaluation")
     print("=" * 72)
     print(
-        f"Cases: {result['total']} | answerable: {result['answerable_total']} | "
-        f"unanswerable: {result['unanswerable_total']}"
+        f"Evaluated: {result['evaluated_cases']} answerable cases | "
+        f"excluded no-answer cases: {result['skipped_unanswerable']}"
     )
+    for name, label in METRIC_LABELS.items():
+        print(f"{label} ({name}): {result['metrics'][name]:.3f}")
     print(
-        f"Recall@{result['top_k']}: {result['recall_at_k']:.1%} | "
-        f"MRR: {result['mrr']:.3f} | "
-        f"source hit: {result['source_hit_rate']:.1%} | "
-        f"no-answer rejection: {result['no_answer_rejection_rate']:.1%}"
+        f"Retriever modes: {result['retrieval_mode_counts']} | "
+        f"judge: {result['judge_model']}"
     )
-    print(
-        f"Latency avg/p95: {result['average_latency_ms']:.2f}/"
-        f"{result['p95_latency_ms']:.2f} ms | modes: {result['mode_counts']}"
-    )
-    if result["failures"]:
-        print("\nFailures")
-        print("-" * 72)
-        for case in result["failures"]:
-            print(
-                f"{case['id']}: answerable={case['answerable']} "
-                f"rank={case['first_relevant_rank']} query={case['query']}"
-            )
     if show_cases:
-        print("\nAll cases")
+        print("\nPer-case scores")
         print("-" * 72)
         for case in result["cases"]:
-            status = "OK" if case["passed"] else "FAIL"
-            hits = ", ".join(
-                f"{item['source']}:{item['score']:.3f}" for item in case["retrieved"]
-            ) or "empty"
-            print(f"{status:<4} {case['id']:<24} rank={case['first_relevant_rank']} {hits}")
+            scores = case["scores"]
+            print(
+                f"{case['id']:<26} context={scores['context_relevance']:.3f} "
+                f"faith={scores['faithfulness']:.3f} "
+                f"answer={scores['answer_relevance']:.3f}"
+            )
 
 
 def main() -> int:
@@ -269,55 +319,72 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=config.retriever_top_k)
     parser.add_argument("--threshold", type=float, default=config.retriever_threshold)
     parser.add_argument("--embedding-model", default=config.embedding_model)
+    parser.add_argument(
+        "--judge-model",
+        default=os.getenv("RAGAS_JUDGE_MODEL", DEFAULT_JUDGE_MODEL),
+    )
+    parser.add_argument(
+        "--judge-embedding-model",
+        default=os.getenv(
+            "RAGAS_JUDGE_EMBEDDING_MODEL", DEFAULT_JUDGE_EMBEDDING_MODEL
+        ),
+    )
+    parser.add_argument(
+        "--judge-embedding-provider",
+        choices=("openai", "huggingface"),
+        default=os.getenv(
+            "RAGAS_JUDGE_EMBEDDING_PROVIDER",
+            DEFAULT_JUDGE_EMBEDDING_PROVIDER,
+        ),
+        help="Use OpenAI-compatible embeddings or a local Hugging Face model",
+    )
+    parser.add_argument("--judge-base-url", default=os.getenv("OPENAI_BASE_URL"))
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--show-cases", action="store_true")
-    parser.add_argument(
-        "--require-embedding",
-        action="store_true",
-        help="Fail when the embedding model is unavailable and keyword fallback is used.",
-    )
-    parser.add_argument("--min-recall", type=float)
-    parser.add_argument("--min-mrr", type=float)
-    parser.add_argument("--min-no-answer-rejection", type=float)
     args = parser.parse_args()
 
     if not 1 <= args.top_k <= 100:
         parser.error("--top-k must be between 1 and 100")
     if not 0.0 <= args.threshold <= 1.0:
         parser.error("--threshold must be between 0 and 1")
-    for name in ("min_recall", "min_mrr", "min_no_answer_rejection"):
-        value = getattr(args, name)
-        if value is not None and not 0.0 <= value <= 1.0:
-            parser.error(f"--{name.replace('_', '-')} must be between 0 and 1")
+    if config.llm_mock:
+        parser.error("LLM_MOCK must be disabled; mock answers make RAGAS scores invalid")
 
     retriever = MemoryRetriever(embedding_model=args.embedding_model)
     ingestion = load_knowledge(retriever, args.knowledge_dir)
-    result = evaluate(
+    collected = collect_samples(
         load_rows(args.dataset),
         retriever,
         top_k=args.top_k,
         threshold=args.threshold,
+        answer_generator=generate_with_project_rag,
     )
-    result["ingestion"] = ingestion
-    result["embedding_model"] = args.embedding_model
+    metrics = build_ragas_metrics(
+        api_key=os.getenv("OPENAI_API_KEY", ""),
+        judge_model=args.judge_model,
+        embedding_model=args.judge_embedding_model,
+        embedding_provider=args.judge_embedding_provider,
+        base_url=args.judge_base_url,
+    )
+    scored = asyncio.run(evaluate_with_ragas(collected["samples"], metrics))
+    result = {
+        "evaluated_cases": len(collected["samples"]),
+        "skipped_unanswerable": collected["skipped_unanswerable"],
+        "retrieval_mode_counts": collected["retrieval_mode_counts"],
+        "top_k": args.top_k,
+        "threshold": args.threshold,
+        "generator_model": config.model_path,
+        "judge_model": args.judge_model,
+        "judge_embedding_model": args.judge_embedding_model,
+        "judge_embedding_provider": args.judge_embedding_provider,
+        "ingestion": ingestion,
+        **scored,
+    }
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print_report(result, show_cases=args.show_cases)
-
-    failed = False
-    if args.require_embedding and set(result["mode_counts"]) != {"embedding"}:
-        failed = True
-    if args.min_recall is not None and result["recall_at_k"] < args.min_recall:
-        failed = True
-    if args.min_mrr is not None and result["mrr"] < args.min_mrr:
-        failed = True
-    if (
-        args.min_no_answer_rejection is not None
-        and result["no_answer_rejection_rate"] < args.min_no_answer_rejection
-    ):
-        failed = True
-    return 1 if failed else 0
+    return 0
 
 
 if __name__ == "__main__":

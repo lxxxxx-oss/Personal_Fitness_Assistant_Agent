@@ -1,15 +1,15 @@
-{"id":"activity_adult_aerobic","category":"guideline","query":"成年人每周应该做多少分钟中等强度有氧运动？","answerable":true,"expected_sources":["who_physical_activity.txt"],"relevant_contains":["150-300 分钟中等强度有氧运动"]}
-{"id":"activity_older_balance","category":"guideline","query":"65岁以上老人为了预防跌倒，每周要做几天平衡训练？","answerable":true,"expected_sources":["who_physical_activity.txt"],"relevant_contains":["每周 3 天或以上进行多样化身体活动"]}
-{"id":"activity_children","category":"guideline","query":"儿童青少年每天建议运动多长时间？","answerable":true,"expected_sources":["who_physical_activity.txt"],"relevant_contains":["每天平均至少 60 分钟"]}
-{"id":"strength_frequency","category":"guideline","query":"CDC建议成年人每周至少进行几天力量训练？","answerable":true,"expected_sources":["cdc_strength_training.txt"],"relevant_contains":["每周至少 2 天"]}
-{"id":"intensity_talk_test","category":"guideline","query":"怎样用说话测试区分中等强度和高强度运动？","answerable":true,"expected_sources":["cdc_strength_training.txt"],"relevant_contains":["说话可以但唱歌困难","说不了几句话就得喘气"]}
-{"id":"squat_knee_error","category":"exercise","query":"深蹲时膝盖内扣是不是常见错误？","answerable":true,"expected_sources":["fitness_basics.txt"],"relevant_contains":["膝盖内扣"]}
-{"id":"deadlift_back_safety","category":"exercise","query":"硬拉时为什么要避免弓背？","answerable":true,"expected_sources":["fitness_basics.txt"],"relevant_contains":["弓背（最危险！）","导致下背部受伤"]}
-{"id":"bench_press_setup","category":"exercise","query":"卧推起始姿势中肩胛骨应该怎么做？","answerable":true,"expected_sources":["fitness_basics.txt"],"relevant_contains":["肩胛骨收紧下沉"]}
-{"id":"fat_loss_deficit","category":"nutrition","query":"减脂期间建议每天制造多大的热量缺口？","answerable":true,"expected_sources":["fitness_basics.txt","nutrition.txt"],"relevant_contains":["300-500 大卡"]}
-{"id":"healthy_diet_salt","category":"nutrition","query":"WHO建议成年人每天盐摄入量不要超过多少？","answerable":true,"expected_sources":["who_healthy_diet.txt","nutrition.txt"],"relevant_contains":["每日 <5g 盐","盐 <5g"]}
-{"id":"protein_safe_level","category":"nutrition","query":"WHO/FAO给出的成年人蛋白质安全摄入水平是多少？","answerable":true,"expected_sources":["who_healthy_diet.txt"],"relevant_contains":["0.83 g/kg 体重/天"]}
-{"id":"vegetarian_protein","category":"nutrition","query":"素食者可以从哪些食物获得植物蛋白？","answerable":true,"expected_sources":["who_healthy_diet.txt","nutrition.txt"],"relevant_contains":["大豆及豆制品","大豆制品、藜麦、豆类组合"]}
-{"id":"unknown_creatine","category":"no_answer","query":"肌酸每天应该吃几克，装载期要持续多久？","answerable":false,"expected_sources":[],"relevant_contains":[]}
-{"id":"unknown_swimming","category":"no_answer","query":"自由泳换气时头部应该转多少度？","answerable":false,"expected_sources":[],"relevant_contains":[]}
-{"id":"unknown_rehab","category":"no_answer","query":"前交叉韧带重建术后第六周应该做哪些康复动作？","answerable":false,"expected_sources":[],"relevant_contains":[]}
+{"id":"activity_adult_aerobic","category":"guideline","query":"成年人每周应该做多少分钟中等强度有氧运动？","reference":"成年人每周应进行至少 150-300 分钟中等强度有氧运动。","answerable":true,"expected_sources":["who_physical_activity.txt"],"relevant_contains":["150-300 分钟中等强度有氧运动"]}
+{"id":"activity_older_balance","category":"guideline","query":"65岁以上老人为了预防跌倒，每周要做几天平衡训练？","reference":"65 岁以上老人应每周至少 3 天进行强调平衡和力量的多样化活动，以帮助预防跌倒。","answerable":true,"expected_sources":["who_physical_activity.txt"],"relevant_contains":["每周 3 天或以上进行多样化身体活动"]}
+{"id":"activity_children","category":"guideline","query":"儿童青少年每天建议运动多长时间？","reference":"儿童青少年每天平均应进行至少 60 分钟中高强度身体活动。","answerable":true,"expected_sources":["who_physical_activity.txt"],"relevant_contains":["每天平均至少 60 分钟"]}
+{"id":"strength_frequency","category":"guideline","query":"CDC建议成年人每周至少进行几天力量训练？","reference":"CDC 建议成年人每周至少 2 天进行覆盖主要肌群的力量训练。","answerable":true,"expected_sources":["cdc_strength_training.txt"],"relevant_contains":["每周至少 2 天"]}
+{"id":"intensity_talk_test","category":"guideline","query":"怎样用说话测试区分中等强度和高强度运动？","reference":"中等强度时通常可以说话但难以唱歌；高强度时往往说不了几句话就需要喘气。","answerable":true,"expected_sources":["cdc_strength_training.txt"],"relevant_contains":["说话可以但唱歌困难","说不了几句话就得喘气"]}
+{"id":"squat_knee_error","category":"exercise","query":"深蹲时膝盖内扣是不是常见错误？","reference":"是。深蹲时膝盖内扣属于常见动作错误，应让膝盖方向与脚尖基本一致。","answerable":true,"expected_sources":["fitness_basics.txt"],"relevant_contains":["膝盖内扣"]}
+{"id":"deadlift_back_safety","category":"exercise","query":"硬拉时为什么要避免弓背？","reference":"硬拉弓背会增加腰椎和下背部负担，提高下背部受伤风险，因此应保持脊柱中立。","answerable":true,"expected_sources":["fitness_basics.txt"],"relevant_contains":["弓背（最危险！）","导致下背部受伤"]}
+{"id":"bench_press_setup","category":"exercise","query":"卧推起始姿势中肩胛骨应该怎么做？","reference":"卧推起始时应将肩胛骨收紧并下沉，保持上背稳定。","answerable":true,"expected_sources":["fitness_basics.txt"],"relevant_contains":["肩胛骨收紧下沉"]}
+{"id":"fat_loss_deficit","category":"nutrition","query":"减脂期间建议每天制造多大的热量缺口？","reference":"减脂期可从每天约 300-500 大卡的适度热量缺口开始，再根据体重变化调整。","answerable":true,"expected_sources":["fitness_basics.txt","nutrition.txt"],"relevant_contains":["300-500 大卡"]}
+{"id":"healthy_diet_salt","category":"nutrition","query":"WHO建议成年人每天盐摄入量不要超过多少？","reference":"WHO 建议成年人每天盐摄入量少于 5 克。","answerable":true,"expected_sources":["who_healthy_diet.txt","nutrition.txt"],"relevant_contains":["每日 <5g 盐","盐 <5g"]}
+{"id":"protein_safe_level","category":"nutrition","query":"WHO/FAO给出的成年人蛋白质安全摄入水平是多少？","reference":"WHO/FAO 给出的成年人蛋白质安全摄入水平约为每天每公斤体重 0.83 克。","answerable":true,"expected_sources":["who_healthy_diet.txt"],"relevant_contains":["0.83 g/kg 体重/天"]}
+{"id":"vegetarian_protein","category":"nutrition","query":"素食者可以从哪些食物获得植物蛋白？","reference":"素食者可从大豆及豆制品、其他豆类、藜麦等食物或合理的豆类与谷物组合中获得植物蛋白。","answerable":true,"expected_sources":["who_healthy_diet.txt","nutrition.txt"],"relevant_contains":["大豆及豆制品","大豆制品、藜麦、豆类组合"]}
+{"id":"unknown_creatine","category":"no_answer","query":"肌酸每天应该吃几克，装载期要持续多久？","reference":"当前知识库没有足够信息回答肌酸剂量和装载期。","answerable":false,"expected_sources":[],"relevant_contains":[]}
+{"id":"unknown_swimming","category":"no_answer","query":"自由泳换气时头部应该转多少度？","reference":"当前知识库没有足够信息回答自由泳换气角度。","answerable":false,"expected_sources":[],"relevant_contains":[]}
+{"id":"unknown_rehab","category":"no_answer","query":"前交叉韧带重建术后第六周应该做哪些康复动作？","reference":"当前知识库没有足够信息提供术后第六周康复动作，应遵循手术医生或康复治疗师的个体化方案。","answerable":false,"expected_sources":[],"relevant_contains":[]}
