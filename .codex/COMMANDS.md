@@ -48,10 +48,13 @@ MediaPipe Tasks API 还需要本地 `pose_landmarker.task` 模型文件。该文
 Conda 环境启动：
 
 ```powershell
-cd D:\Users\Agent\Personal_Fitness_Assistant_Agent
+# 在当前项目根目录执行；不同电脑的绝对路径不应写进通用命令。
 conda activate fitness-agent
 pip install -r requirements.txt
+$env:LLM_MOCK="true"
+$env:RETRIEVER_BACKEND="memory"
 $env:MCP_SERVER_COMMAND="mock"
+$env:TAVILY_API_KEY=""
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
