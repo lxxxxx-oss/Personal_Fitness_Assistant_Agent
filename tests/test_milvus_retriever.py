@@ -1,5 +1,7 @@
 """Milvus RAG retriever contract tests without a live Milvus service."""
 
+import json
+
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -57,20 +59,23 @@ class FakeMilvusClient:
         self.flushed = False
         self.closed = False
         self.deleted_ids = []
+        self.deleted_filters = []
 
     def has_collection(self, collection_name):
         return self.collection_exists
 
     def describe_collection(self, collection_name):
-        vector = next(
-            field for field in self.schema.fields if field["field_name"] == "vector"
-        )
         return {
             "fields": [
                 {
-                    "name": "vector",
-                    "params": {"dim": vector["dim"]},
+                    "name": field["field_name"],
+                    "params": (
+                        {"dim": field["dim"]}
+                        if field["field_name"] == "vector"
+                        else {}
+                    ),
                 }
+                for field in self.schema.fields
             ]
         }
 
@@ -94,9 +99,17 @@ class FakeMilvusClient:
         self.rows = list(by_id.values())
         return {"primary_keys": [row["id"] for row in data]}
 
-    def delete(self, collection_name, ids):
+    def delete(self, collection_name, ids=None, filter=None):
+        ids = ids or []
         self.deleted_ids.extend(ids)
+        if filter:
+            self.deleted_filters.append(filter)
         remove_ids = set(ids)
+        if filter and filter.startswith("source == "):
+            source = json.loads(filter.removeprefix("source == "))
+            remove_ids.update(
+                row["id"] for row in self.rows if row.get("source") == source
+            )
         before = len(self.rows)
         self.rows = [row for row in self.rows if row["id"] not in remove_ids]
         return {"delete_count": before - len(self.rows)}
@@ -186,6 +199,7 @@ def test_add_documents_creates_collection_index_and_upserts():
         ["fitness.txt"],
     )
     assert client.rows[0]["source"] == "fitness.txt"
+    assert client.rows[0]["section_path"] == ""
     assert client.rows[0]["id"] == expected_entries[0]["id"]
     assert result.data["manifest"]["sources"][0]["source"] == "fitness.txt"
     assert result.data["manifest"]["sources"][0]["chunk_ids"] == [
@@ -225,6 +239,27 @@ def test_reingesting_same_source_removes_stale_chunks():
     assert client.rows[0]["content"] == "深蹲" * 10
 
 
+def test_reingesting_same_source_after_restart_removes_persisted_chunks():
+    retriever, client = make_retriever()
+
+    first = retriever.add_documents(
+        ["深蹲" * 300],
+        sources=["fitness.txt"],
+    )
+    restarted_retriever, _ = make_retriever()
+    restarted_retriever._client = client
+    second = restarted_retriever.add_documents(
+        ["深蹲" * 10],
+        sources=["fitness.txt"],
+    )
+
+    assert first.ok
+    assert second.ok
+    assert second.data["removed"] == first.data["upserted"]
+    assert len(client.rows) == 1
+    assert client.rows[0]["content"] == "深蹲" * 10
+
+
 def test_search_returns_thresholded_structured_results():
     retriever, client = make_retriever()
     assert retriever.add_documents(["占位知识"]).ok
@@ -250,12 +285,37 @@ def test_search_returns_thresholded_structured_results():
             "score": 0.91,
             "index": 11,
             "source": "a.txt",
+            "section_path": "",
         }
     ]
     assert client.last_search["search_params"] == {
         "metric_type": "COSINE",
         "params": {"nprobe": 4},
     }
+    assert client.last_search["output_fields"] == [
+        "content",
+        "source",
+        "section_path",
+    ]
+
+
+def test_existing_legacy_collection_stays_writable_without_section_field():
+    retriever, client = make_retriever()
+    client.collection_exists = True
+    client.schema = FakeSchema()
+    client.schema.add_field(field_name="id", datatype="INT64")
+    client.schema.add_field(field_name="vector", datatype="FLOAT_VECTOR", dim=4)
+    client.schema.add_field(field_name="content", datatype="VARCHAR")
+    client.schema.add_field(field_name="source", datatype="VARCHAR")
+
+    result = retriever.add_documents(
+        ["# 动作指南\n\n## 深蹲\n\n保持膝盖与脚尖方向一致。"],
+        sources=["fitness.txt"],
+    )
+
+    assert result.ok
+    assert result.meta["section_metadata"] == "legacy_collection"
+    assert "section_path" not in client.rows[0]
 
 
 def test_existing_collection_dimension_mismatch_is_actionable():

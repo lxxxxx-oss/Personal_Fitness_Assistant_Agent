@@ -7,6 +7,7 @@ Users should consult professionals for medical or training decisions.
 """
 
 import hashlib
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional, Sequence
@@ -56,6 +57,7 @@ class MemoryRetriever:
         self._encoder_error = ""
         self._documents: List[str] = []
         self._sources: List[str] = []
+        self._section_paths: List[str] = []
         self._chunk_ids: List[int] = []
         self._source_latest_ids: Dict[str, List[int]] = {}
         self._embeddings: Optional[np.ndarray] = None
@@ -105,6 +107,7 @@ class MemoryRetriever:
                         "score": score,
                         "index": self._chunk_ids[idx],
                         "source": self._sources[idx],
+                        "section_path": self._section_paths[idx],
                     })
 
         # 方法2: 子串匹配 + 字重叠（适用于中文等无空格语言）
@@ -135,6 +138,7 @@ class MemoryRetriever:
                             "score": substring_score,
                             "index": self._chunk_ids[idx],
                             "source": self._sources[idx],
+                            "section_path": self._section_paths[idx],
                         })
 
         results.sort(key=lambda r: r["score"], reverse=True)
@@ -158,6 +162,7 @@ class MemoryRetriever:
             return 0
         self._documents = [self._documents[index] for index in keep_indices]
         self._sources = [self._sources[index] for index in keep_indices]
+        self._section_paths = [self._section_paths[index] for index in keep_indices]
         self._chunk_ids = [self._chunk_ids[index] for index in keep_indices]
         if self._embeddings is not None:
             self._embeddings = self._embeddings[keep_indices]
@@ -173,7 +178,9 @@ class MemoryRetriever:
         normalized_sources = list(sources or [])
         entries = _build_chunk_entries(docs, normalized_sources)
         chunks = [entry["content"] for entry in entries]
+        embedding_texts = [entry["embedding_text"] for entry in entries]
         chunk_sources = [entry["source"] for entry in entries]
+        section_paths = [entry["section_path"] for entry in entries]
         if not chunks:
             return ToolResult.ok(data={"upserted": 0}, backend="memory")
         incoming_ids = [int(entry["id"]) for entry in entries]
@@ -194,9 +201,13 @@ class MemoryRetriever:
             self._source_latest_ids[source] = list(new_ids)
         self._documents.extend(chunks)
         self._sources.extend(chunk_sources)
+        self._section_paths.extend(section_paths)
         self._chunk_ids.extend(incoming_ids)
         if self._encoder is not None:
-            new_embeddings = self._encoder.encode(chunks, normalize_embeddings=True)
+            new_embeddings = self._encoder.encode(
+                embedding_texts,
+                normalize_embeddings=True,
+            )
             if self._embeddings is None:
                 self._embeddings = new_embeddings
             else:
@@ -294,6 +305,7 @@ class MemoryRetriever:
                 "score": float(scores[int(idx)]),
                 "index": int(self._chunk_ids[int(idx)]),
                 "source": self._sources[int(idx)],
+                "section_path": self._section_paths[int(idx)],
             })
         return ToolResult.ok(
             data=results,
@@ -306,6 +318,7 @@ class MemoryRetriever:
         """清空全部文档和向量."""
         self._documents = []
         self._sources = []
+        self._section_paths = []
         self._chunk_ids = []
         self._source_latest_ids = {}
         self._embeddings = None
@@ -329,40 +342,147 @@ def _split_long_segment(
     ]
 
 
+def _overlap_tail(text: str, overlap_chars: int) -> str:
+    """Return a bounded tail, preferring the start of a complete sentence."""
+    if overlap_chars <= 0 or not text:
+        return ""
+    window = text[-overlap_chars:]
+    boundary = re.search(r"[。！？.!?]\s*", window)
+    if boundary and boundary.end() < len(window):
+        return window[boundary.end():].lstrip()
+    return window
+
+
 def _chinese_sentence_split(
     text: str,
     max_chunk_chars: int = 500,
     overlap_chars: int = 0,
 ) -> List[str]:
-    """Sentence-aware text chunking (supports both Chinese and English).
-
-    Splits on natural sentence boundaries — Chinese/English punctuation
-    and newlines. Long sentences are further split by max_chunk_chars.
-    """
+    """Pack paragraphs and sentences into bounded chunks with real overlap."""
     max_chunk_chars = max(1, int(max_chunk_chars))
-    overlap_chars = max(0, int(overlap_chars))
-    sentences = re.split(r"(?<=[。！？.!?\n])\s*", text)
-    chunks = []
+    overlap_chars = max(
+        0,
+        min(int(overlap_chars), max_chunk_chars - 1),
+    )
+    if not text:
+        return [text]
+
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", text.replace("\r\n", "\n"))
+        if paragraph.strip()
+    ]
+    chunks: List[str] = []
     current = ""
-    for sent in sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
-        if len(sent) > max_chunk_chars:
+    for paragraph in paragraphs:
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[。！？.!?])\s*", paragraph)
+            if sentence.strip()
+        ]
+        for sentence_index, sentence in enumerate(sentences):
+            separator = ""
+            if current:
+                separator = "\n\n" if sentence_index == 0 else " "
+
+            if len(sentence) > max_chunk_chars:
+                if current:
+                    chunks.append(current)
+                    current = ""
+                long_chunks = _split_long_segment(
+                    sentence,
+                    max_chunk_chars,
+                    overlap_chars,
+                )
+                chunks.extend(long_chunks)
+                continue
+
+            candidate = f"{current}{separator}{sentence}"
+            if len(candidate) <= max_chunk_chars:
+                current = candidate
+                continue
+
             if current:
                 chunks.append(current)
-                current = ""
-            chunks.extend(_split_long_segment(sent, max_chunk_chars, overlap_chars))
-            continue
-        if len(current) + len(sent) <= max_chunk_chars:
-            current += sent
-        else:
-            if current:
-                chunks.append(current)
-            current = sent
+            tail = _overlap_tail(current, overlap_chars)
+            separator = "\n\n" if tail and sentence_index == 0 else (" " if tail else "")
+            available_for_tail = max_chunk_chars - len(separator) - len(sentence)
+            if available_for_tail <= 0:
+                tail = ""
+                separator = ""
+            elif len(tail) > available_for_tail:
+                tail = tail[-available_for_tail:]
+            current = f"{tail}{separator}{sentence}"
     if current:
         chunks.append(current)
     return chunks or [text]
+
+
+def _structured_text_split(
+    text: str,
+    max_chunk_chars: int = 500,
+    overlap_chars: int = 0,
+) -> List[Dict[str, str]]:
+    """Split Markdown-like knowledge while retaining its heading hierarchy."""
+    heading_stack: List[tuple[int, str]] = []
+    sections: List[Dict[str, Any]] = []
+    paragraph_lines: List[str] = []
+    paragraphs: List[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph_lines:
+            paragraphs.append("\n".join(paragraph_lines).strip())
+            paragraph_lines.clear()
+
+    def flush_section() -> None:
+        flush_paragraph()
+        if not paragraphs:
+            return
+        sections.append(
+            {
+                "section_path": " > ".join(title for _, title in heading_stack),
+                "content": "\n\n".join(paragraphs),
+            }
+        )
+        paragraphs.clear()
+
+    for raw_line in text.replace("\r\n", "\n").split("\n"):
+        line = raw_line.strip()
+        heading_match = re.match(r"^(#{1,6})[ \t]+(.+?)\s*$", line)
+        if heading_match:
+            title = heading_match.group(2).strip()
+            if re.match(r"^来源\s*[:：]", title, flags=re.IGNORECASE):
+                continue
+            flush_section()
+            level = len(heading_match.group(1))
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, title))
+            continue
+        if not line:
+            flush_paragraph()
+            continue
+        paragraph_lines.append(line)
+
+    flush_section()
+    if not sections and text.strip():
+        sections.append({"section_path": "", "content": text.strip()})
+
+    chunks: List[Dict[str, str]] = []
+    for section in sections:
+        for content in _chinese_sentence_split(
+            str(section["content"]),
+            max_chunk_chars=max_chunk_chars,
+            overlap_chars=overlap_chars,
+        ):
+            if content.strip():
+                chunks.append(
+                    {
+                        "content": content,
+                        "section_path": str(section["section_path"]),
+                    }
+                )
+    return chunks
 
 
 def _content_hash(content: str) -> str:
@@ -402,7 +522,7 @@ def _build_chunk_entries(
     """Chunk documents and attach versioned identity metadata."""
     normalized_sources = list(sources or [])
     entries: List[Dict[str, Any]] = []
-    version = str(config.retriever_knowledge_version or "v1")
+    version = str(config.retriever_knowledge_version or "v2")
     for doc_index, doc in enumerate(docs):
         source = (
             str(normalized_sources[doc_index])[:1024]
@@ -411,24 +531,31 @@ def _build_chunk_entries(
         )
         chunks = [
             chunk
-            for chunk in _chinese_sentence_split(
+            for chunk in _structured_text_split(
                 doc,
                 max_chunk_chars=config.retriever_chunk_chars,
                 overlap_chars=config.retriever_chunk_overlap_chars,
             )
-            if chunk.strip()
+            if chunk["content"].strip()
         ]
-        for chunk_index, content in enumerate(chunks):
+        for chunk_index, chunk in enumerate(chunks):
+            content = str(chunk["content"])
+            section_path = str(chunk["section_path"])
+            embedding_text = (
+                f"{section_path}\n{content}" if section_path else content
+            )
             entries.append(
                 {
                     "id": _stable_chunk_id(
-                        content,
+                        embedding_text,
                         source=source,
                         chunk_index=chunk_index,
                         version=version,
                     ),
                     "content": content,
+                    "embedding_text": embedding_text,
                     "source": source,
+                    "section_path": section_path,
                     "chunk_index": chunk_index,
                     "content_hash": _content_hash(content),
                     "version": version,
@@ -450,13 +577,15 @@ def _manifest_from_entries(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
                 "chunk_count": 0,
                 "chunk_ids": [],
                 "content_hashes": [],
+                "section_paths": [],
             },
         )
         bucket["chunk_count"] += 1
         bucket["chunk_ids"].append(int(entry["id"]))
         bucket["content_hashes"].append(str(entry["content_hash"]))
+        bucket["section_paths"].append(str(entry.get("section_path") or ""))
     return {
-        "version": str(config.retriever_knowledge_version or "v1"),
+        "version": str(config.retriever_knowledge_version or "v2"),
         "source_count": len(sources),
         "chunk_count": len(entries),
         "sources": list(sources.values()),
@@ -534,7 +663,7 @@ class MilvusRetriever:
 
     Public contract:
         ``add_documents`` and ``search`` return ``ToolResult``. Search results
-        keep the existing shape: content, score, index, and source.
+        expose content, score, index, source, and optional section_path.
     """
 
     _COLLECTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
@@ -591,7 +720,7 @@ class MilvusRetriever:
         self._milvus_client_type = None
         self._data_type = None
         self._dimension: Optional[int] = None
-        self._source_latest_ids: Dict[str, List[int]] = {}
+        self._supports_section_path = False
 
     def _ensure_encoder(self):
         if self._encoder is not None:
@@ -635,6 +764,13 @@ class MilvusRetriever:
             return int(dimension) if dimension is not None else None
         return None
 
+    @staticmethod
+    def _field_names(description: Dict[str, Any]) -> set[str]:
+        return {
+            str(field.get("name") or field.get("field_name") or "")
+            for field in description.get("fields", [])
+        }
+
     def _ensure_collection(self, dimension: int) -> None:
         client = self._ensure_client()
         if client.has_collection(collection_name=self.collection_name):
@@ -649,6 +785,9 @@ class MilvusRetriever:
                     expected_dimension=dimension,
                     embedding_model=self.embedding_model_name,
                 )
+            self._supports_section_path = (
+                "section_path" in self._field_names(description)
+            )
             self._dimension = dimension
             self._ensure_index()
             client.load_collection(collection_name=self.collection_name)
@@ -678,6 +817,11 @@ class MilvusRetriever:
             datatype=self._data_type.VARCHAR,
             max_length=1024,
         )
+        schema.add_field(
+            field_name="section_path",
+            datatype=self._data_type.VARCHAR,
+            max_length=2048,
+        )
         client.create_collection(
             collection_name=self.collection_name,
             schema=schema,
@@ -687,6 +831,7 @@ class MilvusRetriever:
         self._ensure_index()
         client.load_collection(collection_name=self.collection_name)
         self._dimension = dimension
+        self._supports_section_path = True
 
     def _ensure_index(self) -> None:
         """Create the configured vector index when the collection lacks it."""
@@ -740,6 +885,20 @@ class MilvusRetriever:
                 return int(deleted)
         return 0
 
+    def _delete_sources(self, sources: Sequence[str]) -> int:
+        """Replace persisted chunks for known sources, including after restarts."""
+        client = self._ensure_client()
+        deleted_total = 0
+        for source in dict.fromkeys(str(item) for item in sources if item):
+            source_literal = json.dumps(source, ensure_ascii=False)
+            result = client.delete(
+                collection_name=self.collection_name,
+                filter=f"source == {source_literal}",
+            )
+            if isinstance(result, dict) and result.get("delete_count") is not None:
+                deleted_total += int(result["delete_count"])
+        return deleted_total
+
     def add_documents(
         self,
         docs: List[str],
@@ -760,11 +919,15 @@ class MilvusRetriever:
                 collection=self.collection_name,
             )
         chunks = [str(entry["content"]) for entry in entries]
+        embedding_texts = [str(entry["embedding_text"]) for entry in entries]
 
         try:
             self._ensure_encoder()
             embeddings = np.asarray(
-                self._encoder.encode(chunks, normalize_embeddings=True),
+                self._encoder.encode(
+                    embedding_texts,
+                    normalize_embeddings=True,
+                ),
                 dtype=np.float32,
             )
             if embeddings.ndim != 2 or embeddings.shape[0] != len(chunks):
@@ -774,31 +937,31 @@ class MilvusRetriever:
                 )
             self._ensure_collection(int(embeddings.shape[1]))
             incoming_ids = [int(entry["id"]) for entry in entries]
-            removed = self._delete_chunk_ids(incoming_ids)
             source_groups: Dict[str, List[int]] = {}
             for entry in entries:
                 source = str(entry["source"])
                 if source:
                     source_groups.setdefault(source, []).append(int(entry["id"]))
-            stale_removed = 0
-            for source, new_ids in source_groups.items():
-                new_id_set = set(new_ids)
-                stale_ids = [
-                    chunk_id
-                    for chunk_id in self._source_latest_ids.get(source, [])
-                    if chunk_id not in new_id_set
-                ]
-                stale_removed += self._delete_chunk_ids(stale_ids)
-                self._source_latest_ids[source] = list(new_ids)
-            rows = [
-                {
+            source_removed = self._delete_sources(list(source_groups))
+            source_bound_ids = {
+                chunk_id
+                for chunk_ids in source_groups.values()
+                for chunk_id in chunk_ids
+            }
+            removed = self._delete_chunk_ids(
+                [chunk_id for chunk_id in incoming_ids if chunk_id not in source_bound_ids]
+            )
+            rows = []
+            for index, entry in enumerate(entries):
+                row = {
                     "id": int(entry["id"]),
                     "vector": embeddings[index].tolist(),
                     "content": str(entry["content"]),
                     "source": str(entry["source"]),
                 }
-                for index, entry in enumerate(entries)
-            ]
+                if self._supports_section_path:
+                    row["section_path"] = str(entry["section_path"])
+                rows.append(row)
             result = self._client.upsert(
                 collection_name=self.collection_name,
                 data=rows,
@@ -807,13 +970,16 @@ class MilvusRetriever:
             return ToolResult.ok(
                 data={
                     "upserted": len(rows),
-                    "removed": removed + stale_removed,
+                    "removed": removed + source_removed,
                     "primary_keys": result.get("primary_keys", []),
                     "manifest": _manifest_from_entries(entries),
                 },
                 backend="milvus",
                 collection=self.collection_name,
                 dimension=int(embeddings.shape[1]),
+                section_metadata=(
+                    "stored" if self._supports_section_path else "legacy_collection"
+                ),
             )
         except EmbeddingModelUnavailable as exc:
             return ToolResult.fail(
@@ -880,6 +1046,9 @@ class MilvusRetriever:
                 dtype=np.float32,
             )
             self._ensure_collection(int(query_vector.shape[1]))
+            output_fields = ["content", "source"]
+            if self._supports_section_path:
+                output_fields.append("section_path")
             raw = client.search(
                 collection_name=self.collection_name,
                 data=[query_vector[0].tolist()],
@@ -889,7 +1058,7 @@ class MilvusRetriever:
                     "params": {"nprobe": self.nprobe},
                 },
                 limit=top_k,
-                output_fields=["content", "source"],
+                output_fields=output_fields,
                 consistency_level="Strong",
             )
             hits = raw[0] if raw else []
@@ -910,6 +1079,7 @@ class MilvusRetriever:
                         "score": score,
                         "index": int(hit.get("id", _stable_chunk_id(content))),
                         "source": entity.get("source", ""),
+                        "section_path": entity.get("section_path", ""),
                     }
                 )
             return ToolResult.ok(
@@ -954,7 +1124,6 @@ class MilvusRetriever:
             if client.has_collection(collection_name=self.collection_name):
                 client.drop_collection(collection_name=self.collection_name)
             self._dimension = None
-            self._source_latest_ids = {}
             return ToolResult.ok(
                 data={"cleared": True},
                 backend="milvus",

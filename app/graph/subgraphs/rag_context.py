@@ -40,11 +40,14 @@ def build_rag_context(
         if not content:
             continue
         source = str(item.get("source") or "").strip()
+        section_path = str(item.get("section_path") or "").strip()
         source_label = source or "未标注来源"
         ref_index = len(blocks) + 1
-        blocks.append(
-            f"[Ref{ref_index}]\n来源: {source_label}\n内容: {content}"
-        )
+        lines = [f"[Ref{ref_index}]", f"来源: {source_label}"]
+        if section_path:
+            lines.append(f"章节: {section_path}")
+        lines.append(f"内容: {content}")
+        blocks.append("\n".join(lines))
         if source and source not in sources:
             sources.append(source)
     return "\n\n".join(blocks), sources

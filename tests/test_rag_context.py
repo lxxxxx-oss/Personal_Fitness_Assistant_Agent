@@ -18,6 +18,18 @@ def test_build_rag_context_numbers_evidence_and_deduplicates_sources():
     assert sources == ["fitness_basics.txt", "cdc_strength_training.txt"]
 
 
+def test_build_rag_context_includes_section_path_when_available():
+    context, _ = build_rag_context([
+        {
+            "content": "保持核心稳定。",
+            "source": "fitness_basics.txt",
+            "section_path": "健身基础动作指南 > 深蹲",
+        }
+    ])
+
+    assert "章节: 健身基础动作指南 > 深蹲" in context
+
+
 def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
     state = {
         "user_input": "深蹲要注意什么？",

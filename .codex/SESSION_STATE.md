@@ -2,38 +2,37 @@
 
 ## Current Task
 
-- Status: idle
-- Goal: 补充可防守的无人机实习三项工作、技术解释与工程边界，并提交到 GitHub。
-- Updated: 2026-07-20
+- Status: active
+- Goal: 重建 Milvus 权威知识索引，并运行 19 条完整 RAGAS 真实生成与裁判评测。
+- Updated: 2026-07-22
 
 ## Completed
 
-- 以代码、接口和现有测试证据为基线审计全部 39 篇 Markdown 文档。
-- 将多意图路由、上下文与记忆、ToolRegistry、小程序和简历表述中的旧实施计划改为当前设计、状态或验收清单。
-- 删除已经完成的阶段任务、失效方案、重复草稿和“规划项当现状”的表述。
-- 统一 RAGAS 口径：真实 Retriever、生成节点和三项 RAGAS 指标已接入；仅完成本地单样例兼容性烟测，完整 12 条项目基线尚未记录。
-- 更新各级 README 导航；`superpowers/` 与 `technical/interview-archive/` 保留为冻结历史，不参与当前事实和面试口径。
-- 保留远端更新后的 RAGAS 实现与文档结构，仅补入远端缺失的无人机实习面试材料，避免恢复已淘汰的重复评测脚本和旧版 09 文档。
-- 在 `docs/interview/03_简历技术点总表.md` 中补充三项实习成果、Agent 岗位能力映射、技术名词解释和可主动承认的实现边界。
+- 可索引知识文档由 5 份扩展为 12 份，覆盖力量训练、身体活动、运动蛋白、肌酸、健康膳食、体重管理、补液和睡眠恢复。
+- 新条目来自 ACSM、WHO、中国居民膳食指南、ISSN、CDC/NIDDK、NATA 与 AASM；采用中文结构化转述，保留原始链接、适用范围、安全边界和核验日期，不整篇复制网页或论文。
+- 修正旧知识中的固定宏量比例、统一饮水量、蛋白质绝对伤肾等过度简化表述。
+- 保留上一阶段 RAG 分块 v2：标题层级、段落/句子装箱、真实相邻块重叠、`section_path`、新 Milvus collection 与旧 schema 兼容。
+- RAG 黄金集扩展为 21 条：19 条可回答、2 条无答案；同步更新 README、项目总览、运行与排错、项目证据和 interview 文档。
 
 ## Verification
 
-- 活跃文档旧词扫描无残留命中。
-- Markdown 相对文件链接检查：0 个失效链接。
-- `git diff --check` 通过。
-- 当前远端代码基线完整测试：`241 passed, 2 skipped`；仅有 2 条第三方弃用警告。
-- `docs/interview/agent.json` 继续由 `.gitignore` 排除，未纳入提交。
+- 专项回归：`42 passed`。
+- 全量回归：`247 passed, 2 skipped, 1 warning in 24.98s`；warning 为第三方 Starlette TestClient 弃用提示。
+- 本地真实 embedding + MemoryRetriever：12 个文件生成 81 个 chunk；19 条可回答样例的 `source_hit@5` 与 `evidence_hit@5` 均为 `19/19`，阈值 `0.5`。
+- 上述结果是检索冒烟，不是完整 RAGAS 三指标基线；完整 19 条生成与裁判评测仍可后续执行。
 
 ## Boundary
 
-- 工作区原有 RAGAS 代码、数据集和面试文档修改均保留，未回退。
-- 历史归档未删除，以便追溯；归档 README 已明确事实优先级。
+- `data/knowledge/` 中 PDF 仅作参考；当前自动入库只读取 `.txt` / `.md`。
+- 现有持久化 Milvus 若仍保存旧知识，需要重新启动入库流程或重建默认 collection 才能使用新增内容。
+- 本轮修改尚未提交或推送。
 
 ## Next Steps
 
-- 本次无人机实习材料已完成，无待办；后续可围绕三项工作逐条进行模拟追问。
-- 用户准备评测时，再运行完整 12 条 RAGAS 项目基线并更新 `docs/项目证据.md`。
+- 确认 Milvus、生成模型和本地裁判模型的可用状态。
+- 将 12 份知识文档重新索引到新的默认 Collection。
+- 运行 19 条完整 RAGAS 三指标评测，记录结果并同步项目证据与面试口径。
 
 ## Resume Prompt
 
-继续当前项目：远端新版 RAGAS 实现已保留，无人机实习三项工作与面试防守边界已补入 03 技术点总表并完成校验；下一步可进行逐项模拟面试。
+继续当前项目：先读 AGENTS.md 和本文件，再检查 git status。权威知识库扩充与文档同步已完成；如需继续，优先重建 Milvus 并运行 19 条完整 RAGAS 基线，不要把 19/19 检索冒烟表述为端到端 RAGAS 得分。

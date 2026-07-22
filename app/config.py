@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
-DEFAULT_KNOWLEDGE_COLLECTION = "fitness_knowledge_bge_small_zh_v15"
+DEFAULT_KNOWLEDGE_COLLECTION = "fitness_knowledge_bge_small_zh_v15_chunk_v2"
 DEFAULT_MEMORY_COLLECTION = "fitness_user_memory_bge_small_zh_v15"
 
 
@@ -127,10 +127,10 @@ class Config:
         default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_CHARS", 500)
     )
     retriever_chunk_overlap_chars: int = field(
-        default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_OVERLAP_CHARS", 0)
+        default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_OVERLAP_CHARS", 80)
     )
     retriever_knowledge_version: str = field(
-        default_factory=lambda: os.getenv("RETRIEVER_KNOWLEDGE_VERSION", "v1")
+        default_factory=lambda: os.getenv("RETRIEVER_KNOWLEDGE_VERSION", "v2")
     )
     embedding_model: str = field(
         default_factory=lambda: os.getenv(

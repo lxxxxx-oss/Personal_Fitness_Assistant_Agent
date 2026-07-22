@@ -1,5 +1,6 @@
 # CDC 成年人力量训练建议
 # 来源: Centers for Disease Control and Prevention — https://www.cdc.gov/physicalactivity/basics/adults/
+# 核验日期: 2026-07-22
 
 ## 肌肉强化活动
 

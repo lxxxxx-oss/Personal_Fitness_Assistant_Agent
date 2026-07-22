@@ -73,7 +73,7 @@ services:
       - RETRIEVER_FALLBACK_TO_MEMORY=${RETRIEVER_FALLBACK_TO_MEMORY:-true}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-small-zh-v1.5}
       - MILVUS_URI=http://milvus-standalone:19530
-      - MILVUS_COLLECTION_NAME=${MILVUS_COLLECTION_NAME:-fitness_knowledge_bge_small_zh_v15}
+      - MILVUS_COLLECTION_NAME=${MILVUS_COLLECTION_NAME:-fitness_knowledge_bge_small_zh_v15_chunk_v2}
       - MILVUS_INDEX_TYPE=${MILVUS_INDEX_TYPE:-IVF_FLAT}
       - MILVUS_NLIST=${MILVUS_NLIST:-128}
       - MILVUS_NPROBE=${MILVUS_NPROBE:-16}

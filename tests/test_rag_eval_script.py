@@ -51,10 +51,10 @@ class StubMetric:
 def test_rag_eval_dataset_has_reference_and_no_answer_cases():
     rows = load_rows(DATASET_PATH)
 
-    assert len(rows) == 15
+    assert len(rows) == 21
     assert all(row["reference"].strip() for row in rows)
-    assert sum(row["answerable"] for row in rows) == 12
-    assert sum(not row["answerable"] for row in rows) == 3
+    assert sum(row["answerable"] for row in rows) == 19
+    assert sum(not row["answerable"] for row in rows) == 2
 
 
 def test_collect_samples_runs_retrieval_and_generation_for_answerable_only():

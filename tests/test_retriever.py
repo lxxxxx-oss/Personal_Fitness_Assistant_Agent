@@ -44,6 +44,38 @@ class TestChineseSentenceSplit:
         assert chunks[:2] == ["abcdefghij", "ijklmnopqr"]
         assert all(len(chunk) <= 10 for chunk in chunks)
 
+    def test_normal_adjacent_chunks_apply_configured_overlap(self):
+        text = "第一句内容。第二句内容。第三句内容。"
+
+        chunks = _chinese_sentence_split(
+            text,
+            max_chunk_chars=13,
+            overlap_chars=4,
+        )
+
+        assert len(chunks) == 2
+        assert chunks[1].startswith(chunks[0][-4:])
+        assert all(len(chunk) <= 13 for chunk in chunks)
+
+    def test_build_entries_preserves_heading_path_and_paragraphs(self):
+        entries = _build_chunk_entries(
+            [
+                "# 健身基础动作指南\n"
+                "# 来源: 示例来源\n\n"
+                "## 深蹲\n"
+                "保持核心稳定。\n\n"
+                "膝盖方向与脚尖一致。"
+            ],
+            ["fitness.txt"],
+        )
+
+        assert len(entries) == 1
+        assert entries[0]["section_path"] == "健身基础动作指南 > 深蹲"
+        assert "保持核心稳定。\n\n膝盖方向与脚尖一致。" == entries[0]["content"]
+        assert entries[0]["embedding_text"].startswith(
+            "健身基础动作指南 > 深蹲\n"
+        )
+
 
 class TestMemoryRetriever:
     @pytest.fixture
@@ -154,6 +186,17 @@ class TestMemoryRetriever:
         assert result.data["manifest"]["sources"][0]["chunk_ids"] == [
             expected_entries[0]["id"]
         ]
+
+    def test_search_returns_section_path(self, retriever):
+        retriever.add_documents(
+            ["# 动作指南\n\n## 深蹲\n保持核心稳定。"],
+            sources=["fitness.txt"],
+        )
+
+        result = retriever.search("深蹲", top_k=1, threshold=0.0)
+
+        assert result.ok
+        assert result.data[0]["section_path"] == "动作指南 > 深蹲"
 
     def test_reingesting_same_source_replaces_stale_chunks(self, retriever):
         first = retriever.add_documents(
