@@ -35,6 +35,19 @@ docs/
 └── superpowers/              早期设计归档
 ```
 
+## 完整分区入口
+
+不需要在总导航中平铺全部 39 份文档；每个分区由自己的索引维护完整清单。按下面入口可以访问当前全部文档，不必依赖文件名猜用途。
+
+| 分区 | 索引入口 | 内容性质 |
+|---|---|---|
+| 面试学习 | [interview/README](./interview/README.md) | 当前简历口径、学习路线与追问材料 |
+| 技术专题 | [technical/README](./technical/README.md) | Router、Motion、工具系统的实现与设计 |
+| 记忆与上下文 | [optimization/README](./optimization/README.md) | 已落地状态、设计取舍与生产化方向 |
+| 微信小程序 | [miniprogram/README](./miniprogram/README.md) | 端侧实现、架构和待验收项 |
+| 早期规格归档 | [superpowers/README](./superpowers/README.md) | 只用于追溯，不作为当前事实 |
+| 旧版面试归档 | [interview-archive/README](./technical/interview-archive/README.md) | 已退出当前学习路线的历史材料 |
+
 ## 每个区域只有一个职责
 
 | 区域 | 负责回答 | 不负责回答 |
@@ -46,6 +59,7 @@ docs/
 | `项目证据.md` | 测试、评测和真实链路结果 | 记录全部开发过程 |
 | `technical/` | 路由、动作、工具系统的设计细节 | 第一轮入门教学 |
 | `optimization/` | 记忆和上下文的落地记录、设计取舍与后续方案 | 独立承担全项目当前状态 |
+| `miniprogram/` | 小程序代码状态、端侧设计和验收边界 | 代表后端能力或宣称真机已经验收 |
 | `superpowers/` | 保存早期方案 | 当前项目状态和待办 |
 
 ## 项目最重要的一句话

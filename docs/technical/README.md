@@ -11,7 +11,7 @@ technical/
 ├── README.md                  本索引
 ├── router/                    路由与多意图设计
 ├── motion/                    动作媒体链路与优化路线
-├── tool-registry/             工具注册表迁移评估
+├── tool-registry/             工具注册表接入状态
 └── interview-archive/         已停用的旧版面试资料
 ```
 

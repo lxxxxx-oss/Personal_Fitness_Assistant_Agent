@@ -8,7 +8,7 @@
 
 - Hybrid Router：加权规则、语义样例、歧义检测和四种白名单多意图组合；本地 Qwen Router 完成 A/B 后因无准确率收益且延迟较高而默认关闭。
 - Knowledge：产品层将 Chat/Diet 统一为 Knowledge 能力域；代码层保留两个兼容执行分支，并共用 RAG、来源约束和上下文组装。
-- RAG：Sentence-Transformers + Milvus/内存 Retriever，按标题层级、段落和句子做结构感知分块，并支持真实相邻块重叠、章节元数据、稳定主键、同源幂等替换、来源透传和失败降级；当前收录 12 份可索引知识文档，来源覆盖 WHO、CDC、ACSM、中国居民膳食指南、ISSN、NIDDK、NATA 和 AASM，并建立 21 条检索/RAGAS 黄金集。
+- RAG：Sentence-Transformers + Milvus/内存 Retriever，按标题层级、段落和句子做结构感知分块，并支持真实相邻块重叠、章节元数据、稳定主键、同源幂等替换、来源透传和失败降级；当前收录 12 份可索引知识文档，来源覆盖 WHO、CDC、ACSM、中国居民膳食指南、ISSN、NIDDK、NATA 和 AASM，并建立 21 条检索/RAGAS 黄金集及可分阶段、可断点续跑的评测入口。
 - Motion：标准参考动作分析原型，支持图片/视频转 PoseSequence、同 schema 标准视频构建、髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离，并输出可解释的结构化反馈。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - Knowledge-Diet：作为 Knowledge 内部 `diet_advice` 链路，LLM 提取结果经过 Pydantic JSON 解析、范围与枚举校验，再进入营养检索和推荐；非法输出安全降级并公开 warning。

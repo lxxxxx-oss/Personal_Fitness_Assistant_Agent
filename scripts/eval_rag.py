@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Protocol, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Protocol, Sequence
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
@@ -17,7 +18,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.config import config
 from app.graph.subgraphs.chat import generate_node
-from app.tools.retriever import MemoryRetriever
+from app.tools.retriever import MemoryRetriever, MilvusRetriever
 
 
 DEFAULT_DATASET = Path("data/eval/rag_eval.jsonl")
@@ -25,6 +26,8 @@ DEFAULT_KNOWLEDGE_DIR = Path("data/knowledge")
 DEFAULT_JUDGE_MODEL = "gpt-4o-mini"
 DEFAULT_JUDGE_EMBEDDING_MODEL = "text-embedding-3-small"
 DEFAULT_JUDGE_EMBEDDING_PROVIDER = "openai"
+DEFAULT_PROGRESS_FILE = Path("tmp/rag_eval_progress.json")
+PROGRESS_SCHEMA_VERSION = 1
 METRIC_LABELS = {
     "context_relevance": "上下文相关性",
     "faithfulness": "忠实度",
@@ -93,6 +96,72 @@ def _is_string_list(value: Any) -> bool:
     )
 
 
+def file_sha256(path: Path) -> str:
+    """Return a stable dataset fingerprint without exposing file contents."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def knowledge_sha256(knowledge_dir: Path) -> str:
+    """Fingerprint the indexed text corpus independently of its absolute path."""
+    files = sorted(
+        path for path in knowledge_dir.iterdir() if path.suffix.lower() in {".txt", ".md"}
+    )
+    if not files:
+        raise ValueError(f"No .txt or .md knowledge files in: {knowledge_dir}")
+    digest = hashlib.sha256()
+    for path in files:
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(file_sha256(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def load_progress(path: Path) -> Dict[str, Any]:
+    """Load and minimally validate a resumable evaluation artifact."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid progress JSON in {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Progress file must contain a JSON object: {path}")
+    if payload.get("schema_version") != PROGRESS_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported progress schema in {path}: "
+            f"{payload.get('schema_version')!r}"
+        )
+    if not isinstance(payload.get("samples"), list):
+        raise ValueError(f"Progress file has no samples list: {path}")
+    return payload
+
+
+def save_progress(path: Path, payload: Mapping[str, Any]) -> None:
+    """Atomically persist progress so an interruption cannot leave partial JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(dict(payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def validate_progress_config(
+    progress: Mapping[str, Any], expected: Mapping[str, Any]
+) -> None:
+    """Reject stale checkpoints instead of silently mixing unlike evaluations."""
+    actual = progress.get("config")
+    if actual != dict(expected):
+        raise ValueError(
+            "Progress configuration does not match this run; use --fresh or a "
+            "different --progress-file"
+        )
+
+
 def load_knowledge(retriever: Any, knowledge_dir: Path) -> Dict[str, Any]:
     """Index UTF-8 text/Markdown files and return ingestion accounting."""
     if not knowledge_dir.is_dir():
@@ -115,6 +184,24 @@ def load_knowledge(retriever: Any, knowledge_dir: Path) -> Dict[str, Any]:
     }
 
 
+def build_retriever(backend: str, embedding_model: str) -> Any:
+    """Build the requested evaluation backend without implicit fallback."""
+    if backend == "memory":
+        return MemoryRetriever(embedding_model=embedding_model)
+    if backend == "milvus":
+        return MilvusRetriever(
+            uri=config.milvus_uri,
+            collection_name=config.milvus_collection_name,
+            token=config.milvus_token,
+            embedding_model=embedding_model,
+            index_type=config.milvus_index_type,
+            nlist=config.milvus_nlist,
+            nprobe=config.milvus_nprobe,
+            timeout_seconds=config.milvus_timeout_seconds,
+        )
+    raise ValueError(f"Unsupported retriever backend: {backend}")
+
+
 def collect_samples(
     rows: Iterable[Dict[str, Any]],
     retriever: Any,
@@ -122,15 +209,28 @@ def collect_samples(
     top_k: int,
     threshold: float,
     answer_generator: Any,
+    existing_samples: Sequence[Dict[str, Any]] = (),
+    max_new_cases: int | None = None,
+    on_sample: Callable[[List[Dict[str, Any]], Dict[str, int]], None] | None = None,
 ) -> Dict[str, Any]:
-    """Run retrieval and the same prompt/generation node used by the chat RAG path."""
-    samples: List[Dict[str, Any]] = []
+    """Generate answerable samples, optionally resuming and checkpointing per case."""
+    samples: List[Dict[str, Any]] = [dict(sample) for sample in existing_samples]
+    completed_ids = {str(sample.get("id", "")) for sample in samples}
+    if len(completed_ids) != len(samples) or "" in completed_ids:
+        raise ValueError("Existing samples must have unique non-empty ids")
     skipped_unanswerable = 0
-    mode_counts: Counter[str] = Counter()
+    mode_counts: Counter[str] = Counter(
+        str(sample.get("retrieval_mode", "unknown")) for sample in samples
+    )
+    new_cases = 0
 
     for row in rows:
         if not row["answerable"]:
             skipped_unanswerable += 1
+            continue
+        if row["id"] in completed_ids:
+            continue
+        if max_new_cases is not None and new_cases >= max_new_cases:
             continue
         started = time.perf_counter()
         result = retriever.search(row["query"], top_k=top_k, threshold=threshold)
@@ -140,7 +240,8 @@ def collect_samples(
                 f"{result.error_code} {result.error_message}"
             )
         retrieved = list(result.data or [])
-        mode_counts[str(result.meta.get("mode", "unknown"))] += 1
+        retrieval_mode = str(result.meta.get("mode", "unknown"))
+        mode_counts[retrieval_mode] += 1
         response = answer_generator(row["query"], retrieved)
         if not isinstance(response, str) or not response.strip():
             raise RuntimeError(f"Generation returned an empty response for {row['id']}")
@@ -161,15 +262,21 @@ def collect_samples(
                     for item in retrieved
                     if str(item.get("source", "")).strip()
                 ],
+                "retrieval_mode": retrieval_mode,
                 "latency_ms": (time.perf_counter() - started) * 1000,
             }
         )
+        completed_ids.add(row["id"])
+        new_cases += 1
+        if on_sample is not None:
+            on_sample(samples, dict(mode_counts))
     if not samples:
         raise ValueError("RAGAS needs at least one answerable evaluation case")
     return {
         "samples": samples,
         "skipped_unanswerable": skipped_unanswerable,
         "retrieval_mode_counts": dict(mode_counts),
+        "new_cases": new_cases,
     }
 
 
@@ -239,13 +346,25 @@ def build_ragas_metrics(
 async def evaluate_with_ragas(
     samples: Sequence[Dict[str, Any]],
     metrics: Mapping[str, RagasMetric],
+    *,
+    existing_cases: Sequence[Dict[str, Any]] = (),
+    on_case: Callable[[List[Dict[str, Any]]], None] | None = None,
 ) -> Dict[str, Any]:
-    """Score each sample and return transparent per-case and aggregate results."""
+    """Score samples, optionally resuming and checkpointing after every case."""
     expected = set(METRIC_LABELS)
     if set(metrics) != expected:
         raise ValueError(f"metrics must be exactly: {', '.join(sorted(expected))}")
+    existing_by_id = {
+        str(case.get("id", "")): dict(case) for case in existing_cases
+    }
+    if len(existing_by_id) != len(existing_cases) or "" in existing_by_id:
+        raise ValueError("Existing scored cases must have unique non-empty ids")
     cases: List[Dict[str, Any]] = []
     for sample in samples:
+        existing = existing_by_id.get(str(sample.get("id", "")))
+        if existing is not None and set(existing.get("scores", {})) == expected:
+            cases.append(existing)
+            continue
         try:
             context_result = await metrics["context_relevance"].ascore(
                 user_input=sample["user_input"],
@@ -268,6 +387,8 @@ async def evaluate_with_ragas(
             "answer_relevance": _score_value(relevance_result),
         }
         cases.append({**sample, "scores": scores})
+        if on_case is not None:
+            on_case(cases)
 
     aggregates = {
         name: sum(case["scores"][name] for case in cases) / len(cases)
@@ -312,6 +433,50 @@ def print_report(result: Dict[str, Any], *, show_cases: bool = False) -> None:
             )
 
 
+def _select_rows(
+    rows: Sequence[Dict[str, Any]], case_ids: Sequence[str]
+) -> List[Dict[str, Any]]:
+    if not case_ids:
+        return list(rows)
+    requested = set(case_ids)
+    known = {row["id"] for row in rows}
+    unknown = sorted(requested - known)
+    if unknown:
+        raise ValueError(f"Unknown case ids: {', '.join(unknown)}")
+    return [row for row in rows if row["id"] in requested]
+
+
+def _generation_config(args: argparse.Namespace) -> Dict[str, Any]:
+    generation = {
+        "dataset_sha256": file_sha256(args.dataset),
+        "knowledge_sha256": knowledge_sha256(args.knowledge_dir),
+        "retriever_backend": args.retriever_backend,
+        "top_k": args.top_k,
+        "threshold": args.threshold,
+        "embedding_model": args.embedding_model,
+        # The same local model may live under different absolute paths on two PCs.
+        "generator_model": Path(str(config.model_path)).name,
+        "case_ids": sorted(set(args.case_id or [])),
+    }
+    if args.retriever_backend == "milvus":
+        generation["milvus"] = {
+            "collection_name": config.milvus_collection_name,
+            "index_type": config.milvus_index_type,
+            "nlist": config.milvus_nlist,
+            "nprobe": config.milvus_nprobe,
+        }
+    return generation
+
+
+def _judge_config(args: argparse.Namespace) -> Dict[str, Any]:
+    return {
+        "judge_model": args.judge_model,
+        "judge_embedding_model": args.judge_embedding_model,
+        "judge_embedding_provider": args.judge_embedding_provider,
+        "judge_base_url": args.judge_base_url,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -319,6 +484,12 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=config.retriever_top_k)
     parser.add_argument("--threshold", type=float, default=config.retriever_threshold)
     parser.add_argument("--embedding-model", default=config.embedding_model)
+    parser.add_argument(
+        "--retriever-backend",
+        choices=("memory", "milvus"),
+        default="memory",
+        help="Evaluation retriever; Milvus is direct and never silently falls back",
+    )
     parser.add_argument(
         "--judge-model",
         default=os.getenv("RAGAS_JUDGE_MODEL", DEFAULT_JUDGE_MODEL),
@@ -339,6 +510,33 @@ def main() -> int:
         help="Use OpenAI-compatible embeddings or a local Hugging Face model",
     )
     parser.add_argument("--judge-base-url", default=os.getenv("OPENAI_BASE_URL"))
+    parser.add_argument(
+        "--stage",
+        choices=("all", "generate", "score"),
+        default="all",
+        help="Run both stages, generation only, or score an existing progress file",
+    )
+    parser.add_argument(
+        "--progress-file",
+        type=Path,
+        default=DEFAULT_PROGRESS_FILE,
+        help="Atomic JSON checkpoint; an existing compatible file resumes automatically",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Discard an existing checkpoint and start a new generation run",
+    )
+    parser.add_argument(
+        "--max-new-cases",
+        type=int,
+        help="Generate at most this many unfinished cases in the current invocation",
+    )
+    parser.add_argument(
+        "--case-id",
+        action="append",
+        help="Restrict the run to one or more case ids; may be repeated",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--show-cases", action="store_true")
     args = parser.parse_args()
@@ -347,18 +545,89 @@ def main() -> int:
         parser.error("--top-k must be between 1 and 100")
     if not 0.0 <= args.threshold <= 1.0:
         parser.error("--threshold must be between 0 and 1")
-    if config.llm_mock:
+    if args.max_new_cases is not None and args.max_new_cases < 1:
+        parser.error("--max-new-cases must be positive")
+    if args.stage == "score" and args.fresh:
+        parser.error("--fresh cannot be used with --stage score")
+    if args.stage in {"all", "generate"} and config.llm_mock:
         parser.error("LLM_MOCK must be disabled; mock answers make RAGAS scores invalid")
 
-    retriever = MemoryRetriever(embedding_model=args.embedding_model)
-    ingestion = load_knowledge(retriever, args.knowledge_dir)
-    collected = collect_samples(
-        load_rows(args.dataset),
-        retriever,
-        top_k=args.top_k,
-        threshold=args.threshold,
-        answer_generator=generate_with_project_rag,
-    )
+    try:
+        rows = _select_rows(load_rows(args.dataset), args.case_id or [])
+        expected_answerable = sum(bool(row["answerable"]) for row in rows)
+        skipped_unanswerable = sum(not row["answerable"] for row in rows)
+        generation_config = _generation_config(args)
+        if args.progress_file.exists() and not args.fresh:
+            progress = load_progress(args.progress_file)
+            validate_progress_config(progress, generation_config)
+        else:
+            if args.stage == "score":
+                raise ValueError(
+                    f"Progress file not found for scoring: {args.progress_file}"
+                )
+            progress = {
+                "schema_version": PROGRESS_SCHEMA_VERSION,
+                "status": "new",
+                "config": generation_config,
+                "expected_answerable_cases": expected_answerable,
+                "skipped_unanswerable": skipped_unanswerable,
+                "retrieval_mode_counts": {},
+                "samples": [],
+            }
+    except (OSError, ValueError) as exc:
+        parser.error(str(exc))
+
+    if args.stage in {"all", "generate"}:
+        retriever = build_retriever(args.retriever_backend, args.embedding_model)
+        ingestion = load_knowledge(retriever, args.knowledge_dir)
+        progress["ingestion"] = ingestion
+
+        def checkpoint_generation(
+            samples: List[Dict[str, Any]], mode_counts: Dict[str, int]
+        ) -> None:
+            progress["status"] = "generating"
+            progress["samples"] = samples
+            progress["retrieval_mode_counts"] = mode_counts
+            save_progress(args.progress_file, progress)
+
+        collected = collect_samples(
+            rows,
+            retriever,
+            top_k=args.top_k,
+            threshold=args.threshold,
+            answer_generator=generate_with_project_rag,
+            existing_samples=progress["samples"],
+            max_new_cases=args.max_new_cases,
+            on_sample=checkpoint_generation,
+        )
+        progress["samples"] = collected["samples"]
+        progress["retrieval_mode_counts"] = collected["retrieval_mode_counts"]
+        generation_complete = len(collected["samples"]) == expected_answerable
+        progress["status"] = "generated" if generation_complete else "generation_partial"
+        save_progress(args.progress_file, progress)
+
+        if args.stage == "generate":
+            if args.json:
+                print(json.dumps(progress, ensure_ascii=False, indent=2))
+            else:
+                print(
+                    f"Generation checkpoint: {len(collected['samples'])}/"
+                    f"{expected_answerable} cases | new: {collected['new_cases']} | "
+                    f"file: {args.progress_file}"
+                )
+            return 0
+
+    samples = list(progress["samples"])
+    if not samples:
+        parser.error("Progress file contains no generated samples to score")
+    judge_config = _judge_config(args)
+    existing_scored = [sample for sample in samples if "scores" in sample]
+    if existing_scored and progress.get("judge_config") != judge_config:
+        parser.error(
+            "Judge configuration does not match existing scores; use a new "
+            "--progress-file or restart with --fresh"
+        )
+    progress["judge_config"] = judge_config
     metrics = build_ragas_metrics(
         api_key=os.getenv("OPENAI_API_KEY", ""),
         judge_model=args.judge_model,
@@ -366,20 +635,46 @@ def main() -> int:
         embedding_provider=args.judge_embedding_provider,
         base_url=args.judge_base_url,
     )
-    scored = asyncio.run(evaluate_with_ragas(collected["samples"], metrics))
+
+    def checkpoint_scoring(cases: List[Dict[str, Any]]) -> None:
+        scored_by_id = {case["id"]: case for case in cases}
+        progress["status"] = "scoring"
+        progress["samples"] = [
+            scored_by_id.get(sample["id"], sample) for sample in samples
+        ]
+        save_progress(args.progress_file, progress)
+
+    scored = asyncio.run(
+        evaluate_with_ragas(
+            samples,
+            metrics,
+            existing_cases=existing_scored,
+            on_case=checkpoint_scoring,
+        )
+    )
     result = {
-        "evaluated_cases": len(collected["samples"]),
-        "skipped_unanswerable": collected["skipped_unanswerable"],
-        "retrieval_mode_counts": collected["retrieval_mode_counts"],
+        "evaluated_cases": len(scored["cases"]),
+        "expected_answerable_cases": expected_answerable,
+        "skipped_unanswerable": skipped_unanswerable,
+        "retrieval_mode_counts": progress["retrieval_mode_counts"],
+        "retriever_backend": args.retriever_backend,
         "top_k": args.top_k,
         "threshold": args.threshold,
         "generator_model": config.model_path,
         "judge_model": args.judge_model,
         "judge_embedding_model": args.judge_embedding_model,
         "judge_embedding_provider": args.judge_embedding_provider,
-        "ingestion": ingestion,
+        "ingestion": progress.get("ingestion", {}),
         **scored,
     }
+    progress["samples"] = scored["cases"]
+    progress["metrics"] = scored["metrics"]
+    progress["status"] = (
+        "complete"
+        if len(scored["cases"]) == expected_answerable
+        else "scoring_partial"
+    )
+    save_progress(args.progress_file, progress)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
