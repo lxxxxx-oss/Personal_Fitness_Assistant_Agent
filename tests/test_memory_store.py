@@ -14,14 +14,14 @@ class FakeSemanticRetriever:
 
     def add_documents(self, docs, sources=None):
         if self.fail:
-            return ToolResult.fail("NETWORK_ERROR", "milvus unavailable")
+            return ToolResult.fail("INTERNAL_ERROR", "local vector index unavailable")
         self.docs.extend(docs)
         self.sources.extend(list(sources or []))
-        return ToolResult.ok(data={"upserted": len(docs)}, backend="milvus")
+        return ToolResult.ok(data={"upserted": len(docs)}, backend="sqlite_faiss")
 
     def search(self, query, top_k=5, threshold=0.1):
         if not self.sources:
-            return ToolResult.ok(data=[], backend="milvus")
+            return ToolResult.ok(data=[], backend="sqlite_faiss")
         return ToolResult.ok(
             data=[
                 {
@@ -31,7 +31,7 @@ class FakeSemanticRetriever:
                     "source": self.sources[0],
                 }
             ],
-            backend="milvus",
+            backend="sqlite_faiss",
         )
 
 

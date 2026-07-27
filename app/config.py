@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
-DEFAULT_KNOWLEDGE_COLLECTION = "fitness_knowledge_bge_small_zh_v15_chunk_v2"
-DEFAULT_MEMORY_COLLECTION = "fitness_user_memory_bge_small_zh_v15"
+DEFAULT_KNOWLEDGE_DB_PATH = "data/rag/knowledge.db"
+DEFAULT_MEMORY_VECTOR_DB_PATH = "data/memory/memory_vectors.db"
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -109,16 +109,18 @@ class Config:
     conversation_summary_max_chars: int = field(
         default_factory=lambda: _get_int_env("CONVERSATION_SUMMARY_MAX_CHARS", 1200)
     )
-    conversation_summary_keep_recent_messages: int = field(
-        default_factory=lambda: _get_int_env(
-            "CONVERSATION_SUMMARY_KEEP_RECENT_MESSAGES",
-            6,
-        )
-    )
-
     # Retriever
     retriever_top_k: int = field(
         default_factory=lambda: _get_int_env("RETRIEVER_TOP_K", 5)
+    )
+    retriever_strategy: str = field(
+        default_factory=lambda: os.getenv("RETRIEVER_STRATEGY", "hybrid").lower()
+    )
+    retriever_candidate_k: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_CANDIDATE_K", 20)
+    )
+    retriever_rrf_k: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_RRF_K", 60)
     )
     retriever_threshold: float = field(
         default_factory=lambda: _get_float_env("RETRIEVER_THRESHOLD", 0.5)
@@ -139,46 +141,28 @@ class Config:
         )
     )
     retriever_backend: str = field(
-        default_factory=lambda: os.getenv("RETRIEVER_BACKEND", "memory").lower()
+        default_factory=lambda: os.getenv("RETRIEVER_BACKEND", "sqlite_faiss").lower()
     )
     retriever_fallback_to_memory: bool = field(
         default_factory=lambda: _get_bool_env(
             "RETRIEVER_FALLBACK_TO_MEMORY", True
         )
     )
-    milvus_uri: str = field(
+    retriever_db_path: str = field(
         default_factory=lambda: os.getenv(
-            "MILVUS_URI", "http://127.0.0.1:19530"
+            "RETRIEVER_DB_PATH", DEFAULT_KNOWLEDGE_DB_PATH
         )
     )
-    milvus_token: str = field(
-        default_factory=lambda: os.getenv("MILVUS_TOKEN", ""),
-        repr=False,
+    memory_vector_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("MEMORY_VECTOR_ENABLED", False)
     )
-    milvus_collection_name: str = field(
-        default_factory=lambda: os.getenv("MILVUS_COLLECTION_NAME")
-        or os.getenv("MILVUS_COLLECTION", DEFAULT_KNOWLEDGE_COLLECTION)
-    )
-    memory_milvus_enabled: bool = field(
-        default_factory=lambda: _get_bool_env("MEMORY_MILVUS_ENABLED", False)
-    )
-    memory_milvus_collection_name: str = field(
+    memory_vector_db_path: str = field(
         default_factory=lambda: os.getenv(
-            "MEMORY_MILVUS_COLLECTION_NAME",
-            DEFAULT_MEMORY_COLLECTION,
+            "MEMORY_VECTOR_DB_PATH", DEFAULT_MEMORY_VECTOR_DB_PATH
         )
     )
-    milvus_index_type: str = field(
-        default_factory=lambda: os.getenv("MILVUS_INDEX_TYPE", "IVF_FLAT").upper()
-    )
-    milvus_nlist: int = field(
-        default_factory=lambda: _get_int_env("MILVUS_NLIST", 128)
-    )
-    milvus_nprobe: int = field(
-        default_factory=lambda: _get_int_env("MILVUS_NPROBE", 16)
-    )
-    milvus_timeout_seconds: float = field(
-        default_factory=lambda: _get_float_env("MILVUS_TIMEOUT_SECONDS", 3.0)
+    retriever_timeout_seconds: float = field(
+        default_factory=lambda: _get_float_env("RETRIEVER_TIMEOUT_SECONDS", 3.0)
     )
 
     # Tavily Search
@@ -210,13 +194,10 @@ class Config:
             "context_max_prompt_chars": self.context_max_prompt_chars,
             "conversation_summary_trigger_chars": self.conversation_summary_trigger_chars,
             "conversation_summary_max_chars": self.conversation_summary_max_chars,
-            "conversation_summary_keep_recent_messages": (
-                self.conversation_summary_keep_recent_messages
-            ),
             "retriever_top_k": self.retriever_top_k,
+            "retriever_candidate_k": self.retriever_candidate_k,
+            "retriever_rrf_k": self.retriever_rrf_k,
             "retriever_chunk_chars": self.retriever_chunk_chars,
-            "milvus_nlist": self.milvus_nlist,
-            "milvus_nprobe": self.milvus_nprobe,
             "api_port": self.api_port,
         }
         invalid = [name for name, value in positive_values.items() if value <= 0]
@@ -228,6 +209,20 @@ class Config:
             raise ValueError("COMPACT_TRIGGER_CHARS must not exceed MAX_PROMPT_CHARS")
         if not 0.0 <= self.retriever_threshold <= 1.0:
             raise ValueError("RETRIEVER_THRESHOLD must be between 0 and 1")
+        if self.retriever_strategy not in {"dense", "hybrid"}:
+            raise ValueError("RETRIEVER_STRATEGY must be 'dense' or 'hybrid'")
+        if self.retriever_backend not in {"sqlite_faiss", "memory"}:
+            raise ValueError(
+                "RETRIEVER_BACKEND must be 'sqlite_faiss' or 'memory'"
+            )
+        if not self.retriever_db_path.strip():
+            raise ValueError("RETRIEVER_DB_PATH must not be empty")
+        if not self.memory_vector_db_path.strip():
+            raise ValueError("MEMORY_VECTOR_DB_PATH must not be empty")
+        if self.retriever_timeout_seconds <= 0:
+            raise ValueError("RETRIEVER_TIMEOUT_SECONDS must be positive")
+        if self.retriever_candidate_k > 100:
+            raise ValueError("RETRIEVER_CANDIDATE_K must be at most 100")
         if not 0.0 <= self.router_embedding_min_confidence <= 1.0:
             raise ValueError("ROUTER_EMBEDDING_MIN_CONFIDENCE must be between 0 and 1")
         if not 0.0 <= self.router_embedding_min_margin <= 1.0:

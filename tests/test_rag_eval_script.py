@@ -19,7 +19,7 @@ from scripts.eval_rag import (
     save_progress,
     validate_progress_config,
 )
-from app.tools.retriever import MemoryRetriever, MilvusRetriever
+from app.tools.retriever import HybridRetriever, MemoryRetriever, SQLiteFaissRetriever
 
 
 DATASET_PATH = Path("data/eval/rag_eval.jsonl")
@@ -54,23 +54,43 @@ class StubMetric:
         return SimpleNamespace(value=self.value)
 
 
-def test_build_retriever_selects_explicit_backend_without_fallback(monkeypatch):
-    monkeypatch.setattr("scripts.eval_rag.config.milvus_uri", "http://milvus:19530")
-    monkeypatch.setattr("scripts.eval_rag.config.milvus_collection_name", "rag_eval")
-
+def test_build_retriever_selects_explicit_backend_without_fallback(tmp_path):
     memory = build_retriever("memory", "mock-embedding")
-    milvus = build_retriever("milvus", "mock-embedding")
+    sqlite_faiss = build_retriever(
+        "sqlite_faiss",
+        "mock-embedding",
+        db_path=tmp_path / "rag-eval.db",
+    )
 
     assert isinstance(memory, MemoryRetriever)
-    assert isinstance(milvus, MilvusRetriever)
-    assert milvus.uri == "http://milvus:19530"
-    assert milvus.collection_name == "rag_eval"
-    assert not hasattr(milvus, "fallback")
+    assert isinstance(sqlite_faiss, SQLiteFaissRetriever)
+    assert sqlite_faiss.db_path == str(tmp_path / "rag-eval.db")
+    assert not hasattr(sqlite_faiss, "fallback")
 
 
 def test_build_retriever_rejects_unknown_backend():
     with pytest.raises(ValueError, match="Unsupported retriever backend"):
         build_retriever("unknown", "mock-embedding")
+
+
+def test_build_retriever_can_select_hybrid_strategy():
+    retriever = build_retriever(
+        "memory",
+        "mock-embedding",
+        strategy="hybrid",
+        candidate_k=20,
+        rrf_k=60,
+    )
+
+    assert isinstance(retriever, HybridRetriever)
+    assert isinstance(retriever.dense, MemoryRetriever)
+    assert retriever.candidate_k == 20
+    assert retriever.rrf_k == 60
+
+
+def test_build_retriever_rejects_unknown_strategy():
+    with pytest.raises(ValueError, match="Unsupported retrieval strategy"):
+        build_retriever("memory", "mock-embedding", strategy="weighted")
 
 
 def test_rag_eval_dataset_has_reference_and_no_answer_cases():
@@ -265,6 +285,35 @@ def test_progress_round_trip_and_config_guard(tmp_path):
     validate_progress_config(load_progress(path), payload["config"])
     with pytest.raises(ValueError, match="configuration does not match"):
         validate_progress_config(load_progress(path), {"top_k": 5})
+
+
+def test_legacy_progress_is_dense_only():
+    progress = {
+        "config": {"dataset_sha256": "abc", "top_k": 5},
+        "samples": [],
+    }
+
+    validate_progress_config(
+        progress,
+        {
+            "dataset_sha256": "abc",
+            "top_k": 5,
+            "retrieval_strategy": "dense",
+            "candidate_k": 20,
+            "rrf_k": 60,
+        },
+    )
+    with pytest.raises(ValueError, match="configuration does not match"):
+        validate_progress_config(
+            progress,
+            {
+                "dataset_sha256": "abc",
+                "top_k": 5,
+                "retrieval_strategy": "hybrid",
+                "candidate_k": 20,
+                "rrf_k": 60,
+            },
+        )
 
 
 def test_knowledge_fingerprint_ignores_absolute_directory(tmp_path):

@@ -1,4 +1,4 @@
-"""向量检索模块 — Demo阶段使用内存存储,后期替换为Milvus.
+"""健身知识检索模块：SQLite 持久化、FAISS Dense 检索与 BM25 融合.
 
 PERMISSION: This tool retrieves pre-loaded knowledge content only.
 It does NOT perform fact-checking, verify medical claims, or access
@@ -7,14 +7,16 @@ Users should consult professionals for medical or training decisions.
 """
 
 import hashlib
-import json
 import logging
 import re
+import sqlite3
+import threading
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
-from app.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_KNOWLEDGE_COLLECTION, config
+from app.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_KNOWLEDGE_DB_PATH, config
 from app.tools.types import (
     ToolResult,
     ErrorCode,
@@ -31,14 +33,51 @@ THRESHOLD_MIN = 0.0
 THRESHOLD_MAX = 1.0
 
 
+def _bm25_dependencies():
+    """Load optional lexical-retrieval dependencies with an actionable error."""
+    try:
+        import jieba
+        from rank_bm25 import BM25Okapi
+    except (ImportError, ModuleNotFoundError) as exc:
+        raise RuntimeError(
+            "BM25 retrieval requires 'jieba' and 'rank-bm25'; "
+            "install the project requirements before using hybrid retrieval"
+        ) from exc
+    return jieba, BM25Okapi
+
+
+_EXACT_TOKEN_PATTERN = re.compile(
+    r"[a-zA-Z]+(?:\d+)?|"
+    r"\d+(?:[.\-–~～]\d+)*(?:\s*(?:g/kg|kg|g|mg|ml|kcal|千卡|分钟|秒|次|组|%))?",
+    re.IGNORECASE,
+)
+
+
+def _tokenize_for_bm25(text: str) -> List[str]:
+    """Tokenize Chinese text while preserving terms such as RPE and 150-300分钟."""
+    jieba, _ = _bm25_dependencies()
+    normalized = str(text or "").lower().strip()
+    tokens = [
+        token.strip()
+        for token in jieba.lcut(normalized, cut_all=False)
+        if token.strip() and re.search(r"[\w\u4e00-\u9fff%]", token)
+    ]
+    for exact in _EXACT_TOKEN_PATTERN.findall(normalized):
+        exact = re.sub(r"\s+", "", exact.lower())
+        if exact and exact not in tokens:
+            tokens.append(exact)
+    return tokens
+
+
 class MemoryRetriever:
     """基于内存的向量检索器.
 
     使用 Sentence-Transformer 编码文本,NumPy 存储向量,
-    余弦相似度检索 + 阈值过滤 + 去重排序后处理.
+    余弦相似度检索 + 可选阈值过滤 + 去重排序后处理.
 
     Input:
-        search(query: str, top_k: int=5, threshold: float=0.3)
+        search(query: str, top_k: int=5, threshold: Optional[float]=0.3)
+        传入 ``None`` 可为排名融合保留完整候选预算.
 
     Output:
         ToolResult.data = [{"content": str, "score": float, "index": int}, ...]
@@ -227,7 +266,7 @@ class MemoryRetriever:
         self,
         query: str,
         top_k: int = 5,
-        threshold: float = 0.3,
+        threshold: Optional[float] = 0.3,
     ) -> ToolResult:
         """检索与query最相关的文档片段.
 
@@ -247,9 +286,12 @@ class MemoryRetriever:
         err = check_int_range(top_k, "top_k", TOP_K_MIN, TOP_K_MAX)
         if err:
             return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
-        err = check_float_range(threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX)
-        if err:
-            return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
+        if threshold is not None:
+            err = check_float_range(
+                threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX
+            )
+            if err:
+                return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
 
         self._ensure_encoder()
         if len(self._documents) == 0:
@@ -286,8 +328,12 @@ class MemoryRetriever:
         # 余弦相似度 (向量已归一化,点积即余弦)
         scores = np.dot(self._embeddings, query_vec.T).flatten()
 
-        # 阈值过滤 → 索引排序 → 取top_k
-        qualified = np.where(scores >= threshold)[0]
+        # 可选阈值过滤 → 索引排序 → 取 top_k；Hybrid 传 None 保留完整候选预算。
+        qualified = (
+            np.arange(len(scores))
+            if threshold is None
+            else np.where(scores >= threshold)[0]
+        )
         sorted_idx = qualified[np.argsort(scores[qualified])[::-1]]
         top_idx = sorted_idx[:top_k]
 
@@ -592,47 +638,37 @@ def _manifest_from_entries(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def _milvus_error_code(exc: Exception) -> str:
-    """Classify Milvus SDK failures into the shared tool error taxonomy."""
+def _vector_store_error_code(exc: Exception) -> str:
+    """Classify local vector-store failures into the shared error taxonomy."""
     if isinstance(exc, (ModuleNotFoundError, ImportError)):
         return ErrorCode.CONFIG_MISSING
-    message = str(exc).lower()
-    network_markers = (
-        "connection",
-        "refused",
-        "unavailable",
-        "timeout",
-        "timed out",
-        "grpc",
-        "failed to connect",
-    )
-    if any(marker in message for marker in network_markers):
-        return ErrorCode.NETWORK_ERROR
+    if isinstance(exc, RuntimeError) and "faiss-cpu" in str(exc):
+        return ErrorCode.CONFIG_MISSING
+    if isinstance(exc, (sqlite3.Error, OSError)):
+        return ErrorCode.INTERNAL_ERROR
     return ErrorCode.INTERNAL_ERROR
 
 
-class CollectionDimensionMismatch(ValueError):
-    """Raised when an embedding model cannot reuse an existing collection."""
+class VectorStoreDimensionMismatch(ValueError):
+    """Raised when persisted vectors do not match the configured encoder."""
 
     def __init__(
         self,
         *,
-        collection: str,
+        db_path: str,
         existing_dimension: int,
         expected_dimension: int,
         embedding_model: str,
     ) -> None:
-        self.collection = collection
+        self.db_path = db_path
         self.existing_dimension = existing_dimension
         self.expected_dimension = expected_dimension
         self.embedding_model = embedding_model
-        self.recommended_collection = f"{collection}_dim{expected_dimension}"
         super().__init__(
-            f"Milvus collection '{collection}' has vector dimension "
+            f"SQLite vector store '{db_path}' has vector dimension "
             f"{existing_dimension}, but embedding model '{embedding_model}' returns "
-            f"{expected_dimension}. Keep the old collection for rollback and set "
-            f"MILVUS_COLLECTION_NAME={self.recommended_collection}, then re-index "
-            "the knowledge files."
+            f"{expected_dimension}. Back up or clear the database, then rebuild the "
+            "knowledge index with the configured embedding model."
         )
 
 
@@ -649,80 +685,403 @@ class EmbeddingModelUnavailable(RuntimeError):
         )
 
 
-class MilvusRetriever:
-    """Persistent vector retriever backed by a configured Milvus collection.
+class BM25Retriever:
+    """In-memory BM25 index over the same structured chunks as dense retrieval."""
 
-    Responsibility:
-        Store sentence-aware chunks and normalized embeddings in exactly one
-        configured collection, then return thresholded COSINE matches.
+    def __init__(self) -> None:
+        self._entries: Dict[int, Dict[str, Any]] = {}
+        self._source_latest_ids: Dict[str, List[int]] = {}
+        self._ordered_ids: List[int] = []
+        self._bm25 = None
 
-    Permission boundary:
-        The retriever can create, upsert, search, load, flush, and drop only
-        ``collection_name`` on ``uri``. It never executes user-provided SQL,
-        shell commands, or arbitrary collection operations.
+    @property
+    def document_count(self) -> int:
+        return len(self._entries)
 
-    Public contract:
-        ``add_documents`` and ``search`` return ``ToolResult``. Search results
-        expose content, score, index, source, and optional section_path.
-    """
+    def _rebuild_index(self) -> None:
+        _, bm25_class = _bm25_dependencies()
+        self._ordered_ids = list(self._entries)
+        if not self._ordered_ids:
+            self._bm25 = None
+            return
+        corpus = [
+            _tokenize_for_bm25(self._entries[chunk_id]["embedding_text"])
+            for chunk_id in self._ordered_ids
+        ]
+        self._bm25 = bm25_class(corpus)
+        # BM25Okapi's epsilon floor can stay negative on a very small corpus.
+        # Use the common positive-IDF variant so an exact match never ranks
+        # below a document with zero term overlap.
+        corpus_size = len(corpus)
+        document_frequency: Dict[str, int] = {}
+        for tokens in corpus:
+            for token in set(tokens):
+                document_frequency[token] = document_frequency.get(token, 0) + 1
+        self._bm25.idf = {
+            token: float(
+                np.log(1.0 + (corpus_size - frequency + 0.5) / (frequency + 0.5))
+            )
+            for token, frequency in document_frequency.items()
+        }
+        self._bm25.average_idf = float(
+            np.mean(list(self._bm25.idf.values())) if self._bm25.idf else 0.0
+        )
 
-    _COLLECTION_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,254}$")
-    _SUPPORTED_INDEX_TYPES = {"IVF_FLAT", "FLAT"}
-    _SUPPORTED_METRICS = {"COSINE"}
+    def add_documents(
+        self,
+        docs: List[str],
+        sources: Optional[Sequence[str]] = None,
+    ) -> ToolResult:
+        """Chunk and index documents; re-ingesting a source removes stale chunks."""
+        try:
+            _bm25_dependencies()
+            entries = _build_chunk_entries(docs, list(sources or []))
+            if not entries:
+                return ToolResult.ok(
+                    data={"upserted": 0, "removed": 0},
+                    backend="bm25",
+                    total_docs=self.document_count,
+                )
+
+            grouped: Dict[str, List[int]] = {}
+            for entry in entries:
+                source = str(entry.get("source") or "")
+                if source:
+                    grouped.setdefault(source, []).append(int(entry["id"]))
+
+            removed_ids = set()
+            for source, new_ids in grouped.items():
+                removed_ids.update(
+                    chunk_id
+                    for chunk_id in self._source_latest_ids.get(source, [])
+                    if chunk_id not in set(new_ids)
+                )
+                self._source_latest_ids[source] = list(new_ids)
+            for chunk_id in removed_ids:
+                self._entries.pop(chunk_id, None)
+
+            replaced = sum(
+                1 for entry in entries if int(entry["id"]) in self._entries
+            )
+            for entry in entries:
+                self._entries[int(entry["id"])] = dict(entry)
+            self._rebuild_index()
+            return ToolResult.ok(
+                data={
+                    "upserted": len(entries),
+                    "removed": len(removed_ids) + replaced,
+                    "manifest": _manifest_from_entries(entries),
+                },
+                backend="bm25",
+                total_docs=self.document_count,
+            )
+        except RuntimeError as exc:
+            return ToolResult.fail(ErrorCode.CONFIG_MISSING, str(exc), backend="bm25")
+        except Exception as exc:
+            return ToolResult.fail(
+                ErrorCode.INTERNAL_ERROR,
+                f"BM25 indexing failed: {exc}",
+                backend="bm25",
+            )
+
+    def search(self, query: str, top_k: int = 20) -> ToolResult:
+        """Return positive-scoring BM25 candidates in descending score order."""
+        if not isinstance(query, str) or not query.strip():
+            return ToolResult.ok(
+                data=[], mode="bm25", backend="bm25",
+                total_docs=self.document_count, note="Empty query",
+            )
+        err = check_int_range(top_k, "top_k", TOP_K_MIN, TOP_K_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err, backend="bm25")
+        if self._bm25 is None:
+            return ToolResult.ok(
+                data=[], mode="bm25", backend="bm25",
+                total_docs=self.document_count,
+                note="Knowledge base is empty",
+            )
+        try:
+            tokens = _tokenize_for_bm25(query)
+            if not tokens:
+                return ToolResult.ok(
+                    data=[], mode="bm25", backend="bm25",
+                    total_docs=self.document_count,
+                )
+            scores = self._bm25.get_scores(tokens)
+            ranked = sorted(
+                range(len(scores)),
+                key=lambda index: (-float(scores[index]), index),
+            )
+            results = []
+            for position in ranked:
+                score = float(scores[position])
+                if score <= 0:
+                    continue
+                entry = self._entries[self._ordered_ids[position]]
+                results.append(
+                    {
+                        "content": entry["content"],
+                        "score": score,
+                        "index": int(entry["id"]),
+                        "source": entry["source"],
+                        "section_path": entry["section_path"],
+                    }
+                )
+                if len(results) >= top_k:
+                    break
+            return ToolResult.ok(
+                data=results,
+                mode="bm25",
+                backend="bm25",
+                total_docs=self.document_count,
+            )
+        except RuntimeError as exc:
+            return ToolResult.fail(ErrorCode.CONFIG_MISSING, str(exc), backend="bm25")
+        except Exception as exc:
+            return ToolResult.fail(
+                ErrorCode.INTERNAL_ERROR,
+                f"BM25 search failed: {exc}",
+                backend="bm25",
+            )
+
+    def clear(self) -> ToolResult:
+        self._entries = {}
+        self._source_latest_ids = {}
+        self._ordered_ids = []
+        self._bm25 = None
+        return ToolResult.ok(data={"cleared": True}, backend="bm25")
+
+
+class HybridRetriever:
+    """Fuse dense and BM25 ranks with RRF while preserving retriever inputs."""
 
     def __init__(
         self,
-        uri: str,
-        collection_name: str = DEFAULT_KNOWLEDGE_COLLECTION,
-        token: str = "",
+        dense_retriever: Any,
+        lexical_retriever: Optional[BM25Retriever] = None,
+        *,
+        candidate_k: int = 20,
+        rrf_k: int = 60,
+    ) -> None:
+        if check_int_range(candidate_k, "candidate_k", TOP_K_MIN, TOP_K_MAX):
+            raise ValueError("candidate_k must be between 1 and 100")
+        if not isinstance(rrf_k, int) or rrf_k <= 0:
+            raise ValueError("rrf_k must be a positive integer")
+        self.dense = dense_retriever
+        self.lexical = lexical_retriever or BM25Retriever()
+        self.candidate_k = candidate_k
+        self.rrf_k = rrf_k
+
+    @property
+    def document_count(self) -> int:
+        return max(
+            int(getattr(self.dense, "document_count", 0)),
+            self.lexical.document_count,
+        )
+
+    def add_documents(
+        self,
+        docs: List[str],
+        sources: Optional[Sequence[str]] = None,
+    ) -> ToolResult:
+        """Write identical source documents to both routes or expose the failure."""
+        normalized_sources = list(sources or [])
+        dense_result = self.dense.add_documents(docs, normalized_sources)
+        if not dense_result.ok:
+            return dense_result
+        lexical_result = self.lexical.add_documents(docs, normalized_sources)
+        if not lexical_result.ok:
+            return lexical_result
+        return ToolResult.ok(
+            data=lexical_result.data,
+            backend="hybrid",
+            dense_backend=dense_result.meta.get("backend", "dense"),
+            total_docs=self.document_count,
+        )
+
+    @staticmethod
+    def _dedupe_key(item: Dict[str, Any]) -> tuple:
+        return (
+            str(item.get("source") or "").strip().lower(),
+            re.sub(r"\s+", " ", str(item.get("content") or "")).strip().lower(),
+        )
+
+    def _fuse(
+        self,
+        dense_items: Sequence[Dict[str, Any]],
+        lexical_items: Sequence[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        fused: Dict[tuple, Dict[str, Any]] = {}
+        for route, items in (("dense", dense_items), ("bm25", lexical_items)):
+            for rank, item in enumerate(items, start=1):
+                key = self._dedupe_key(item)
+                if not key[1]:
+                    continue
+                bucket = fused.setdefault(
+                    key,
+                    {
+                        **item,
+                        "score": 0.0,
+                        "score_type": "rrf",
+                        "retrieval_routes": [],
+                    },
+                )
+                bucket["score"] += 1.0 / (self.rrf_k + rank)
+                bucket[f"{route}_score"] = float(item.get("score", 0.0))
+                bucket[f"{route}_rank"] = rank
+                bucket["retrieval_routes"].append(route)
+                for field in ("source", "section_path", "index"):
+                    if not bucket.get(field) and item.get(field) is not None:
+                        bucket[field] = item[field]
+        return sorted(
+            fused.values(),
+            key=lambda item: (
+                -float(item["score"]),
+                min(item.get("dense_rank", 10**9), item.get("bm25_rank", 10**9)),
+                str(item.get("source") or ""),
+                str(item.get("content") or ""),
+            ),
+        )
+
+    def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        threshold: float = 0.3,
+    ) -> ToolResult:
+        """Recall both routes without pre-filtering Dense candidates, then apply RRF."""
+        if not isinstance(query, str) or not query.strip():
+            return ToolResult.ok(
+                data=[], mode="hybrid", fusion="rrf", backend="hybrid",
+                total_docs=self.document_count, note="Empty query",
+            )
+        err = check_int_range(top_k, "top_k", TOP_K_MIN, TOP_K_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err, backend="hybrid")
+        err = check_float_range(threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX)
+        if err:
+            return ToolResult.fail(ErrorCode.INVALID_PARAM, err, backend="hybrid")
+
+        candidate_k = min(TOP_K_MAX, max(top_k, self.candidate_k))
+        # A fixed Dense-score threshold would shrink one route before rank fusion
+        # and make its contribution query-dependent. RRF therefore receives the
+        # same candidate budget from both routes. ``threshold`` remains in this
+        # public signature for compatibility with the shared Retriever interface.
+        dense_result = self.dense.search(query, candidate_k, None)
+        if not dense_result.ok:
+            return dense_result
+        lexical_result = self.lexical.search(query, candidate_k)
+        if not lexical_result.ok:
+            return lexical_result
+
+        dense_mode = str(dense_result.meta.get("mode") or "dense")
+        dense_items = [] if dense_mode == "keyword" else list(dense_result.data or [])
+        lexical_items = list(lexical_result.data or [])
+        ranked = self._fuse(dense_items, lexical_items)
+        mode = "hybrid" if dense_items else "bm25"
+        return ToolResult.ok(
+            data=ranked[:top_k],
+            mode=mode,
+            backend="hybrid",
+            fusion="rrf",
+            score_type="rrf",
+            rrf_k=self.rrf_k,
+            candidate_k=candidate_k,
+            dense_candidates=len(dense_items),
+            bm25_candidates=len(lexical_items),
+            dense_threshold_applied=False,
+            dense_mode=dense_mode,
+            dense_meta=dict(dense_result.meta),
+            total_docs=self.document_count,
+        )
+
+    def clear(self) -> ToolResult:
+        dense_result = self.dense.clear()
+        lexical_result = self.lexical.clear()
+        if dense_result.ok and lexical_result.ok:
+            return ToolResult.ok(data={"cleared": True}, backend="hybrid")
+        return dense_result if not dense_result.ok else lexical_result
+
+    def close(self) -> None:
+        if hasattr(self.dense, "close"):
+            self.dense.close()
+
+
+class VectorStoreModelMismatch(ValueError):
+    """Raised when persisted vectors were created by another encoder."""
+
+    def __init__(self, db_path: str, stored_model: str, expected_model: str) -> None:
+        self.db_path = db_path
+        self.stored_model = stored_model
+        self.expected_model = expected_model
+        super().__init__(
+            f"SQLite vector store '{db_path}' was built with embedding model "
+            f"'{stored_model}', but the configured model is '{expected_model}'. "
+            "Back up or clear the database, then rebuild the knowledge index."
+        )
+
+
+class SQLiteFaissRetriever:
+    """Persist chunks and vectors in SQLite, then search them with FAISS.
+
+    Responsibility:
+        The class owns one local database, performs idempotent source replacement,
+        rebuilds an in-process ``IndexFlatIP`` from persisted normalized vectors,
+        and returns cosine-similarity matches with optional score filtering.
+
+    Permission boundary:
+        It may create the parent directory and read/write only ``db_path``. SQL is
+        static and parameters are bound; callers cannot provide SQL fragments.
+
+    Error contract:
+        Public operations return ``ToolResult``. Missing FAISS/embedding packages
+        are configuration errors; incompatible persisted vectors are conflicts;
+        SQLite and unexpected runtime failures are internal errors.
+    """
+
+    backend_name = "sqlite_faiss"
+
+    def __init__(
+        self,
+        db_path: str = DEFAULT_KNOWLEDGE_DB_PATH,
         embedding_model: str = DEFAULT_EMBEDDING_MODEL,
         device: str = "cpu",
-        index_type: str = "IVF_FLAT",
-        metric_type: str = "COSINE",
-        nlist: int = 128,
-        nprobe: int = 16,
         timeout_seconds: float = 3.0,
-    ):
-        if not isinstance(uri, str) or not uri.strip():
-            raise ValueError("uri must be a non-empty string")
-        if not self._COLLECTION_NAME_RE.fullmatch(collection_name):
-            raise ValueError(
-                "collection_name must start with a letter or underscore and "
-                "contain only letters, digits, or underscores"
-            )
-        normalized_index = index_type.upper()
-        normalized_metric = metric_type.upper()
-        if normalized_index not in self._SUPPORTED_INDEX_TYPES:
-            raise ValueError(
-                f"Unsupported Milvus index_type: {normalized_index}"
-            )
-        if normalized_metric not in self._SUPPORTED_METRICS:
-            raise ValueError(
-                f"Unsupported Milvus metric_type: {normalized_metric}"
-            )
-        if nlist < 1 or nprobe < 1:
-            raise ValueError("nlist and nprobe must be positive integers")
+        encoder: Optional[Any] = None,
+    ) -> None:
+        if not isinstance(db_path, str) or not db_path.strip():
+            raise ValueError("db_path must be a non-empty string")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
-
-        self.uri = uri.strip()
-        self.collection_name = collection_name
-        self.token = token
+        raw_db_path = db_path.strip()
+        self.db_path = (
+            ":memory:"
+            if raw_db_path == ":memory:"
+            else str(Path(raw_db_path).expanduser())
+        )
         self.embedding_model_name = embedding_model
         self.device = device
-        self.index_type = normalized_index
-        self.metric_type = normalized_metric
-        self.nlist = nlist
-        self.nprobe = nprobe
         self.timeout_seconds = timeout_seconds
-        self._encoder = None
-        self._client = None
-        self._milvus_client_type = None
-        self._data_type = None
+        self._encoder = encoder
+        self._connection: Optional[sqlite3.Connection] = None
+        self._index = None
+        self._index_ready = False
         self._dimension: Optional[int] = None
-        self._supports_section_path = False
+        self._records_by_id: Dict[int, Dict[str, Any]] = {}
+        self._lock = threading.RLock()
 
-    def _ensure_encoder(self):
+    @staticmethod
+    def _load_faiss():
+        try:
+            import faiss
+        except (ImportError, ModuleNotFoundError) as exc:
+            raise RuntimeError(
+                "SQLite+FAISS retrieval requires 'faiss-cpu'; install the "
+                "project requirements before using this backend"
+            ) from exc
+        return faiss
+
+    def _ensure_encoder(self) -> None:
         if self._encoder is not None:
             return
         try:
@@ -738,423 +1097,445 @@ class MilvusRetriever:
                 str(exc),
             ) from exc
 
-    def _ensure_client(self):
-        if self._client is not None:
-            return self._client
-        from pymilvus import DataType, MilvusClient
-
-        kwargs: Dict[str, Any] = {
-            "uri": self.uri,
-            "timeout": self.timeout_seconds,
-        }
-        if self.token:
-            kwargs["token"] = self.token
-        self._client = MilvusClient(**kwargs)
-        self._milvus_client_type = MilvusClient
-        self._data_type = DataType
-        return self._client
-
     @staticmethod
-    def _vector_dimension(description: Dict[str, Any]) -> Optional[int]:
-        for field in description.get("fields", []):
-            if field.get("name") != "vector":
-                continue
-            params = field.get("params", {})
-            dimension = params.get("dim")
-            return int(dimension) if dimension is not None else None
-        return None
+    def _normalize(vectors: np.ndarray) -> np.ndarray:
+        matrix = np.ascontiguousarray(vectors, dtype=np.float32)
+        if matrix.ndim != 2 or matrix.shape[1] < 1:
+            raise ValueError(
+                f"Embedding model returned an invalid matrix shape: {matrix.shape}"
+            )
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        if np.any(norms <= 0):
+            raise ValueError("Embedding model returned a zero-length vector")
+        return np.ascontiguousarray(matrix / norms, dtype=np.float32)
 
-    @staticmethod
-    def _field_names(description: Dict[str, Any]) -> set[str]:
+    def _ensure_connection_locked(self) -> sqlite3.Connection:
+        if self._connection is not None:
+            return self._connection
+        if self.db_path != ":memory:":
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(
+            self.db_path,
+            timeout=self.timeout_seconds,
+            check_same_thread=False,
+        )
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS vector_store_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_chunks (
+                id INTEGER PRIMARY KEY,
+                content TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT '',
+                section_path TEXT NOT NULL DEFAULT '',
+                chunk_index INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                knowledge_version TEXT NOT NULL,
+                embedding BLOB NOT NULL,
+                embedding_dim INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source
+                ON knowledge_chunks(source);
+            """
+        )
+        connection.commit()
+        self._connection = connection
+        return connection
+
+    def _metadata_locked(self) -> Dict[str, str]:
+        connection = self._ensure_connection_locked()
         return {
-            str(field.get("name") or field.get("field_name") or "")
-            for field in description.get("fields", [])
+            str(row["key"]): str(row["value"])
+            for row in connection.execute("SELECT key, value FROM vector_store_meta")
         }
 
-    def _ensure_collection(self, dimension: int) -> None:
-        client = self._ensure_client()
-        if client.has_collection(collection_name=self.collection_name):
-            description = client.describe_collection(
-                collection_name=self.collection_name
+    def _validate_store_locked(self, dimension: int) -> None:
+        metadata = self._metadata_locked()
+        stored_model = metadata.get("embedding_model")
+        if stored_model and stored_model != self.embedding_model_name:
+            raise VectorStoreModelMismatch(
+                self.db_path,
+                stored_model,
+                self.embedding_model_name,
             )
-            existing_dimension = self._vector_dimension(description)
-            if existing_dimension is not None and existing_dimension != dimension:
-                raise CollectionDimensionMismatch(
-                    collection=self.collection_name,
-                    existing_dimension=existing_dimension,
-                    expected_dimension=dimension,
-                    embedding_model=self.embedding_model_name,
+        stored_dimension = metadata.get("embedding_dimension")
+        if stored_dimension and int(stored_dimension) != dimension:
+            raise VectorStoreDimensionMismatch(
+                db_path=self.db_path,
+                existing_dimension=int(stored_dimension),
+                expected_dimension=dimension,
+                embedding_model=self.embedding_model_name,
+            )
+
+    def _write_metadata_locked(self, dimension: int) -> None:
+        connection = self._ensure_connection_locked()
+        connection.executemany(
+            "INSERT OR REPLACE INTO vector_store_meta(key, value) VALUES (?, ?)",
+            [
+                ("embedding_model", self.embedding_model_name),
+                ("embedding_dimension", str(dimension)),
+                ("index_type", "IndexFlatIP"),
+            ],
+        )
+
+    def _rebuild_index_locked(self) -> None:
+        faiss = self._load_faiss()
+        connection = self._ensure_connection_locked()
+        rows = connection.execute(
+            """
+            SELECT id, content, source, section_path, chunk_index,
+                   embedding, embedding_dim
+            FROM knowledge_chunks
+            ORDER BY id
+            """
+        ).fetchall()
+        self._records_by_id = {}
+        if not rows:
+            self._index = None
+            self._dimension = None
+            self._index_ready = True
+            return
+
+        dimensions = {int(row["embedding_dim"]) for row in rows}
+        if len(dimensions) != 1:
+            raise ValueError("SQLite vector store contains mixed embedding dimensions")
+        dimension = dimensions.pop()
+        self._validate_store_locked(dimension)
+        vectors = []
+        ids = []
+        for row in rows:
+            vector = np.frombuffer(row["embedding"], dtype=np.float32)
+            if vector.size != dimension:
+                raise ValueError(
+                    f"Stored vector {int(row['id'])} has invalid dimension "
+                    f"{vector.size}; expected {dimension}"
                 )
-            self._supports_section_path = (
-                "section_path" in self._field_names(description)
-            )
-            self._dimension = dimension
-            self._ensure_index()
-            client.load_collection(collection_name=self.collection_name)
-            return
-
-        schema = self._milvus_client_type.create_schema(
-            auto_id=False,
-            enable_dynamic_field=False,
-        )
-        schema.add_field(
-            field_name="id",
-            datatype=self._data_type.INT64,
-            is_primary=True,
-        )
-        schema.add_field(
-            field_name="vector",
-            datatype=self._data_type.FLOAT_VECTOR,
-            dim=dimension,
-        )
-        schema.add_field(
-            field_name="content",
-            datatype=self._data_type.VARCHAR,
-            max_length=65535,
-        )
-        schema.add_field(
-            field_name="source",
-            datatype=self._data_type.VARCHAR,
-            max_length=1024,
-        )
-        schema.add_field(
-            field_name="section_path",
-            datatype=self._data_type.VARCHAR,
-            max_length=2048,
-        )
-        client.create_collection(
-            collection_name=self.collection_name,
-            schema=schema,
-            consistency_level="Strong",
-        )
-
-        self._ensure_index()
-        client.load_collection(collection_name=self.collection_name)
+            vectors.append(vector)
+            chunk_id = int(row["id"])
+            ids.append(chunk_id)
+            self._records_by_id[chunk_id] = {
+                "content": str(row["content"]),
+                "source": str(row["source"]),
+                "section_path": str(row["section_path"]),
+                "chunk_index": int(row["chunk_index"]),
+            }
+        matrix = self._normalize(np.vstack(vectors))
+        index = faiss.IndexIDMap2(faiss.IndexFlatIP(dimension))
+        index.add_with_ids(matrix, np.asarray(ids, dtype=np.int64))
+        self._index = index
         self._dimension = dimension
-        self._supports_section_path = True
+        self._index_ready = True
 
-    def _ensure_index(self) -> None:
-        """Create the configured vector index when the collection lacks it."""
-        client = self._ensure_client()
-        existing = client.list_indexes(collection_name=self.collection_name)
-        existing_names = {
-            item if isinstance(item, str) else item.get("index_name", "")
-            for item in (existing or [])
-        }
-        if "vector_index" in existing_names:
-            return
-
-        index_params = self._milvus_client_type.prepare_index_params()
-        index_kwargs: Dict[str, Any] = {
-            "field_name": "vector",
-            "index_name": "vector_index",
-            "index_type": self.index_type,
-            "metric_type": self.metric_type,
-        }
-        if self.index_type == "IVF_FLAT":
-            index_kwargs["params"] = {"nlist": self.nlist}
-        index_params.add_index(**index_kwargs)
-        client.create_index(
-            collection_name=self.collection_name,
-            index_params=index_params,
-        )
+    def _ensure_index_locked(self) -> None:
+        if not self._index_ready:
+            self._rebuild_index_locked()
 
     @property
     def document_count(self) -> int:
         try:
-            client = self._ensure_client()
-            if not client.has_collection(collection_name=self.collection_name):
-                return 0
-            stats = client.get_collection_stats(
-                collection_name=self.collection_name
-            )
-            return int(stats.get("row_count", 0))
+            with self._lock:
+                connection = self._ensure_connection_locked()
+                row = connection.execute(
+                    "SELECT COUNT(*) AS count FROM knowledge_chunks"
+                ).fetchone()
+                return int(row["count"] if row else 0)
         except Exception:
             return 0
-
-    def _delete_chunk_ids(self, chunk_ids: Sequence[int]) -> int:
-        """Delete known stale chunks by primary key from this collection."""
-        ids = [int(chunk_id) for chunk_id in chunk_ids]
-        if not ids:
-            return 0
-        client = self._ensure_client()
-        result = client.delete(collection_name=self.collection_name, ids=ids)
-        if isinstance(result, dict):
-            deleted = result.get("delete_count")
-            if deleted is not None:
-                return int(deleted)
-        return 0
-
-    def _delete_sources(self, sources: Sequence[str]) -> int:
-        """Replace persisted chunks for known sources, including after restarts."""
-        client = self._ensure_client()
-        deleted_total = 0
-        for source in dict.fromkeys(str(item) for item in sources if item):
-            source_literal = json.dumps(source, ensure_ascii=False)
-            result = client.delete(
-                collection_name=self.collection_name,
-                filter=f"source == {source_literal}",
-            )
-            if isinstance(result, dict) and result.get("delete_count") is not None:
-                deleted_total += int(result["delete_count"])
-        return deleted_total
 
     def add_documents(
         self,
         docs: List[str],
         sources: Optional[Sequence[str]] = None,
     ) -> ToolResult:
-        """Chunk, encode, and idempotently upsert documents into Milvus."""
+        """Chunk, encode, and atomically replace documents by source."""
         if not isinstance(docs, list) or any(not isinstance(doc, str) for doc in docs):
             return ToolResult.fail(
                 ErrorCode.INVALID_PARAM,
                 "docs must be a list of strings",
             )
-        normalized_sources = list(sources or [])
-        entries = _build_chunk_entries(docs, normalized_sources)
+        entries = _build_chunk_entries(docs, list(sources or []))
         if not entries:
             return ToolResult.ok(
-                data={"upserted": 0},
-                backend="milvus",
-                collection=self.collection_name,
+                data={"upserted": 0, "removed": 0},
+                backend=self.backend_name,
+                db_path=self.db_path,
             )
-        chunks = [str(entry["content"]) for entry in entries]
-        embedding_texts = [str(entry["embedding_text"]) for entry in entries]
-
         try:
+            self._load_faiss()
             self._ensure_encoder()
-            embeddings = np.asarray(
-                self._encoder.encode(
-                    embedding_texts,
-                    normalize_embeddings=True,
-                ),
-                dtype=np.float32,
-            )
-            if embeddings.ndim != 2 or embeddings.shape[0] != len(chunks):
-                raise ValueError(
-                    "Embedding model returned an invalid matrix shape: "
-                    f"{embeddings.shape}"
+            embeddings = self._normalize(
+                np.asarray(
+                    self._encoder.encode(
+                        [str(entry["embedding_text"]) for entry in entries],
+                        normalize_embeddings=True,
+                    ),
+                    dtype=np.float32,
                 )
-            self._ensure_collection(int(embeddings.shape[1]))
-            incoming_ids = [int(entry["id"]) for entry in entries]
-            source_groups: Dict[str, List[int]] = {}
-            for entry in entries:
-                source = str(entry["source"])
-                if source:
-                    source_groups.setdefault(source, []).append(int(entry["id"]))
-            source_removed = self._delete_sources(list(source_groups))
-            source_bound_ids = {
-                chunk_id
-                for chunk_ids in source_groups.values()
-                for chunk_id in chunk_ids
-            }
-            removed = self._delete_chunk_ids(
-                [chunk_id for chunk_id in incoming_ids if chunk_id not in source_bound_ids]
             )
-            rows = []
-            for index, entry in enumerate(entries):
-                row = {
-                    "id": int(entry["id"]),
-                    "vector": embeddings[index].tolist(),
-                    "content": str(entry["content"]),
-                    "source": str(entry["source"]),
-                }
-                if self._supports_section_path:
-                    row["section_path"] = str(entry["section_path"])
-                rows.append(row)
-            result = self._client.upsert(
-                collection_name=self.collection_name,
-                data=rows,
-            )
-            self._client.flush(collection_name=self.collection_name)
+            if embeddings.shape[0] != len(entries):
+                raise ValueError(
+                    "Embedding model returned an invalid row count: "
+                    f"{embeddings.shape[0]} for {len(entries)} chunks"
+                )
+            dimension = int(embeddings.shape[1])
+            with self._lock:
+                connection = self._ensure_connection_locked()
+                self._validate_store_locked(dimension)
+                incoming_ids = [int(entry["id"]) for entry in entries]
+                sources_to_replace = list(
+                    dict.fromkeys(
+                        str(entry["source"])
+                        for entry in entries
+                        if str(entry["source"])
+                    )
+                )
+                existing_ids = set()
+                for source in sources_to_replace:
+                    existing_ids.update(
+                        int(row["id"])
+                        for row in connection.execute(
+                            "SELECT id FROM knowledge_chunks WHERE source = ?",
+                            (source,),
+                        )
+                    )
+                if incoming_ids:
+                    placeholders = ",".join("?" for _ in incoming_ids)
+                    existing_ids.update(
+                        int(row["id"])
+                        for row in connection.execute(
+                            f"SELECT id FROM knowledge_chunks WHERE id IN ({placeholders})",
+                            incoming_ids,
+                        )
+                    )
+                with connection:
+                    for source in sources_to_replace:
+                        connection.execute(
+                            "DELETE FROM knowledge_chunks WHERE source = ?",
+                            (source,),
+                        )
+                    connection.executemany(
+                        """
+                        INSERT OR REPLACE INTO knowledge_chunks(
+                            id, content, source, section_path, chunk_index,
+                            content_hash, knowledge_version, embedding, embedding_dim
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                int(entry["id"]),
+                                str(entry["content"]),
+                                str(entry["source"]),
+                                str(entry["section_path"]),
+                                int(entry["chunk_index"]),
+                                str(entry["content_hash"]),
+                                str(entry["version"]),
+                                embeddings[index].tobytes(),
+                                dimension,
+                            )
+                            for index, entry in enumerate(entries)
+                        ],
+                    )
+                    self._write_metadata_locked(dimension)
+                self._index_ready = False
+                self._rebuild_index_locked()
             return ToolResult.ok(
                 data={
-                    "upserted": len(rows),
-                    "removed": removed + source_removed,
-                    "primary_keys": result.get("primary_keys", []),
+                    "upserted": len(entries),
+                    "removed": len(existing_ids),
+                    "primary_keys": incoming_ids,
                     "manifest": _manifest_from_entries(entries),
                 },
-                backend="milvus",
-                collection=self.collection_name,
-                dimension=int(embeddings.shape[1]),
-                section_metadata=(
-                    "stored" if self._supports_section_path else "legacy_collection"
-                ),
+                backend=self.backend_name,
+                db_path=self.db_path,
+                dimension=dimension,
+                index_type="IndexFlatIP",
+                metric_type="COSINE",
+                section_metadata="stored",
             )
         except EmbeddingModelUnavailable as exc:
             return ToolResult.fail(
                 ErrorCode.CONFIG_MISSING,
                 str(exc),
-                collection=self.collection_name,
+                db_path=self.db_path,
                 embedding_model=exc.embedding_model,
                 fallback_reason=exc.reason,
             )
-        except CollectionDimensionMismatch as exc:
+        except (VectorStoreDimensionMismatch, VectorStoreModelMismatch) as exc:
             return ToolResult.fail(
                 ErrorCode.CONFIG_CONFLICT,
                 str(exc),
-                collection=exc.collection,
-                embedding_model=exc.embedding_model,
-                existing_dimension=exc.existing_dimension,
-                expected_dimension=exc.expected_dimension,
-                recommended_collection=exc.recommended_collection,
+                db_path=self.db_path,
+                embedding_model=self.embedding_model_name,
             )
         except ValueError as exc:
             return ToolResult.fail(ErrorCode.INVALID_PARAM, str(exc))
         except Exception as exc:
-            logger.warning("Milvus document upsert failed: %s", exc)
+            logger.warning("SQLite+FAISS document upsert failed: %s", exc)
             return ToolResult.fail(
-                _milvus_error_code(exc),
-                f"Milvus document upsert failed: {exc}",
-                collection=self.collection_name,
+                _vector_store_error_code(exc),
+                f"SQLite+FAISS document upsert failed: {exc}",
+                db_path=self.db_path,
             )
 
     def search(
         self,
         query: str,
         top_k: int = 5,
-        threshold: float = 0.3,
+        threshold: Optional[float] = 0.3,
     ) -> ToolResult:
-        """Search the configured Milvus collection using vector similarity."""
+        """Search normalized vectors with exact inner-product similarity."""
         if not isinstance(query, str) or not query.strip():
             return ToolResult.ok(
                 data=[],
-                backend="milvus",
-                collection=self.collection_name,
+                backend=self.backend_name,
+                db_path=self.db_path,
                 note="Empty query",
             )
         err = check_int_range(top_k, "top_k", TOP_K_MIN, TOP_K_MAX)
         if err:
             return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
-        err = check_float_range(threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX)
-        if err:
-            return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
-
+        if threshold is not None:
+            err = check_float_range(
+                threshold, "threshold", THRESHOLD_MIN, THRESHOLD_MAX
+            )
+            if err:
+                return ToolResult.fail(ErrorCode.INVALID_PARAM, err)
         try:
             self._ensure_encoder()
-            client = self._ensure_client()
-            if not client.has_collection(collection_name=self.collection_name):
-                return ToolResult.ok(
-                    data=[],
-                    backend="milvus",
-                    collection=self.collection_name,
-                    total_docs=0,
-                    note="Milvus collection is empty",
+            query_vector = self._normalize(
+                np.asarray(
+                    self._encoder.encode([query], normalize_embeddings=True),
+                    dtype=np.float32,
                 )
-            query_vector = np.asarray(
-                self._encoder.encode([query], normalize_embeddings=True),
-                dtype=np.float32,
             )
-            self._ensure_collection(int(query_vector.shape[1]))
-            output_fields = ["content", "source"]
-            if self._supports_section_path:
-                output_fields.append("section_path")
-            raw = client.search(
-                collection_name=self.collection_name,
-                data=[query_vector[0].tolist()],
-                anns_field="vector",
-                search_params={
-                    "metric_type": self.metric_type,
-                    "params": {"nprobe": self.nprobe},
-                },
-                limit=top_k,
-                output_fields=output_fields,
-                consistency_level="Strong",
-            )
-            hits = raw[0] if raw else []
-            seen = set()
-            results = []
-            for hit in hits:
-                score = float(hit.get("distance", hit.get("score", 0.0)))
-                if score < threshold:
-                    continue
-                entity = hit.get("entity", {}) or {}
-                content = entity.get("content", "")
-                if not content or content in seen:
-                    continue
-                seen.add(content)
-                results.append(
-                    {
-                        "content": content,
-                        "score": score,
-                        "index": int(hit.get("id", _stable_chunk_id(content))),
-                        "source": entity.get("source", ""),
-                        "section_path": entity.get("section_path", ""),
-                    }
-                )
+            with self._lock:
+                self._ensure_index_locked()
+                total_docs = len(self._records_by_id)
+                if self._index is None or total_docs == 0:
+                    return ToolResult.ok(
+                        data=[],
+                        backend=self.backend_name,
+                        db_path=self.db_path,
+                        total_docs=0,
+                        note="SQLite vector store is empty",
+                    )
+                if query_vector.shape[1] != self._dimension:
+                    raise VectorStoreDimensionMismatch(
+                        db_path=self.db_path,
+                        existing_dimension=int(self._dimension or 0),
+                        expected_dimension=int(query_vector.shape[1]),
+                        embedding_model=self.embedding_model_name,
+                    )
+                candidate_count = min(total_docs, max(top_k * 4, top_k))
+                scores, ids = self._index.search(query_vector, candidate_count)
+                seen = set()
+                results = []
+                for score, chunk_id in zip(scores[0], ids[0]):
+                    if int(chunk_id) < 0:
+                        continue
+                    if threshold is not None and float(score) < threshold:
+                        continue
+                    record = self._records_by_id.get(int(chunk_id))
+                    if not record or record["content"] in seen:
+                        continue
+                    seen.add(record["content"])
+                    results.append(
+                        {
+                            "content": record["content"],
+                            "score": float(score),
+                            "index": int(chunk_id),
+                            "source": record["source"],
+                            "section_path": record["section_path"],
+                            "chunk_index": record["chunk_index"],
+                        }
+                    )
+                    if len(results) >= top_k:
+                        break
             return ToolResult.ok(
                 data=results,
-                backend="milvus",
-                collection=self.collection_name,
-                total_docs=self.document_count,
-                metric_type=self.metric_type,
-                index_type=self.index_type,
+                backend=self.backend_name,
+                db_path=self.db_path,
+                total_docs=total_docs,
+                metric_type="COSINE",
+                index_type="IndexFlatIP",
                 embedding_model=self.embedding_model_name,
             )
         except EmbeddingModelUnavailable as exc:
             return ToolResult.fail(
                 ErrorCode.CONFIG_MISSING,
                 str(exc),
-                collection=self.collection_name,
+                db_path=self.db_path,
                 embedding_model=exc.embedding_model,
                 fallback_reason=exc.reason,
             )
-        except CollectionDimensionMismatch as exc:
+        except (VectorStoreDimensionMismatch, VectorStoreModelMismatch) as exc:
             return ToolResult.fail(
                 ErrorCode.CONFIG_CONFLICT,
                 str(exc),
-                collection=exc.collection,
-                embedding_model=exc.embedding_model,
-                existing_dimension=exc.existing_dimension,
-                expected_dimension=exc.expected_dimension,
-                recommended_collection=exc.recommended_collection,
+                db_path=self.db_path,
+                embedding_model=self.embedding_model_name,
             )
         except Exception as exc:
-            logger.warning("Milvus search failed: %s", exc)
+            logger.warning("SQLite+FAISS search failed: %s", exc)
             return ToolResult.fail(
-                _milvus_error_code(exc),
-                f"Milvus search failed: {exc}",
-                collection=self.collection_name,
+                _vector_store_error_code(exc),
+                f"SQLite+FAISS search failed: {exc}",
+                db_path=self.db_path,
             )
 
     def clear(self) -> ToolResult:
-        """Drop only the configured collection and reset local state."""
+        """Delete only vector-store rows in the configured database."""
         try:
-            client = self._ensure_client()
-            if client.has_collection(collection_name=self.collection_name):
-                client.drop_collection(collection_name=self.collection_name)
-            self._dimension = None
+            with self._lock:
+                connection = self._ensure_connection_locked()
+                with connection:
+                    connection.execute("DELETE FROM knowledge_chunks")
+                    connection.execute("DELETE FROM vector_store_meta")
+                self._index = None
+                self._index_ready = True
+                self._dimension = None
+                self._records_by_id = {}
             return ToolResult.ok(
                 data={"cleared": True},
-                backend="milvus",
-                collection=self.collection_name,
+                backend=self.backend_name,
+                db_path=self.db_path,
             )
         except Exception as exc:
             return ToolResult.fail(
-                _milvus_error_code(exc),
-                f"Milvus clear failed: {exc}",
-                collection=self.collection_name,
+                _vector_store_error_code(exc),
+                f"SQLite+FAISS clear failed: {exc}",
+                db_path=self.db_path,
             )
 
     def close(self) -> None:
-        if self._client is not None and hasattr(self._client, "close"):
-            self._client.close()
-        self._client = None
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+            self._connection = None
+            self._index = None
+            self._index_ready = False
+            self._records_by_id = {}
 
 
 class ResilientRetriever:
-    """Prefer Milvus and hydrate an in-memory fallback after a Milvus failure."""
+    """Prefer the configured vector store and hydrate an in-memory fallback on failure."""
 
     def __init__(
         self,
-        primary: MilvusRetriever,
+        primary: Any,
         fallback: MemoryRetriever,
         fallback_enabled: bool = True,
     ):
         self.primary = primary
         self.fallback = fallback
         self.fallback_enabled = fallback_enabled
-        self._active_backend = "milvus"
+        self._primary_backend = getattr(primary, "backend_name", "sqlite_faiss")
+        self._active_backend = self._primary_backend
         self._documents: List[str] = []
         self._sources: List[str] = []
         self._latest_by_source: Dict[str, str] = {}
@@ -1179,7 +1560,8 @@ class ResilientRetriever:
         return ToolResult.ok(
             data={"fallback_activated": True},
             backend="memory",
-            fallback_from="milvus",
+            degraded=True,
+            fallback_from=self._primary_backend,
             fallback_reason=self._fallback_reason,
         )
 
@@ -1187,7 +1569,8 @@ class ResilientRetriever:
         result.meta.update(
             {
                 "backend": "memory",
-                "fallback_from": "milvus",
+                "degraded": True,
+                "fallback_from": self._primary_backend,
                 "fallback_reason": self._fallback_reason,
             }
         )
@@ -1229,7 +1612,7 @@ class ResilientRetriever:
         self,
         query: str,
         top_k: int = 5,
-        threshold: float = 0.3,
+        threshold: Optional[float] = 0.3,
     ) -> ToolResult:
         if self._active_backend == "memory":
             return self._decorate(self.fallback.search(query, top_k, threshold))
@@ -1248,10 +1631,13 @@ class ResilientRetriever:
         self._sources = []
         self._latest_by_source = {}
         self._fallback_hydrated = False
-        self._active_backend = "milvus"
+        self._active_backend = self._primary_backend
         self._fallback_reason = ""
         if primary_result.ok and fallback_result.ok:
-            return ToolResult.ok(data={"cleared": True}, backend="milvus+memory")
+            return ToolResult.ok(
+                data={"cleared": True},
+                backend=f"{self._primary_backend}+memory",
+            )
         return primary_result if not primary_result.ok else fallback_result
 
     def close(self) -> None:
@@ -1266,24 +1652,19 @@ _loaded_knowledge_dirs = set()
 
 
 def get_shared_retriever():
-    """Get the shared Milvus-backed retriever or the configured memory backend."""
+    """Build the configured dense backend and optionally wrap it with BM25+RRF."""
     global _shared_retriever
     if _shared_retriever is None:
         from app.config import config
 
-        if config.retriever_backend == "milvus":
-            primary = MilvusRetriever(
-                uri=config.milvus_uri,
-                collection_name=config.milvus_collection_name,
-                token=config.milvus_token,
+        if config.retriever_backend == "sqlite_faiss":
+            primary = SQLiteFaissRetriever(
+                db_path=config.retriever_db_path,
                 embedding_model=config.embedding_model,
-                index_type=config.milvus_index_type,
-                nlist=config.milvus_nlist,
-                nprobe=config.milvus_nprobe,
-                timeout_seconds=config.milvus_timeout_seconds,
+                timeout_seconds=config.retriever_timeout_seconds,
             )
             if config.retriever_fallback_to_memory:
-                _shared_retriever = ResilientRetriever(
+                dense_retriever = ResilientRetriever(
                     primary=primary,
                     fallback=MemoryRetriever(
                         embedding_model=config.embedding_model,
@@ -1291,9 +1672,9 @@ def get_shared_retriever():
                     fallback_enabled=True,
                 )
             else:
-                _shared_retriever = primary
+                dense_retriever = primary
         elif config.retriever_backend == "memory":
-            _shared_retriever = MemoryRetriever(
+            dense_retriever = MemoryRetriever(
                 embedding_model=config.embedding_model,
             )
         else:
@@ -1301,9 +1682,17 @@ def get_shared_retriever():
                 "Unknown RETRIEVER_BACKEND '%s'; using memory backend",
                 config.retriever_backend,
             )
-            _shared_retriever = MemoryRetriever(
+            dense_retriever = MemoryRetriever(
                 embedding_model=config.embedding_model,
             )
+        if config.retriever_strategy == "hybrid":
+            _shared_retriever = HybridRetriever(
+                dense_retriever,
+                candidate_k=config.retriever_candidate_k,
+                rrf_k=config.retriever_rrf_k,
+            )
+        else:
+            _shared_retriever = dense_retriever
     return _shared_retriever
 
 

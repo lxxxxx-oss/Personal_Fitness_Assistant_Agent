@@ -119,7 +119,7 @@ def retrieve_nutrition_node(state: RouterState) -> RouterState:
         public_mode,
         degraded=bool(fallback_from) or retrieval_mode == "keyword" or not result.ok,
         detail=(
-            "Milvus unavailable; using in-memory retrieval"
+            "Vector store unavailable; using in-memory retrieval"
             if fallback_from
             else (
                 "Embedding model unavailable; using keyword matching"

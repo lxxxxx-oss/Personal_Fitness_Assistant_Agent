@@ -35,14 +35,14 @@ def test_extractive_summary_is_bounded_and_uses_original_snippets():
 def test_compaction_waits_until_old_messages_cross_threshold(tmp_path):
     store = ConversationStore(str(tmp_path / "memory.db"))
     conversation_id = store.get_or_create_conversation("u1")
-    _add_turns(store, conversation_id, 4, content_size=5)
+    _add_turns(store, conversation_id, 7, content_size=5)
 
     result = maybe_compact_conversation(
         store,
         conversation_id,
         "u1",
         trigger_chars=1000,
-        keep_recent_messages=6,
+        keep_recent_messages=12,
     )
 
     assert result["updated"] is False
@@ -50,24 +50,24 @@ def test_compaction_waits_until_old_messages_cross_threshold(tmp_path):
     assert store.get_active_summary(conversation_id, "u1") is None
 
 
-def test_compaction_keeps_recent_three_turns_and_advances_boundary(tmp_path):
+def test_compaction_keeps_recent_six_turns_and_advances_boundary(tmp_path):
     store = ConversationStore(str(tmp_path / "memory.db"))
     conversation_id = store.get_or_create_conversation("u1")
-    _add_turns(store, conversation_id, 6)
+    _add_turns(store, conversation_id, 12)
 
     result = maybe_compact_conversation(
         store,
         conversation_id,
         "u1",
         trigger_chars=1,
-        keep_recent_messages=6,
+        keep_recent_messages=12,
         max_summary_chars=500,
     )
 
     assert result["updated"] is True
-    assert result["compacted_message_count"] == 6
-    assert result["remaining_message_count"] == 6
-    assert len(store.get_uncompacted_messages(conversation_id, "u1")) == 6
+    assert result["compacted_message_count"] == 12
+    assert result["remaining_message_count"] == 12
+    assert len(store.get_uncompacted_messages(conversation_id, "u1")) == 12
     assert store.get_active_summary(conversation_id, "u1")["content"]
 
 
@@ -76,13 +76,13 @@ def test_incremental_compaction_reuses_active_summary_without_reprocessing_bound
 ):
     store = ConversationStore(str(tmp_path / "memory.db"))
     conversation_id = store.get_or_create_conversation("u1")
-    _add_turns(store, conversation_id, 6)
+    _add_turns(store, conversation_id, 12)
     first = maybe_compact_conversation(
         store,
         conversation_id,
         "u1",
         trigger_chars=1,
-        keep_recent_messages=6,
+        keep_recent_messages=12,
     )
     first_summary = store.get_active_summary(conversation_id, "u1")["content"]
     _add_turns(store, conversation_id, 3)
@@ -92,7 +92,7 @@ def test_incremental_compaction_reuses_active_summary_without_reprocessing_bound
         conversation_id,
         "u1",
         trigger_chars=1,
-        keep_recent_messages=6,
+        keep_recent_messages=12,
     )
     second_summary = store.get_active_summary(conversation_id, "u1")["content"]
 
@@ -101,4 +101,4 @@ def test_incremental_compaction_reuses_active_summary_without_reprocessing_bound
     assert "已有会话摘要" in second_summary
     assert "第0个问题" in second_summary
     assert "第5个回答" in second_summary
-    assert len(store.get_uncompacted_messages(conversation_id, "u1")) == 6
+    assert len(store.get_uncompacted_messages(conversation_id, "u1")) == 12

@@ -4,19 +4,19 @@ import pytest
 
 from app.config import (
     DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_KNOWLEDGE_COLLECTION,
-    DEFAULT_MEMORY_COLLECTION,
+    DEFAULT_KNOWLEDGE_DB_PATH,
+    DEFAULT_MEMORY_VECTOR_DB_PATH,
     Config,
 )
 
 
-def test_embedding_defaults_use_model_specific_collections(monkeypatch):
+def test_local_vector_store_defaults(monkeypatch):
     for name in (
         "EMBEDDING_MODEL",
         "ROUTER_EMBEDDING_MODEL",
-        "MILVUS_COLLECTION_NAME",
-        "MILVUS_COLLECTION",
-        "MEMORY_MILVUS_COLLECTION_NAME",
+        "RETRIEVER_BACKEND",
+        "RETRIEVER_DB_PATH",
+        "MEMORY_VECTOR_DB_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -24,8 +24,25 @@ def test_embedding_defaults_use_model_specific_collections(monkeypatch):
 
     assert config.embedding_model == DEFAULT_EMBEDDING_MODEL
     assert config.router_embedding_model == DEFAULT_EMBEDDING_MODEL
-    assert config.milvus_collection_name == DEFAULT_KNOWLEDGE_COLLECTION
-    assert config.memory_milvus_collection_name == DEFAULT_MEMORY_COLLECTION
+    assert config.retriever_backend == "sqlite_faiss"
+    assert config.retriever_db_path == DEFAULT_KNOWLEDGE_DB_PATH
+    assert config.memory_vector_db_path == DEFAULT_MEMORY_VECTOR_DB_PATH
+
+
+def test_local_vector_store_environment_values(monkeypatch):
+    monkeypatch.setenv("RETRIEVER_BACKEND", "memory")
+    monkeypatch.setenv("RETRIEVER_DB_PATH", "tmp/custom-knowledge.db")
+    monkeypatch.setenv("MEMORY_VECTOR_ENABLED", "true")
+    monkeypatch.setenv("MEMORY_VECTOR_DB_PATH", "tmp/custom-memory.db")
+    monkeypatch.setenv("RETRIEVER_TIMEOUT_SECONDS", "1.5")
+
+    config = Config()
+
+    assert config.retriever_backend == "memory"
+    assert config.retriever_db_path == "tmp/custom-knowledge.db"
+    assert config.memory_vector_enabled is True
+    assert config.memory_vector_db_path == "tmp/custom-memory.db"
+    assert config.retriever_timeout_seconds == 1.5
 
 
 def test_float_environment_values_are_parsed(monkeypatch):
@@ -42,6 +59,32 @@ def test_float_environment_values_are_parsed(monkeypatch):
     assert config.retriever_chunk_chars == 256
     assert config.retriever_chunk_overlap_chars == 32
     assert config.retriever_knowledge_version == "kb-2026-07"
+
+
+def test_hybrid_retrieval_defaults_and_environment_values(monkeypatch):
+    monkeypatch.delenv("RETRIEVER_STRATEGY", raising=False)
+    monkeypatch.delenv("RETRIEVER_CANDIDATE_K", raising=False)
+    monkeypatch.delenv("RETRIEVER_RRF_K", raising=False)
+
+    defaults = Config()
+    assert defaults.retriever_strategy == "hybrid"
+    assert defaults.retriever_candidate_k == 20
+    assert defaults.retriever_rrf_k == 60
+
+    monkeypatch.setenv("RETRIEVER_STRATEGY", "dense")
+    monkeypatch.setenv("RETRIEVER_CANDIDATE_K", "12")
+    monkeypatch.setenv("RETRIEVER_RRF_K", "50")
+    configured = Config()
+    assert configured.retriever_strategy == "dense"
+    assert configured.retriever_candidate_k == 12
+    assert configured.retriever_rrf_k == 50
+
+
+def test_hybrid_retrieval_config_rejects_invalid_values():
+    with pytest.raises(ValueError, match="RETRIEVER_STRATEGY"):
+        Config(retriever_strategy="weighted")
+    with pytest.raises(ValueError, match="RETRIEVER_CANDIDATE_K"):
+        Config(retriever_candidate_k=101)
 
 
 def test_invalid_float_environment_value_uses_default(monkeypatch):
@@ -62,14 +105,12 @@ def test_conversation_summary_config_is_bounded_by_explicit_values(monkeypatch):
     monkeypatch.setenv("CONVERSATION_SUMMARY_ENABLED", "false")
     monkeypatch.setenv("CONVERSATION_SUMMARY_TRIGGER_CHARS", "2400")
     monkeypatch.setenv("CONVERSATION_SUMMARY_MAX_CHARS", "900")
-    monkeypatch.setenv("CONVERSATION_SUMMARY_KEEP_RECENT_MESSAGES", "8")
 
     config = Config()
 
     assert config.conversation_summary_enabled is False
     assert config.conversation_summary_trigger_chars == 2400
     assert config.conversation_summary_max_chars == 900
-    assert config.conversation_summary_keep_recent_messages == 8
 
 
 def test_config_rejects_prompt_limits_that_cannot_compact_safely():

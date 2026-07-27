@@ -8,7 +8,7 @@
 
 - Hybrid Router：加权规则、语义样例、歧义检测和四种白名单多意图组合；本地 Qwen Router 完成 A/B 后因无准确率收益且延迟较高而默认关闭。
 - Knowledge：产品层将 Chat/Diet 统一为 Knowledge 能力域；代码层保留两个兼容执行分支，并共用 RAG、来源约束和上下文组装。
-- RAG：Sentence-Transformers + Milvus/内存 Retriever，按标题层级、段落和句子做结构感知分块，并支持真实相邻块重叠、章节元数据、稳定主键、同源幂等替换、来源透传和失败降级；当前收录 12 份可索引知识文档，来源覆盖 WHO、CDC、ACSM、中国居民膳食指南、ISSN、NIDDK、NATA 和 AASM，并建立 21 条检索/RAGAS 黄金集及可分阶段、可断点续跑的评测入口。
+- RAG：默认由 `BAAI/bge-small-zh-v1.5` 完成 Dense 向量检索，与 BM25 各召回 20 条；融合前不做固定相似度硬过滤，经 RRF 融合去重后向本地 `Qwen3-0.6B` 注入 Top-5 证据。SQLite 持久化文本、向量与来源元数据，FAISS 在进程内重建余弦索引，并保留结构感知分块、章节透传、同源幂等替换和内存降级。当前收录 12 份可索引知识文档，并建立 21 条检索/RAGAS 黄金集、Dense/Hybrid 对比入口及可断点续跑的三指标评测入口。
 - Motion：标准参考动作分析原型，支持图片/视频转 PoseSequence、同 schema 标准视频构建、髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离，并输出可解释的结构化反馈。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - Knowledge-Diet：作为 Knowledge 内部 `diet_advice` 链路，LLM 提取结果经过 Pydantic JSON 解析、范围与枚举校验，再进入营养检索和推荐；非法输出安全降级并公开 warning。
@@ -73,19 +73,19 @@ pip install -r requirements-motion.txt
 当前自动化回归：
 
 ```text
-247 passed, 2 skipped, 1 warning
+266 passed, 1 skipped, 3 warnings
 ```
 
-默认 pytest 会 mock 本地 LLM 与部分 embedding，因此该数字主要证明代码、接口、算法和降级契约可回归。当前 warning 来自 Starlette TestClient/httpx 兼容层弃用提示，不影响测试结论。项目另有真实 Milvus 链路验证、RAG 检索评测、MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。
+默认 pytest 会 mock 本地 LLM 与部分 embedding，因此该数字主要证明代码、接口、算法和降级契约可回归。当前 warning 来自 Starlette TestClient/httpx、LangGraph 迁移提示和 jieba 间接依赖的弃用提示，不影响测试结论。项目另有 SQLite + FAISS 持久化冒烟、RAG 检索评测、MediaPipe 图片/视频冒烟和 Qwen Router A/B 记录。
 
 ## 当前边界
 
 - 当前服务定位为本地面试原型：没有登录鉴权、请求限流、会话 TTL 或多实例共享；会话与长期记忆已写入本地 SQLite，但仍不应直接暴露到公网。
-- `/health` 只是进程存活检查，不代表 Qwen、Milvus、MediaPipe、Tavily 或 MCP 已就绪。
+- `/health` 只是进程存活检查，不代表 Qwen、Embedding/FAISS、MediaPipe、Tavily 或 MCP 已就绪。
 - 会话缓冲区最多保存 6 轮，当前由 Knowledge 问答链路优先消费；跨 Search/Motion/MCP 的长期画像联动仍可继续增强。
 - MCP 默认使用 mock，是工具协议补充；真实 Server 的响应 ID、inputSchema、通知语义和兼容性治理可继续补强。
 - Motion 已完成媒体输入、标准参考构建、相似度比较、关节级定位和质量门控；正式标准样本集、动作周期切分、关键点平滑及专业专项评分仍需继续补齐。
-- Milvus 已完成真实写入/检索链路验证；21 条 RAG 黄金集已补齐参考答案，单一 RAGAS 入口会让 19 条可回答样例走真实检索与生成链路，并评估上下文相关性、忠实度和答案相关性；2 条无答案样例暂不混入这三项均分。2026-07-22 使用本地 `bge-small-zh-v1.5`、Top-5、阈值 0.5 对 81 个分块做检索冒烟，19 条可回答样例的正确来源和人工证据片段均命中 19/19；这不是三项 RAGAS 最终分数。
+- SQLite + FAISS 已完成落盘、重启重建索引和检索冒烟；默认 Hybrid Retriever 的机制与降级契约已有确定性测试。项目对外以 RAGAS 的上下文相关性、回答忠实度和答案相关性作为 RAG 主评测口径；`eval_retrieval.py` 中的 Recall@K、MRR 和延迟仅用于开发阶段定位召回与排序问题。2026-07-22 的 `19/19` 是旧 Dense、Top-5、阈值 0.5 的历史冒烟，不是当前 Hybrid 提升或完整 RAGAS 结论；19 条可回答样例的完整 RAGAS 基线仍待模型可用电脑复现。
 - 微信小程序代码链路已接通，开发者工具、真机、HTTPS 和弱网验收待完成。
 - 当前 Dockerfile 不包含 Motion 可选依赖和 MediaPipe task 模型，完整跨机器构建尚未验证。
 
@@ -103,4 +103,4 @@ pip install -r requirements-motion.txt
 
 ## 技术栈
 
-Python · FastAPI · LangGraph · Qwen3 · Sentence-Transformers · Milvus · Tavily · MediaPipe · OpenCV · NumPy · FastDTW · MCP/JSON-RPC · 微信小程序
+Python · FastAPI · LangGraph · Qwen3 · Sentence-Transformers · SQLite · FAISS · BM25/RRF · Tavily · MediaPipe · OpenCV · NumPy · FastDTW · MCP/JSON-RPC · 微信小程序

@@ -18,7 +18,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.config import config
 from app.graph.subgraphs.chat import generate_node
-from app.tools.retriever import MemoryRetriever, MilvusRetriever
+from app.tools.retriever import HybridRetriever, MemoryRetriever, SQLiteFaissRetriever
 
 
 DEFAULT_DATASET = Path("data/eval/rag_eval.jsonl")
@@ -154,8 +154,20 @@ def validate_progress_config(
     progress: Mapping[str, Any], expected: Mapping[str, Any]
 ) -> None:
     """Reject stale checkpoints instead of silently mixing unlike evaluations."""
-    actual = progress.get("config")
-    if actual != dict(expected):
+    actual = dict(progress.get("config") or {})
+    expected_config = dict(expected)
+    # Checkpoints written before hybrid retrieval existed were always dense.
+    # Supplying these defaults keeps that interrupted work resumable while still
+    # rejecting an attempt to reuse it for a hybrid evaluation.
+    legacy_defaults = {
+        "retrieval_strategy": "dense",
+        "candidate_k": 20,
+        "rrf_k": 60,
+    }
+    for key, value in legacy_defaults.items():
+        actual.setdefault(key, value)
+        expected_config.setdefault(key, value)
+    if actual != expected_config:
         raise ValueError(
             "Progress configuration does not match this run; use --fresh or a "
             "different --progress-file"
@@ -184,22 +196,35 @@ def load_knowledge(retriever: Any, knowledge_dir: Path) -> Dict[str, Any]:
     }
 
 
-def build_retriever(backend: str, embedding_model: str) -> Any:
-    """Build the requested evaluation backend without implicit fallback."""
+def build_retriever(
+    backend: str,
+    embedding_model: str,
+    *,
+    strategy: str = "dense",
+    candidate_k: int = 20,
+    rrf_k: int = 60,
+    db_path: str | Path | None = None,
+) -> Any:
+    """Build an explicit dense or hybrid evaluator without implicit fallback."""
     if backend == "memory":
-        return MemoryRetriever(embedding_model=embedding_model)
-    if backend == "milvus":
-        return MilvusRetriever(
-            uri=config.milvus_uri,
-            collection_name=config.milvus_collection_name,
-            token=config.milvus_token,
+        dense = MemoryRetriever(embedding_model=embedding_model)
+    elif backend == "sqlite_faiss":
+        dense = SQLiteFaissRetriever(
+            db_path=str(db_path or config.retriever_db_path),
             embedding_model=embedding_model,
-            index_type=config.milvus_index_type,
-            nlist=config.milvus_nlist,
-            nprobe=config.milvus_nprobe,
-            timeout_seconds=config.milvus_timeout_seconds,
+            timeout_seconds=config.retriever_timeout_seconds,
         )
-    raise ValueError(f"Unsupported retriever backend: {backend}")
+    else:
+        raise ValueError(f"Unsupported retriever backend: {backend}")
+    if strategy == "dense":
+        return dense
+    if strategy == "hybrid":
+        return HybridRetriever(
+            dense,
+            candidate_k=candidate_k,
+            rrf_k=rrf_k,
+        )
+    raise ValueError(f"Unsupported retrieval strategy: {strategy}")
 
 
 def collect_samples(
@@ -451,6 +476,9 @@ def _generation_config(args: argparse.Namespace) -> Dict[str, Any]:
         "dataset_sha256": file_sha256(args.dataset),
         "knowledge_sha256": knowledge_sha256(args.knowledge_dir),
         "retriever_backend": args.retriever_backend,
+        "retrieval_strategy": args.retrieval_strategy,
+        "candidate_k": args.candidate_k,
+        "rrf_k": args.rrf_k,
         "top_k": args.top_k,
         "threshold": args.threshold,
         "embedding_model": args.embedding_model,
@@ -458,13 +486,8 @@ def _generation_config(args: argparse.Namespace) -> Dict[str, Any]:
         "generator_model": Path(str(config.model_path)).name,
         "case_ids": sorted(set(args.case_id or [])),
     }
-    if args.retriever_backend == "milvus":
-        generation["milvus"] = {
-            "collection_name": config.milvus_collection_name,
-            "index_type": config.milvus_index_type,
-            "nlist": config.milvus_nlist,
-            "nprobe": config.milvus_nprobe,
-        }
+    if args.retriever_backend == "sqlite_faiss":
+        generation["vector_store"] = {"storage": "sqlite", "index": "IndexFlatIP"}
     return generation
 
 
@@ -482,13 +505,45 @@ def main() -> int:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--knowledge-dir", type=Path, default=DEFAULT_KNOWLEDGE_DIR)
     parser.add_argument("--top-k", type=int, default=config.retriever_top_k)
-    parser.add_argument("--threshold", type=float, default=config.retriever_threshold)
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=config.retriever_threshold,
+        help=(
+            "Minimum cosine score for dense-only retrieval; hybrid retrieval "
+            "does not pre-filter Dense candidates before RRF"
+        ),
+    )
     parser.add_argument("--embedding-model", default=config.embedding_model)
     parser.add_argument(
         "--retriever-backend",
-        choices=("memory", "milvus"),
-        default="memory",
-        help="Evaluation retriever; Milvus is direct and never silently falls back",
+        choices=("memory", "sqlite_faiss"),
+        default=config.retriever_backend,
+        help="Evaluation retriever; SQLite+FAISS is direct and never silently falls back",
+    )
+    parser.add_argument(
+        "--retriever-db-path",
+        type=Path,
+        default=Path(config.retriever_db_path),
+        help="SQLite file used by the FAISS-backed evaluator",
+    )
+    parser.add_argument(
+        "--retrieval-strategy",
+        choices=("dense", "hybrid"),
+        default=config.retriever_strategy,
+        help="Dense-only baseline or Dense + BM25 with RRF fusion",
+    )
+    parser.add_argument(
+        "--candidate-k",
+        type=int,
+        default=config.retriever_candidate_k,
+        help="Candidates recalled by each hybrid route before RRF",
+    )
+    parser.add_argument(
+        "--rrf-k",
+        type=int,
+        default=config.retriever_rrf_k,
+        help="Positive RRF smoothing constant",
     )
     parser.add_argument(
         "--judge-model",
@@ -543,6 +598,10 @@ def main() -> int:
 
     if not 1 <= args.top_k <= 100:
         parser.error("--top-k must be between 1 and 100")
+    if not 1 <= args.candidate_k <= 100:
+        parser.error("--candidate-k must be between 1 and 100")
+    if args.rrf_k < 1:
+        parser.error("--rrf-k must be positive")
     if not 0.0 <= args.threshold <= 1.0:
         parser.error("--threshold must be between 0 and 1")
     if args.max_new_cases is not None and args.max_new_cases < 1:
@@ -578,7 +637,14 @@ def main() -> int:
         parser.error(str(exc))
 
     if args.stage in {"all", "generate"}:
-        retriever = build_retriever(args.retriever_backend, args.embedding_model)
+        retriever = build_retriever(
+            args.retriever_backend,
+            args.embedding_model,
+            strategy=args.retrieval_strategy,
+            candidate_k=args.candidate_k,
+            rrf_k=args.rrf_k,
+            db_path=args.retriever_db_path,
+        )
         ingestion = load_knowledge(retriever, args.knowledge_dir)
         progress["ingestion"] = ingestion
 
@@ -660,6 +726,8 @@ def main() -> int:
         "retriever_backend": args.retriever_backend,
         "top_k": args.top_k,
         "threshold": args.threshold,
+        "threshold_scope": "dense_only",
+        "hybrid_dense_threshold_applied": False,
         "generator_model": config.model_path,
         "judge_model": args.judge_model,
         "judge_embedding_model": args.judge_embedding_model,

@@ -13,7 +13,9 @@ python-multipart>=0.0.9
 # Embedding and vector retrieval
 sentence-transformers>=3.0.0
 numpy>=1.24.0
-pymilvus>=2.5.0,<2.6.0
+faiss-cpu>=1.8.0,<2.0.0
+jieba>=0.42.1,<1.0.0
+rank-bm25>=0.2.2,<1.0.0
 
 # Motion sequence analysis
 fastdtw>=0.3.0

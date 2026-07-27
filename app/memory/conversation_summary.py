@@ -59,7 +59,7 @@ def maybe_compact_conversation(
     user_id: str,
     *,
     trigger_chars: int,
-    keep_recent_messages: int = 6,
+    keep_recent_messages: int = 12,
     max_summary_chars: int = 1200,
 ) -> Dict[str, Any]:
     """Persist an extractive summary when uncompacted older messages cross a threshold."""

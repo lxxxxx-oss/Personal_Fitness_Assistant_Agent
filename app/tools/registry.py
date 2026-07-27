@@ -309,7 +309,15 @@ def build_default_tool_registry() -> ToolRegistry:
                 "properties": {
                     "query": {"type": "string", "minLength": 1, "maxLength": 500},
                     "top_k": {"type": "integer", "minimum": 1, "maximum": 10},
-                    "threshold": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                    "threshold": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": (
+                            "Minimum cosine score in dense-only mode; accepted for "
+                            "interface compatibility but not applied before Hybrid RRF"
+                        ),
+                    },
                 },
             },
             permission="read_knowledge",
@@ -318,7 +326,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 args.get("top_k", 5),
                 args.get("threshold", 0.3),
             ),
-            timeout_seconds=config.milvus_timeout_seconds,
+            timeout_seconds=config.retriever_timeout_seconds,
             scope="knowledge",
         )
     )

@@ -212,7 +212,7 @@ def _get_memory_store():
 
                 _memory_store = MemoryStore(
                     config.memory_db_path,
-                    semantic_enabled=config.memory_milvus_enabled,
+                    semantic_enabled=config.memory_vector_enabled,
                 )
     return _memory_store
 
@@ -325,7 +325,7 @@ def _persist_conversation_turn(
             conversation_id,
             user_id,
             trigger_chars=config.conversation_summary_trigger_chars,
-            keep_recent_messages=config.conversation_summary_keep_recent_messages,
+            keep_recent_messages=config.memory_max_turns * 2,
             max_summary_chars=config.conversation_summary_max_chars,
         )
     except Exception as exc:
@@ -522,7 +522,7 @@ def reject_candidate_memory(candidate_id: str, user_id: str):
 
 @app.get("/memory/embedding-jobs", response_model=EmbeddingJobListResponse)
 def list_memory_embedding_jobs(status: str = "pending", limit: int = 50):
-    """List memory embedding jobs for the optional Milvus sync worker."""
+    """List memory embedding jobs for the optional local vector sync worker."""
     try:
         jobs = _get_memory_store().list_embedding_jobs(status=status, limit=limit)
     except ValueError as exc:

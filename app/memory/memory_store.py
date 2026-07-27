@@ -932,17 +932,12 @@ class MemoryStore:
             return self._semantic_retriever
         try:
             from app.config import config
-            from app.tools.retriever import MilvusRetriever
+            from app.tools.retriever import SQLiteFaissRetriever
 
-            self._semantic_retriever = MilvusRetriever(
-                uri=config.milvus_uri,
-                collection_name=config.memory_milvus_collection_name,
-                token=config.milvus_token,
+            self._semantic_retriever = SQLiteFaissRetriever(
+                db_path=config.memory_vector_db_path,
                 embedding_model=config.embedding_model,
-                index_type=config.milvus_index_type,
-                nlist=config.milvus_nlist,
-                nprobe=config.milvus_nprobe,
-                timeout_seconds=config.milvus_timeout_seconds,
+                timeout_seconds=config.retriever_timeout_seconds,
             )
         except Exception:
             self._semantic_retriever = None

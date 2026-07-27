@@ -155,6 +155,14 @@ class TestMemoryRetriever:
         assert result.ok
         assert len(result.data) <= 1
 
+    def test_search_can_skip_score_threshold(self, retriever, sample_docs):
+        retriever.add_documents(sample_docs)
+
+        result = retriever.search("yoga meditation", top_k=3, threshold=None)
+
+        assert result.ok
+        assert len(result.data) == 3
+
     def test_clear(self, retriever, sample_docs):
         retriever.add_documents(sample_docs)
         retriever.clear()

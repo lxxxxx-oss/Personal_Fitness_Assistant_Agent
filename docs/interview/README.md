@@ -119,7 +119,7 @@
 | 层次 | 负责什么 | 代表技术 |
 |---|---|---|
 | 控制层 | 决定任务怎样流转 | LangGraph、StateGraph、Router |
-| 能力层 | 完成检索、搜索、计算和工具调用 | RAG、Milvus、Tavily、Motion、ToolRegistry、MCP |
+| 能力层 | 完成检索、搜索、计算和工具调用 | RAG、SQLite + FAISS、Tavily、Motion、ToolRegistry、MCP |
 | 保障层 | 管理上下文、失败和质量 | Memory、PromptBuilder、ToolResult、fallback、测试与评测 |
 
 先记住三层关系，再学习具体名词。面试时也应该先讲系统结构，再展开某个技术点。

@@ -19,7 +19,7 @@ class ConversationStore:
 
     This is Phase 1 of the memory optimization roadmap. It deliberately stores
     only conversation history and lightweight session state. Long-term memory
-    tables, Memory Writer, FTS5, and Milvus user-memory sync are later phases.
+    tables, Memory Writer, FTS5, and local vector-memory sync are later phases.
     """
 
     def __init__(self, db_path: str):

@@ -15,7 +15,7 @@ def test_main_helpers_persist_update_and_reload_summary(monkeypatch, tmp_path):
     monkeypatch.setattr(main_module.config, "conversation_summary_max_chars", 500)
     monkeypatch.setattr(main_module, "_remember_explicit_user_memory", lambda *args: None)
 
-    for index in range(6):
+    for index in range(9):
         result = main_module._persist_conversation_turn(
             memory,
             conversation_id,
@@ -31,7 +31,7 @@ def test_main_helpers_persist_update_and_reload_summary(monkeypatch, tmp_path):
 
     assert state["_conversation_summary"]
     assert "conversation_summary" in state["_execution"][0]["component"]
-    assert len(state["memory"]) == 6
+    assert len(state["memory"]) == 12
     assert "第0个问题" not in " ".join(item["content"] for item in state["memory"])
     assert "当前会话摘要" in prompt
     assert state["_conversation_summary"] in prompt

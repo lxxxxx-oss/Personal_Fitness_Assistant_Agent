@@ -24,12 +24,12 @@
 
 - 会话与长期记忆使用 SQLite 持久化。
 - `summaries`、active/superseded 状态和 `last_compacted_message_id` 已投入存储层，完整一轮问答使用事务写入。
-- 确定性抽取式摘要器已完成增量边界、字符阈值、总长度限制和最近三轮保留。
+- 确定性抽取式摘要器已完成增量边界、字符阈值、总长度限制，并与滑动窗口统一保留最近六轮原文。
 - HTTP、SSE、WebSocket 已共用摘要更新入口，active summary 已注入主要最终回答 Prompt，失败时回退到滑动窗口。
 - 长期记忆支持基本管理和检索。
 - 敏感内容支持候选确认流程。
 - SQLite FTS/LIKE 提供基础检索。
-- Milvus 可以作为长期记忆语义召回增强。
+- 独立的 SQLite + FAISS 索引可以作为长期记忆语义召回增强，失败时回退到 FTS/LIKE。
 - PromptBuilder 统一主要文本 Prompt。
 - 记录 Prompt 长度、组成部分和 compact 轨迹。
 - Memory + Context + RAG 专项 benchmark 已建立。

@@ -1,7 +1,7 @@
 from app.tools.types import ToolResult, ErrorCode
 from app.tools.retriever import (
     MemoryRetriever,
-    MilvusRetriever,
+    SQLiteFaissRetriever,
     ResilientRetriever,
     get_shared_retriever,
     load_shared_knowledge_base,
@@ -41,7 +41,7 @@ __all__ = [
     "ToolResult",
     "ErrorCode",
     "MemoryRetriever",
-    "MilvusRetriever",
+    "SQLiteFaissRetriever",
     "ResilientRetriever",
     "get_shared_retriever",
     "load_shared_knowledge_base",
