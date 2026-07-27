@@ -33,6 +33,13 @@ ALLOWED_SOURCE_TYPES = {
     "manual_import",
 }
 
+TASK_KIND_PRIORITY = {
+    "diet": {"preference": 1.0, "constraint": 1.0, "fact": 0.8, "goal": 0.7},
+    "motion": {"constraint": 1.0, "fact": 0.9, "goal": 0.7, "preference": 0.6},
+    "plan": {"goal": 1.0, "constraint": 0.9, "preference": 0.8, "fact": 0.6},
+    "general": {},
+}
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -59,6 +66,19 @@ def infer_explicit_memory_kind(content: str) -> str:
 
 
 def infer_privacy_level(content: str) -> str:
+    security_markers = (
+        "密码",
+        "口令",
+        "验证码",
+        "token",
+        "api key",
+        "apikey",
+        "身份证",
+        "银行卡",
+    )
+    normalized = content.lower()
+    if any(marker in normalized for marker in security_markers):
+        return "security"
     sensitive_markers = (
         "膝盖",
         "腰",
@@ -85,6 +105,83 @@ def extract_explicit_memory_content(message: str) -> Optional[str]:
             content = text.split(marker, 1)[1].strip(" ：:，,。.")
             return content or None
     return None
+
+
+def extract_implicit_memory_content(message: str) -> Optional[str]:
+    """Return only stable, user-authored facts suitable for confirmation.
+
+    This intentionally uses conservative lexical evidence. It never treats a
+    one-off request as long-term memory and never promotes the result directly.
+    """
+    text = message.strip()
+    if not text or extract_explicit_memory_content(text):
+        return None
+    transient_markers = ("今天", "这次", "临时", "刚刚", "明天", "本次")
+    if any(marker in text for marker in transient_markers):
+        return None
+    stable_markers = (
+        "以后",
+        "今后",
+        "长期",
+        "平时",
+        "一直",
+        "通常",
+        "每周",
+        "我习惯",
+        "我不吃",
+        "我不喜欢",
+        "我喜欢",
+        "我的目标是",
+        "我有",
+    )
+    return text if any(marker in text for marker in stable_markers) else None
+
+
+def infer_memory_slot(kind: str, content: str) -> Optional[str]:
+    """Infer a conservative conflict slot; ``None`` means coexistence is allowed."""
+    if kind == "goal":
+        return "primary_fitness_goal"
+    if kind in {"preference", "constraint"}:
+        categories = {
+            "diet_preference": ("吃", "饮食", "香菜", "素食", "过敏"),
+            "training_time": ("早上", "上午", "中午", "下午", "晚上", "训练时间"),
+            "training_location": ("家里", "健身房", "户外", "训练地点"),
+        }
+        matches = [
+            slot
+            for slot, markers in categories.items()
+            if any(marker in content for marker in markers)
+        ]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def infer_memory_task(query: str) -> str:
+    """Infer only the broad task needed to bias memory ranking."""
+    task_markers = {
+        "diet": ("饮食", "吃", "热量", "蛋白质", "减脂餐", "营养"),
+        "motion": ("动作", "深蹲", "卧推", "硬拉", "姿势", "疼", "痛"),
+        "plan": ("计划", "安排", "周期", "训练方案", "训练频率"),
+    }
+    matches = [
+        task
+        for task, markers in task_markers.items()
+        if any(marker in query for marker in markers)
+    ]
+    return matches[0] if len(matches) == 1 else "general"
+
+
+def _parse_datetime(value: Optional[str], *, field_name: str) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO-8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class MemoryStore:
@@ -146,6 +243,7 @@ class MemoryStore:
                 )
                 """
             )
+            self._ensure_memory_item_columns_locked(conn)
             conn.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_items_active_key
@@ -243,6 +341,25 @@ class MemoryStore:
                 """
             )
 
+    @staticmethod
+    def _ensure_memory_item_columns_locked(conn: sqlite3.Connection) -> None:
+        """Add lifecycle fields without rebuilding existing user databases."""
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(memory_items)").fetchall()
+        }
+        additions = {
+            "valid_from": "TEXT",
+            "expires_at": "TEXT",
+            "confidence": "REAL NOT NULL DEFAULT 1.0",
+            "superseded_by": "TEXT",
+        }
+        for column, definition in additions.items():
+            if column not in existing:
+                conn.execute(
+                    f"ALTER TABLE memory_items ADD COLUMN {column} {definition}"
+                )
+
     def create_memory(
         self,
         *,
@@ -252,6 +369,10 @@ class MemoryStore:
         scope: str = "global",
         source_type: str = "manual_import",
         importance: float = 0.5,
+        confidence: float = 1.0,
+        valid_from: Optional[str] = None,
+        expires_at: Optional[str] = None,
+        source_ref: Optional[str] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         self._validate_kind(kind)
@@ -260,6 +381,13 @@ class MemoryStore:
         if not content:
             raise ValueError("content must not be empty")
         importance = max(0.0, min(1.0, float(importance)))
+        confidence = max(0.0, min(1.0, float(confidence)))
+        valid_from_dt = _parse_datetime(valid_from, field_name="valid_from")
+        expires_at_dt = _parse_datetime(expires_at, field_name="expires_at")
+        if valid_from_dt and expires_at_dt and expires_at_dt <= valid_from_dt:
+            raise ValueError("expires_at must be later than valid_from")
+        valid_from = valid_from_dt.isoformat() if valid_from_dt else None
+        expires_at = expires_at_dt.isoformat() if expires_at_dt else None
         memory_id = str(uuid.uuid4())
         memory_key = build_memory_key(user_id, kind, content)
         now = _utc_now()
@@ -270,9 +398,10 @@ class MemoryStore:
                     """
                     INSERT INTO memory_items (
                         id, user_id, kind, content, scope, source_type, importance,
-                        status, access_count, memory_key, metadata, created_at, updated_at
+                        status, access_count, memory_key, metadata, created_at, updated_at,
+                        valid_from, expires_at, confidence
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory_id,
@@ -286,6 +415,9 @@ class MemoryStore:
                         metadata_text,
                         now,
                         now,
+                        valid_from,
+                        expires_at,
+                        confidence,
                     ),
                 )
                 conn.execute(
@@ -299,7 +431,7 @@ class MemoryStore:
                         str(uuid.uuid4()),
                         memory_id,
                         source_type,
-                        None,
+                        source_ref,
                         metadata_text,
                         now,
                     ),
@@ -333,6 +465,10 @@ class MemoryStore:
         params: List[Any] = [user_id]
         if not include_deleted:
             where.append("status = 'active'")
+            where.append("(valid_from IS NULL OR valid_from <= ?)")
+            where.append("(expires_at IS NULL OR expires_at > ?)")
+            now = _utc_now()
+            params.extend([now, now])
         if kind:
             where.append("kind = ?")
             params.append(kind)
@@ -382,7 +518,23 @@ class MemoryStore:
         if status not in {"active", "deleted"}:
             raise ValueError("status must be active or deleted")
         importance = max(0.0, min(1.0, float(updates.get("importance", current["importance"]))))
+        confidence = max(
+            0.0,
+            min(1.0, float(updates.get("confidence", current.get("confidence", 1.0)))),
+        )
         scope = str(updates.get("scope", current["scope"]))
+        valid_from_dt = _parse_datetime(
+            updates.get("valid_from", current.get("valid_from")),
+            field_name="valid_from",
+        )
+        expires_at_dt = _parse_datetime(
+            updates.get("expires_at", current.get("expires_at")),
+            field_name="expires_at",
+        )
+        if valid_from_dt and expires_at_dt and expires_at_dt <= valid_from_dt:
+            raise ValueError("expires_at must be later than valid_from")
+        valid_from = valid_from_dt.isoformat() if valid_from_dt else None
+        expires_at = expires_at_dt.isoformat() if expires_at_dt else None
         metadata = updates.get("metadata", current["metadata"])
         if not isinstance(metadata, Mapping):
             raise ValueError("metadata must be an object")
@@ -395,7 +547,8 @@ class MemoryStore:
                     UPDATE memory_items
                     SET kind = ?, content = ?, scope = ?, source_type = ?,
                         importance = ?, status = ?, memory_key = ?,
-                        metadata = ?, updated_at = ?
+                        metadata = ?, updated_at = ?, confidence = ?,
+                        valid_from = ?, expires_at = ?
                     WHERE id = ? AND user_id = ?
                     """,
                     (
@@ -408,15 +561,22 @@ class MemoryStore:
                         memory_key,
                         json.dumps(dict(metadata), ensure_ascii=False),
                         now,
+                        confidence,
+                        valid_from,
+                        expires_at,
                         memory_id,
                         user_id,
                     ),
                 )
-                self._upsert_fts_locked(conn, memory_id, content)
                 if status == "active":
+                    self._upsert_fts_locked(conn, memory_id, content)
                     self._enqueue_embedding_job_locked(conn, memory_id, user_id, now)
+                else:
+                    self._delete_fts_locked(conn, memory_id)
             except sqlite3.IntegrityError as exc:
                 raise ValueError("active duplicate memory already exists") from exc
+        if status == "deleted":
+            self._delete_semantic_sources([memory_id])
         return self.get_memory(user_id, memory_id)
 
     def delete_memory(self, user_id: str, memory_id: str) -> bool:
@@ -432,7 +592,10 @@ class MemoryStore:
             )
             if cursor.rowcount > 0:
                 self._delete_fts_locked(conn, memory_id)
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+        if deleted:
+            self._delete_semantic_sources([memory_id])
+        return deleted
 
     def remember_explicit(self, user_id: str, message: str) -> Optional[Dict[str, Any]]:
         content = extract_explicit_memory_content(message)
@@ -440,7 +603,11 @@ class MemoryStore:
             return None
         kind = infer_explicit_memory_kind(content)
         privacy_level = infer_privacy_level(content)
-        if privacy_level != "normal":
+        if privacy_level == "security":
+            return None
+        slot = infer_memory_slot(kind, content)
+        conflicts = self._find_slot_conflicts(user_id, slot, content) if slot else []
+        if privacy_level != "normal" or conflicts:
             return self.create_candidate_memory(
                 user_id=user_id,
                 kind=kind,
@@ -448,7 +615,12 @@ class MemoryStore:
                 source_type="user_explicit_remember",
                 importance=0.8,
                 privacy_level=privacy_level,
-                metadata={"source_message": message},
+                metadata={
+                    "source_message": message,
+                    "memory_slot": slot,
+                    "conflicting_memory_ids": [item["id"] for item in conflicts],
+                    "candidate_reason": "conflict" if conflicts else "sensitive",
+                },
             )
         return self.create_memory(
             user_id=user_id,
@@ -456,7 +628,42 @@ class MemoryStore:
             content=content,
             source_type="user_explicit_remember",
             importance=0.8,
-            metadata={"source_message": message},
+            metadata={"source_message": message, "memory_slot": slot},
+        )
+
+    def remember_user_message(
+        self,
+        user_id: str,
+        message: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Capture explicit memory or a conservative implicit candidate.
+
+        Explicit non-sensitive, non-conflicting content may be committed. All
+        implicit content requires confirmation; secrets are never persisted.
+        """
+        explicit = self.remember_explicit(user_id, message)
+        if explicit is not None or extract_explicit_memory_content(message):
+            return explicit
+        content = extract_implicit_memory_content(message)
+        if not content or infer_privacy_level(content) == "security":
+            return None
+        kind = infer_explicit_memory_kind(content)
+        slot = infer_memory_slot(kind, content)
+        conflicts = self._find_slot_conflicts(user_id, slot, content) if slot else []
+        return self.create_candidate_memory(
+            user_id=user_id,
+            kind=kind,
+            content=content,
+            source_type="llm_candidate",
+            importance=0.65,
+            privacy_level=infer_privacy_level(content),
+            metadata={
+                "source_message": message,
+                "memory_slot": slot,
+                "conflicting_memory_ids": [item["id"] for item in conflicts],
+                "candidate_reason": "implicit_stable_fact",
+                "extraction_mode": "conservative_rules",
+            },
         )
 
     def create_candidate_memory(
@@ -480,6 +687,20 @@ class MemoryStore:
         now = _utc_now()
         metadata_text = json.dumps(dict(metadata or {}), ensure_ascii=False)
         with self._lock, self._connect() as conn:
+            existing_rows = conn.execute(
+                """
+                SELECT * FROM candidate_memories
+                WHERE user_id = ? AND kind = ? AND status = 'pending'
+                """,
+                (user_id, kind),
+            ).fetchall()
+            normalized = normalize_memory_content(content)
+            for row in existing_rows:
+                if normalize_memory_content(str(row["content"])) == normalized:
+                    existing = self._row_to_dict(row)
+                    existing["candidate"] = True
+                    existing["deduplicated"] = True
+                    return existing
             conn.execute(
                 """
                 INSERT INTO candidate_memories (
@@ -506,6 +727,7 @@ class MemoryStore:
         if created is None:
             raise RuntimeError("created candidate memory could not be loaded")
         created["candidate"] = True
+        created["deduplicated"] = False
         return created
 
     def list_candidate_memories(
@@ -572,7 +794,34 @@ class MemoryStore:
             },
         )
         now = _utc_now()
+        conflicting_ids = [
+            str(item)
+            for item in candidate.get("metadata", {}).get(
+                "conflicting_memory_ids", []
+            )
+            if item
+        ]
         with self._lock, self._connect() as conn:
+            for conflicting_id in conflicting_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status = 'deleted', superseded_by = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ? AND status = 'active'
+                    """,
+                    (memory["id"], now, conflicting_id, user_id),
+                )
+                if cursor.rowcount:
+                    self._delete_fts_locked(conn, conflicting_id)
+                    conn.execute(
+                        """
+                        INSERT INTO memory_relations (
+                            id, from_memory_id, to_memory_id, relation_type,
+                            metadata, created_at
+                        ) VALUES (?, ?, ?, 'supersedes', '{}', ?)
+                        """,
+                        (str(uuid.uuid4()), memory["id"], conflicting_id, now),
+                    )
             conn.execute(
                 """
                 UPDATE candidate_memories
@@ -581,6 +830,7 @@ class MemoryStore:
                 """,
                 (now, candidate_id, user_id),
             )
+        self._delete_semantic_sources(conflicting_ids)
         return memory
 
     def reject_candidate_memory(self, user_id: str, candidate_id: str) -> bool:
@@ -596,38 +846,89 @@ class MemoryStore:
             )
             return cursor.rowcount > 0
 
+    def expire_memories(self, *, user_id: Optional[str] = None) -> int:
+        """Logically delete memories whose explicit validity window has ended."""
+        now = _utc_now()
+        where = ["status = 'active'", "expires_at IS NOT NULL", "expires_at <= ?"]
+        params: List[Any] = [now]
+        if user_id:
+            where.append("user_id = ?")
+            params.append(user_id)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM memory_items WHERE {' AND '.join(where)}",
+                tuple(params),
+            ).fetchall()
+            memory_ids = [str(row["id"]) for row in rows]
+            if memory_ids:
+                placeholders = ",".join("?" for _ in memory_ids)
+                conn.execute(
+                    f"""
+                    UPDATE memory_items
+                    SET status = 'deleted', updated_at = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    (now, *memory_ids),
+                )
+                for memory_id in memory_ids:
+                    self._delete_fts_locked(conn, memory_id)
+        self._delete_semantic_sources(memory_ids)
+        return len(memory_ids)
+
+    def _find_slot_conflicts(
+        self,
+        user_id: str,
+        slot: str,
+        content: str,
+    ) -> List[Dict[str, Any]]:
+        normalized = normalize_memory_content(content)
+        candidates = self.list_memories(user_id, limit=200)
+        return [
+            item
+            for item in candidates
+            if item.get("metadata", {}).get("memory_slot") == slot
+            and normalize_memory_content(str(item.get("content", ""))) != normalized
+        ]
+
     def search_memories(
         self,
         user_id: str,
         query: str,
         *,
         limit: int = 5,
+        task_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         query = query.strip()
         if not query:
             return []
         limit = max(1, min(int(limit), 20))
-        rows = self._search_fts(user_id, query, limit)
-        semantic_rows = self._search_semantic(user_id, query, limit)
+        task_type = task_type if task_type in TASK_KIND_PRIORITY else infer_memory_task(query)
+        candidate_limit = min(100, max(20, limit * 4))
+        rows = self._search_fts(user_id, query, candidate_limit)
+        semantic_rows = self._search_semantic(user_id, query, candidate_limit)
         if not rows:
-            rows = self._search_like(user_id, query, limit)
+            rows = self._search_like(user_id, query, candidate_limit)
         memories = self._merge_search_results(
             [self._row_to_dict(row) for row in rows],
             semantic_rows,
-            limit,
         )
         for memory in memories:
-            access_bonus = 0.10 * min(int(memory.get("access_count") or 0), 20) / 20
+            access_bonus = 0.02 * min(int(memory.get("access_count") or 0), 20) / 20
             keyword_score = float(memory.pop("_keyword_score", 0.6))
             embedding_score = float(memory.pop("_embedding_score", 0.0))
+            task_score = self._task_relevance(memory, task_type)
             memory["score"] = round(
                 (0.45 * max(keyword_score, 0.0))
                 + (0.25 * max(embedding_score, 0.0))
-                + (0.30 * float(memory.get("importance") or 0.0))
+                + (0.20 * float(memory.get("importance") or 0.0))
+                + (0.05 * float(memory.get("confidence") or 0.0))
+                + (0.05 * task_score)
                 + access_bonus,
                 4,
             )
+            memory["matched_task"] = task_type
         memories.sort(key=lambda item: item["score"], reverse=True)
+        memories = memories[:limit]
         self._mark_accessed([item["id"] for item in memories])
         return memories
 
@@ -716,6 +1017,7 @@ class MemoryStore:
         limit: int,
     ) -> List[sqlite3.Row]:
         try:
+            now = _utc_now()
             with self._lock, self._connect() as conn:
                 rows = conn.execute(
                     """
@@ -725,10 +1027,12 @@ class MemoryStore:
                     WHERE memory_items_fts MATCH ?
                       AND m.user_id = ?
                       AND m.status = 'active'
+                      AND (m.valid_from IS NULL OR m.valid_from <= ?)
+                      AND (m.expires_at IS NULL OR m.expires_at > ?)
                     ORDER BY m.importance DESC, m.updated_at DESC
                     LIMIT ?
                     """,
-                    (query, user_id, limit),
+                    (query, user_id, now, now, limit),
                 ).fetchall()
             return list(rows)
         except sqlite3.OperationalError:
@@ -744,7 +1048,8 @@ class MemoryStore:
         if not terms:
             return []
         clauses = " OR ".join("content LIKE ?" for _ in terms)
-        params: List[Any] = [user_id] + [f"%{term}%" for term in terms] + [limit]
+        now = _utc_now()
+        params: List[Any] = [user_id, now, now] + [f"%{term}%" for term in terms] + [limit]
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 f"""
@@ -752,6 +1057,8 @@ class MemoryStore:
                 FROM memory_items
                 WHERE user_id = ?
                   AND status = 'active'
+                  AND (valid_from IS NULL OR valid_from <= ?)
+                  AND (expires_at IS NULL OR expires_at > ?)
                   AND ({clauses})
                 ORDER BY importance DESC, updated_at DESC
                 LIMIT ?
@@ -783,7 +1090,7 @@ class MemoryStore:
             if not memory_id:
                 continue
             memory = self.get_memory(user_id, memory_id)
-            if memory and memory.get("status") == "active":
+            if memory and self._is_memory_current(memory):
                 memory["_embedding_score"] = float(item.get("score", 0.0))
                 found.append(memory)
         return found
@@ -792,7 +1099,6 @@ class MemoryStore:
         self,
         keyword_results: List[Dict[str, Any]],
         semantic_results: Sequence[Dict[str, Any]],
-        limit: int,
     ) -> List[Dict[str, Any]]:
         merged: Dict[str, Dict[str, Any]] = {}
         for item in keyword_results:
@@ -808,7 +1114,18 @@ class MemoryStore:
             else:
                 item.setdefault("_keyword_score", 0.0)
                 merged[item["id"]] = item
-        return list(merged.values())[:limit]
+        return list(merged.values())
+
+    @staticmethod
+    def _task_relevance(memory: Mapping[str, Any], task_type: str) -> float:
+        scope = str(memory.get("scope") or "global")
+        if scope == f"task:{task_type}":
+            return 1.0
+        kind_score = TASK_KIND_PRIORITY.get(task_type, {}).get(
+            str(memory.get("kind") or "note"),
+            0.4 if task_type != "general" else 0.5,
+        )
+        return float(kind_score)
 
     def _fallback_like_terms(self, query: str) -> List[str]:
         query = query.strip()
@@ -835,12 +1152,33 @@ class MemoryStore:
                 """
                 UPDATE memory_items
                 SET access_count = access_count + 1,
-                    last_accessed_at = ?,
-                    updated_at = ?
+                    last_accessed_at = ?
                 WHERE id = ?
                 """,
-                [(now, now, memory_id) for memory_id in memory_ids],
+                [(now, memory_id) for memory_id in memory_ids],
             )
+
+    @staticmethod
+    def _is_memory_current(memory: Mapping[str, Any]) -> bool:
+        if memory.get("status") != "active":
+            return False
+        now = datetime.now(timezone.utc)
+        valid_from = _parse_datetime(memory.get("valid_from"), field_name="valid_from")
+        expires_at = _parse_datetime(memory.get("expires_at"), field_name="expires_at")
+        return not ((valid_from and valid_from > now) or (expires_at and expires_at <= now))
+
+    def _delete_semantic_sources(self, memory_ids: Sequence[str]) -> None:
+        """Best-effort cleanup; SQLite status remains the authorization boundary."""
+        if not memory_ids or not self.semantic_enabled:
+            return
+        retriever = self._get_semantic_retriever()
+        if retriever is None or not hasattr(retriever, "delete_sources"):
+            return
+        try:
+            retriever.delete_sources(list(memory_ids))
+        except Exception:
+            # Search rechecks SQLite status, so stale vectors cannot be injected.
+            return
 
     def _enqueue_embedding_job_locked(
         self,

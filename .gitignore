@@ -9,7 +9,7 @@ logs/
 tmp/
 data/models/
 *.task
-docs/interview/agent.json
+docs/learning/agent.json
 volumes/
 *.db
 *.db-journal

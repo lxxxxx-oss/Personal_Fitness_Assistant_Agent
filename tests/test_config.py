@@ -1,5 +1,7 @@
 """Configuration environment parsing regression tests."""
 
+import json
+
 import pytest
 
 from app.config import (
@@ -105,12 +107,16 @@ def test_conversation_summary_config_is_bounded_by_explicit_values(monkeypatch):
     monkeypatch.setenv("CONVERSATION_SUMMARY_ENABLED", "false")
     monkeypatch.setenv("CONVERSATION_SUMMARY_TRIGGER_CHARS", "2400")
     monkeypatch.setenv("CONVERSATION_SUMMARY_MAX_CHARS", "900")
+    monkeypatch.setenv("CONVERSATION_SUMMARY_TRIGGER_TOKENS", "700")
+    monkeypatch.setenv("CONVERSATION_SUMMARY_MAX_TOKENS", "300")
 
     config = Config()
 
     assert config.conversation_summary_enabled is False
     assert config.conversation_summary_trigger_chars == 2400
     assert config.conversation_summary_max_chars == 900
+    assert config.conversation_summary_trigger_tokens == 700
+    assert config.conversation_summary_max_tokens == 300
 
 
 def test_config_rejects_prompt_limits_that_cannot_compact_safely():
@@ -127,6 +133,39 @@ def test_config_rejects_compact_trigger_above_prompt_limit():
             context_compact_trigger_chars=2000,
             context_max_prompt_chars=1500,
         )
+
+
+def test_config_rejects_token_trigger_above_token_limit():
+    with pytest.raises(ValueError, match="COMPACT_TRIGGER_TOKENS"):
+        Config(
+            context_compact_trigger_tokens=2000,
+            context_max_prompt_tokens=1500,
+        )
+
+
+def test_context_budget_is_derived_from_local_model_metadata(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"max_position_embeddings": 8192}),
+        encoding="utf-8",
+    )
+
+    config = Config(
+        model_path=str(tmp_path),
+        model_max_tokens=1024,
+        context_safety_tokens=256,
+        context_compact_trigger_ratio=0.8,
+        context_compact_trigger_chars=0,
+        context_max_prompt_chars=0,
+        context_compact_trigger_tokens=0,
+        context_max_prompt_tokens=0,
+    )
+
+    assert config.model_context_window_tokens == 8192
+    assert config.model_context_window_source == "config.json:max_position_embeddings"
+    assert config.context_max_prompt_tokens == 6912
+    assert config.context_compact_trigger_tokens == 5529
+    assert config.context_max_prompt_chars == 27648
+    assert config.context_compact_trigger_chars == 22116
 
 
 def test_router_embedding_config_is_feature_flagged(monkeypatch):

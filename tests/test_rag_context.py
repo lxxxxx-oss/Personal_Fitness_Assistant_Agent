@@ -3,6 +3,7 @@ from app.graph.subgraphs.chat import generate_node
 from app.graph.subgraphs.diet import recommend_node
 from app.graph.subgraphs.rag_context import build_rag_context
 from app.graph.prompt_builder import PromptBuilder
+from app.memory.token_budget import estimate_tokens
 
 
 def test_build_rag_context_numbers_evidence_and_deduplicates_sources():
@@ -126,6 +127,8 @@ def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
 
     monkeypatch.setattr(config, "context_compact_trigger_chars", 500)
     monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+    monkeypatch.setattr(config, "context_compact_trigger_tokens", 500)
+    monkeypatch.setattr(config, "context_max_prompt_tokens", 1200)
     state = {
         "user_input": "深蹲怎么做？",
         "memory": [
@@ -146,7 +149,9 @@ def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
 
     assert result["_prompt_meta"]["compact_triggered"] is True
     assert result["_prompt_meta"]["original_chars"] > result["_prompt_meta"]["chars"]
+    assert result["_prompt_meta"]["original_tokens"] >= result["_prompt_meta"]["tokens"]
     assert len(result["_prompt"]) <= 1200
+    assert estimate_tokens(result["_prompt"]) <= 1200
     assert "## 对话压缩摘要" in result["_prompt"]
     assert "## 用户问题" in result["_prompt"]
     assert "深蹲怎么做？" in result["_prompt"]

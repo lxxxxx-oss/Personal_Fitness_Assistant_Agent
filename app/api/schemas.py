@@ -47,6 +47,10 @@ class MemoryCreateRequest(BaseModel):
     scope: str = Field(default="global", min_length=1, max_length=128)
     source_type: str = Field(default="manual_import", min_length=1, max_length=64)
     importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    valid_from: Optional[str] = None
+    expires_at: Optional[str] = None
+    source_ref: Optional[str] = Field(default=None, max_length=512)
     metadata: Dict = Field(default_factory=dict)
 
 
@@ -57,6 +61,9 @@ class MemoryUpdateRequest(BaseModel):
     scope: Optional[str] = Field(default=None, min_length=1, max_length=128)
     source_type: Optional[str] = Field(default=None, min_length=1, max_length=64)
     importance: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    valid_from: Optional[str] = None
+    expires_at: Optional[str] = None
     status: Optional[str] = Field(default=None, min_length=1, max_length=32)
     metadata: Optional[Dict] = None
 
@@ -69,7 +76,11 @@ class MemoryItemResponse(BaseModel):
     scope: str
     source_type: str
     importance: float
+    confidence: float = 1.0
     status: str
+    valid_from: Optional[str] = None
+    expires_at: Optional[str] = None
+    superseded_by: Optional[str] = None
     access_count: int
     last_accessed_at: Optional[str] = None
     memory_key: str
@@ -99,6 +110,7 @@ class CandidateMemoryResponse(BaseModel):
     created_at: str
     updated_at: str
     candidate: bool = False
+    deduplicated: bool = False
 
 
 class CandidateMemoryListResponse(BaseModel):

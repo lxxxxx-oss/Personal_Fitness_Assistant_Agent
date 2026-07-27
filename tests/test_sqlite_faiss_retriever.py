@@ -100,6 +100,22 @@ def test_same_source_is_atomically_replaced_instead_of_accumulating_stale_chunks
     assert all("旧版本" not in item["content"] for item in result.data)
 
 
+def test_delete_sources_removes_only_requested_vectors(tmp_path):
+    retriever = build_retriever(tmp_path / "knowledge.db")
+    assert retriever.add_documents(
+        ["深蹲训练腿部。", "蛋白质支持恢复。"],
+        sources=["memory-a", "memory-b"],
+    ).ok
+
+    deleted = retriever.delete_sources(["memory-a"])
+    result = retriever.search("深蹲", top_k=5, threshold=0.0)
+
+    assert deleted.ok
+    assert deleted.data == {"deleted": 1, "sources": ["memory-a"]}
+    assert retriever.document_count == 1
+    assert all(item["source"] != "memory-a" for item in result.data)
+
+
 def test_persisted_embedding_model_mismatch_is_a_configuration_conflict(tmp_path):
     db_path = tmp_path / "knowledge.db"
     original = build_retriever(db_path, model="test-encoder-v1")

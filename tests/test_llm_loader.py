@@ -60,6 +60,67 @@ class TestLLMLoader:
         assert exc_info.value.error_code == ErrorCode.INVALID_PARAM
         assert "configured size limit" in exc_info.value.public_message
 
+    def test_tokenized_input_and_output_must_fit_runtime_context(self, monkeypatch):
+        from app.config import config
+
+        class FakeBatch(dict):
+            def to(self, device):
+                return self
+
+        class FakeTokenizer:
+            @staticmethod
+            def apply_chat_template(messages, tokenize, add_generation_prompt):
+                return messages[0]["content"]
+
+            @staticmethod
+            def __call__(text, return_tensors):
+                return FakeBatch(
+                    input_ids=types.SimpleNamespace(shape=(1, 118))
+                )
+
+        loader = LLMLoader(model_path="unused", device="cpu")
+        loader._tokenizer = FakeTokenizer()
+        loader._model = types.SimpleNamespace(
+            config=types.SimpleNamespace(max_position_embeddings=128)
+        )
+        monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+        monkeypatch.setattr(config, "context_max_prompt_tokens", 128)
+
+        inputs, _ = loader._prepare_inputs("hello", max_new_tokens=10)
+
+        assert inputs["input_ids"].shape[-1] == 118
+        with pytest.raises(LLMGenerationError, match="context window"):
+            loader._prepare_inputs("hello", max_new_tokens=11)
+
+    def test_tokenized_input_must_fit_application_budget(self, monkeypatch):
+        from app.config import config
+
+        class FakeBatch(dict):
+            def to(self, device):
+                return self
+
+        class FakeTokenizer:
+            @staticmethod
+            def apply_chat_template(messages, tokenize, add_generation_prompt):
+                return messages[0]["content"]
+
+            @staticmethod
+            def __call__(text, return_tensors):
+                return FakeBatch(
+                    input_ids=types.SimpleNamespace(shape=(1, 81))
+                )
+
+        loader = LLMLoader(model_path="unused", device="cpu")
+        loader._tokenizer = FakeTokenizer()
+        loader._model = types.SimpleNamespace(
+            config=types.SimpleNamespace(max_position_embeddings=200)
+        )
+        monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+        monkeypatch.setattr(config, "context_max_prompt_tokens", 80)
+
+        with pytest.raises(LLMGenerationError, match="application input budget"):
+            loader._prepare_inputs("hello", max_new_tokens=10)
+
     def test_loader_initializes_with_config(self):
         from app.config import config
         loader = LLMLoader(

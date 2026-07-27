@@ -1,7 +1,9 @@
 from app.memory.memory_store import (
     MemoryStore,
     extract_explicit_memory_content,
+    extract_implicit_memory_content,
     infer_explicit_memory_kind,
+    infer_memory_task,
 )
 from app.tools.types import ToolResult
 
@@ -10,6 +12,7 @@ class FakeSemanticRetriever:
     def __init__(self):
         self.docs = []
         self.sources = []
+        self.deleted_sources = []
         self.fail = False
 
     def add_documents(self, docs, sources=None):
@@ -33,6 +36,10 @@ class FakeSemanticRetriever:
             ],
             backend="sqlite_faiss",
         )
+
+    def delete_sources(self, sources):
+        self.deleted_sources.extend(sources)
+        return ToolResult.ok(data={"deleted": len(sources)}, backend="sqlite_faiss")
 
 
 def test_memory_store_crud_and_logical_delete(tmp_path):
@@ -171,3 +178,112 @@ def test_explicit_memory_extraction_and_kind_inference():
     assert extract_explicit_memory_content("普通闲聊") is None
     assert infer_explicit_memory_kind("我的目标是减脂") == "goal"
     assert infer_explicit_memory_kind("我不喜欢吃香菜") == "preference"
+
+
+def test_memory_lifecycle_excludes_future_and_expired_items(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    future = store.create_memory(
+        user_id="u1",
+        kind="goal",
+        content="下个训练周期以增肌为目标",
+        valid_from="2999-01-01T00:00:00Z",
+    )
+    expired = store.create_memory(
+        user_id="u1",
+        kind="preference",
+        content="上个月只在早上训练",
+        expires_at="2000-01-01T00:00:00Z",
+    )
+
+    assert store.list_memories("u1") == []
+    assert store.search_memories("u1", "训练", limit=5) == []
+    assert store.expire_memories(user_id="u1") == 1
+    assert store.get_memory("u1", expired["id"])["status"] == "deleted"
+    assert store.get_memory("u1", future["id"])["status"] == "active"
+
+
+def test_search_access_does_not_change_memory_freshness(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    created = store.create_memory(
+        user_id="u1",
+        kind="preference",
+        content="通常在晚上训练",
+    )
+
+    assert store.search_memories("u1", "晚上训练", limit=5)
+    accessed = store.get_memory("u1", created["id"])
+
+    assert accessed["updated_at"] == created["updated_at"]
+    assert accessed["access_count"] == 1
+
+
+def test_implicit_memory_is_conservative_and_requires_confirmation(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+
+    candidate = store.remember_user_message("u1", "我通常在晚上训练")
+
+    assert candidate["candidate"] is True
+    assert candidate["metadata"]["candidate_reason"] == "implicit_stable_fact"
+    assert store.list_memories("u1") == []
+    assert store.remember_user_message("u1", "今天晚上训练") is None
+    assert store.remember_user_message("u1", "我的密码是 abc123") is None
+    assert extract_implicit_memory_content("我通常在晚上训练") is not None
+
+
+def test_pending_candidates_are_deduplicated(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+
+    first = store.remember_user_message("u1", "我通常在晚上训练")
+    second = store.remember_user_message("u1", "我通常在晚上训练")
+
+    assert second["id"] == first["id"]
+    assert second["deduplicated"] is True
+    assert len(store.list_candidate_memories("u1")) == 1
+
+
+def test_conflict_confirmation_supersedes_old_memory_and_vector(tmp_path):
+    retriever = FakeSemanticRetriever()
+    store = MemoryStore(
+        str(tmp_path / "memory.db"),
+        semantic_enabled=True,
+        semantic_retriever=retriever,
+    )
+    old = store.remember_explicit("u1", "请记住 我喜欢早上训练")
+    candidate = store.remember_explicit("u1", "请记住 我喜欢晚上训练")
+
+    assert candidate["candidate"] is True
+    assert candidate["metadata"]["candidate_reason"] == "conflict"
+    confirmed = store.confirm_candidate_memory("u1", candidate["id"])
+    replaced = store.get_memory("u1", old["id"])
+
+    assert confirmed["content"] == "我喜欢晚上训练"
+    assert replaced["status"] == "deleted"
+    assert replaced["superseded_by"] == confirmed["id"]
+    assert old["id"] in retriever.deleted_sources
+
+
+def test_task_aware_search_prefers_relevant_memory_kind(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    preference = store.create_memory(
+        user_id="u1",
+        kind="preference",
+        content="训练饮食不吃香菜",
+        importance=0.5,
+    )
+    store.create_memory(
+        user_id="u1",
+        kind="note",
+        content="训练饮食资料已阅读",
+        importance=0.5,
+    )
+
+    results = store.search_memories(
+        "u1",
+        "训练饮食",
+        task_type="diet",
+        limit=2,
+    )
+
+    assert results[0]["id"] == preference["id"]
+    assert results[0]["matched_task"] == "diet"
+    assert infer_memory_task("蛋白质应该吃多少") == "diet"

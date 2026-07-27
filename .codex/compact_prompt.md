@@ -10,5 +10,6 @@ Keep the result under 900 tokens. Preserve only:
 6. Commands already run and their conclusions, without raw logs.
 7. Test/verification status, unresolved errors, and blockers.
 8. The current contents or authority of `.codex/SESSION_STATE.md` when it is active.
+9. The documentation route for unfinished work: use `docs/project/README.md` for implementation facts and `docs/learning/README.md` only for learning, resume, or interview material.
 
-Discard repeated instructions, greetings, commentary, full source code, raw command output, exploration that did not affect a decision, and resolved dead ends. Never copy credentials or secret values. If chat history conflicts with the repository, tell the next turn to read `AGENTS.md`, `.codex/SESSION_STATE.md`, and `git status --short` first.
+Discard repeated instructions, greetings, commentary, full source code, raw command output, exploration that did not affect a decision, and resolved dead ends. Never copy credentials or secret values. If chat history conflicts with the repository, tell the next turn to read `AGENTS.md`, `.codex/SESSION_STATE.md`, run `git status --short`, and then use `docs/project/README.md` as the project-document entry.

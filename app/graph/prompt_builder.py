@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from app.config import config
 from app.graph.state import RouterState, record_execution
+from app.memory.token_budget import estimate_tokens
 
 
 class PromptBuilder:
@@ -13,8 +14,12 @@ class PromptBuilder:
     @staticmethod
     def attach(state: RouterState, prompt: str, *, kind: str, sections: Sequence[str]) -> str:
         original_chars = len(prompt)
+        original_tokens = estimate_tokens(prompt)
         compacted = False
-        if original_chars > config.context_compact_trigger_chars:
+        if (
+            original_chars > config.context_compact_trigger_chars
+            or original_tokens > config.context_compact_trigger_tokens
+        ):
             prompt = PromptBuilder.compact_prompt(state, prompt)
             compacted = True
             record_execution(
@@ -23,7 +28,9 @@ class PromptBuilder:
                 "deterministic",
                 degraded=False,
                 detail=(
-                    f"prompt compacted from {original_chars} to {len(prompt)} chars"
+                    "prompt compacted from "
+                    f"{original_chars}/{original_tokens} chars/tokens to "
+                    f"{len(prompt)}/{estimate_tokens(prompt)}"
                 ),
             )
         state["_prompt"] = prompt
@@ -31,6 +38,12 @@ class PromptBuilder:
             "kind": kind,
             "chars": len(prompt),
             "original_chars": original_chars,
+            "tokens": estimate_tokens(prompt),
+            "original_tokens": original_tokens,
+            "context_window_tokens": config.model_context_window_tokens,
+            "context_window_source": config.model_context_window_source,
+            "max_prompt_tokens": config.context_max_prompt_tokens,
+            "compact_trigger_tokens": config.context_compact_trigger_tokens,
             "compact_triggered": compacted,
             "sections": list(sections),
         }
@@ -39,6 +52,7 @@ class PromptBuilder:
     @staticmethod
     def compact_prompt(state: RouterState, prompt: str) -> str:
         max_chars = max(1200, config.context_max_prompt_chars)
+        max_tokens = max(1200, config.context_max_prompt_tokens)
         summary = PromptBuilder.structured_compact_summary(state)
         sections = [
             section.strip()
@@ -56,21 +70,26 @@ class PromptBuilder:
         head = PromptBuilder._clip_section(
             "\n\n".join(remaining[:2]),
             max_chars * 30 // 100,
+            token_limit=max_tokens * 30 // 100,
         )
         summary_block = "## 对话压缩摘要\n" + PromptBuilder._clip_section(
             summary,
             max_chars * 20 // 100,
+            token_limit=max_tokens * 20 // 100,
         )
         middle = PromptBuilder._clip_section(
             "\n\n".join(remaining[2:]),
             max_chars * 15 // 100,
+            token_limit=max_tokens * 15 // 100,
         )
         prefix = "\n\n".join(part for part in (head, summary_block, middle) if part)
         user_budget = max(200, max_chars - len(prefix) - 2)
+        user_token_budget = max(128, max_tokens - estimate_tokens(prefix) - 16)
         user = PromptBuilder._clip_section(
             user_section,
             user_budget,
             keep_tail=True,
+            token_limit=user_token_budget,
         )
         compacted = "\n\n".join(part for part in (prefix, user) if part)
         if len(compacted) > max_chars:
@@ -81,21 +100,47 @@ class PromptBuilder:
         return compacted
 
     @staticmethod
-    def _clip_section(text: str, limit: int, *, keep_tail: bool = False) -> str:
-        """Clip one logical prompt section without cutting away its heading."""
+    def _clip_section(
+        text: str,
+        limit: int,
+        *,
+        keep_tail: bool = False,
+        token_limit: Optional[int] = None,
+    ) -> str:
+        """Clip one logical prompt section by both characters and estimated tokens."""
         text = text.strip()
         limit = max(0, int(limit))
-        if len(text) <= limit:
-            return text
-        if limit < 40:
-            return text[:limit]
-        marker = "\n...[section compacted]...\n"
-        first_line, separator, body = text.partition("\n")
-        if not separator or len(first_line) + len(marker) >= limit:
-            return text[-limit:] if keep_tail else text[:limit]
-        body_budget = limit - len(first_line) - len(marker)
-        body_part = body[-body_budget:] if keep_tail else body[:body_budget]
-        return first_line + marker + body_part.strip()
+
+        def clip_chars(char_limit: int) -> str:
+            if char_limit <= 0:
+                return ""
+            if len(text) <= char_limit:
+                return text
+            if char_limit < 40:
+                return text[-char_limit:] if keep_tail else text[:char_limit]
+            marker = "\n...[section compacted]...\n"
+            first_line, separator, body = text.partition("\n")
+            if not separator or len(first_line) + len(marker) >= char_limit:
+                return text[-char_limit:] if keep_tail else text[:char_limit]
+            body_budget = char_limit - len(first_line) - len(marker)
+            body_part = body[-body_budget:] if keep_tail else body[:body_budget]
+            return first_line + marker + body_part.strip()
+
+        candidate = clip_chars(limit)
+        if token_limit is None or estimate_tokens(candidate) <= token_limit:
+            return candidate
+
+        low, high = 0, min(limit, len(text))
+        best = ""
+        while low <= high:
+            middle = (low + high) // 2
+            clipped = clip_chars(middle)
+            if estimate_tokens(clipped) <= token_limit:
+                best = clipped
+                low = middle + 1
+            else:
+                high = middle - 1
+        return best
 
     @staticmethod
     def structured_compact_summary(state: RouterState) -> str:

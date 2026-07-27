@@ -219,11 +219,11 @@ def _get_memory_store():
 
 def _remember_explicit_user_memory(user_id: str, message: str) -> None:
     try:
-        _get_memory_store().remember_explicit(user_id, message)
+        _get_memory_store().remember_user_message(user_id, message)
     except ValueError:
-        logger.warning("Explicit memory write skipped due to invalid content")
+        logger.warning("Memory write skipped due to invalid content")
     except Exception:
-        logger.exception("Explicit memory write failed")
+        logger.exception("Memory write failed")
 
 
 def _retrieve_long_term_memories(user_id: str, message: str) -> List[Dict]:
@@ -325,8 +325,10 @@ def _persist_conversation_turn(
             conversation_id,
             user_id,
             trigger_chars=config.conversation_summary_trigger_chars,
+            trigger_tokens=config.conversation_summary_trigger_tokens,
             keep_recent_messages=config.memory_max_turns * 2,
             max_summary_chars=config.conversation_summary_max_chars,
+            max_summary_tokens=config.conversation_summary_max_tokens,
         )
     except Exception as exc:
         logger.exception("Conversation summary update failed; turn remains persisted")
@@ -471,6 +473,10 @@ def create_memory(request: MemoryCreateRequest):
             scope=request.scope,
             source_type=request.source_type,
             importance=request.importance,
+            confidence=request.confidence,
+            valid_from=request.valid_from,
+            expires_at=request.expires_at,
+            source_ref=request.source_ref,
             metadata=request.metadata,
         )
     except ValueError as exc:
@@ -478,9 +484,19 @@ def create_memory(request: MemoryCreateRequest):
 
 
 @app.get("/memory/search", response_model=MemoryListResponse)
-def search_memories(user_id: str, query: str, limit: int = 5):
+def search_memories(
+    user_id: str,
+    query: str,
+    limit: int = 5,
+    task_type: Optional[str] = None,
+):
     """Search active long-term memories using SQLite FTS5 with LIKE fallback."""
-    memories = _get_memory_store().search_memories(user_id, query, limit=limit)
+    memories = _get_memory_store().search_memories(
+        user_id,
+        query,
+        limit=limit,
+        task_type=task_type,
+    )
     return MemoryListResponse(user_id=user_id, memories=memories)
 
 

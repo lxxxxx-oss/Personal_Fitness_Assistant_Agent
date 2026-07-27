@@ -2,6 +2,8 @@
 import os
 from dataclasses import dataclass, field
 
+from app.llm.context_window import derive_context_budget, resolve_model_context_window
+
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 DEFAULT_KNOWLEDGE_DB_PATH = "data/rag/knowledge.db"
@@ -56,6 +58,20 @@ class Config:
     model_max_tokens: int = field(
         default_factory=lambda: _get_int_env("MODEL_MAX_TOKENS", 1024)
     )
+    model_context_window_override: int = field(
+        default_factory=lambda: _get_int_env("MODEL_CONTEXT_WINDOW", 0)
+    )
+    model_context_fallback_tokens: int = field(
+        default_factory=lambda: _get_int_env("MODEL_CONTEXT_FALLBACK_TOKENS", 4096)
+    )
+    context_safety_tokens: int = field(
+        default_factory=lambda: _get_int_env("CONTEXT_SAFETY_TOKENS", 256)
+    )
+    context_compact_trigger_ratio: float = field(
+        default_factory=lambda: _get_float_env("CONTEXT_COMPACT_TRIGGER_RATIO", 0.8)
+    )
+    model_context_window_tokens: int = field(init=False, default=0)
+    model_context_window_source: str = field(init=False, default="")
     model_temperature: float = field(
         default_factory=lambda: _get_float_env("MODEL_TEMPERATURE", 0.6)
     )
@@ -92,10 +108,16 @@ class Config:
         default_factory=lambda: os.getenv("MEMORY_DB_PATH", "data/memory/memory.db")
     )
     context_compact_trigger_chars: int = field(
-        default_factory=lambda: _get_int_env("COMPACT_TRIGGER_CHARS", 6000)
+        default_factory=lambda: _get_int_env("COMPACT_TRIGGER_CHARS", 0)
     )
     context_max_prompt_chars: int = field(
-        default_factory=lambda: _get_int_env("MAX_PROMPT_CHARS", 8192)
+        default_factory=lambda: _get_int_env("MAX_PROMPT_CHARS", 0)
+    )
+    context_compact_trigger_tokens: int = field(
+        default_factory=lambda: _get_int_env("COMPACT_TRIGGER_TOKENS", 0)
+    )
+    context_max_prompt_tokens: int = field(
+        default_factory=lambda: _get_int_env("MAX_PROMPT_TOKENS", 0)
     )
     conversation_summary_enabled: bool = field(
         default_factory=lambda: _get_bool_env("CONVERSATION_SUMMARY_ENABLED", True)
@@ -108,6 +130,14 @@ class Config:
     )
     conversation_summary_max_chars: int = field(
         default_factory=lambda: _get_int_env("CONVERSATION_SUMMARY_MAX_CHARS", 1200)
+    )
+    conversation_summary_trigger_tokens: int = field(
+        default_factory=lambda: _get_int_env(
+            "CONVERSATION_SUMMARY_TRIGGER_TOKENS", 900
+        )
+    )
+    conversation_summary_max_tokens: int = field(
+        default_factory=lambda: _get_int_env("CONVERSATION_SUMMARY_MAX_TOKENS", 360)
     )
     # Retriever
     retriever_top_k: int = field(
@@ -187,13 +217,41 @@ class Config:
 
     def __post_init__(self) -> None:
         """Reject internally inconsistent settings before serving requests."""
+        context_window = resolve_model_context_window(
+            self.model_path,
+            override_tokens=self.model_context_window_override,
+            fallback_tokens=self.model_context_fallback_tokens,
+        )
+        budget = derive_context_budget(
+            context_window.tokens,
+            output_reserve_tokens=self.model_max_tokens,
+            safety_tokens=self.context_safety_tokens,
+            compact_trigger_ratio=self.context_compact_trigger_ratio,
+            max_prompt_cap_tokens=self.context_max_prompt_tokens,
+            compact_trigger_cap_tokens=self.context_compact_trigger_tokens,
+        )
+        self.model_context_window_tokens = context_window.tokens
+        self.model_context_window_source = context_window.source
+        self.context_max_prompt_tokens = budget.max_prompt_tokens
+        self.context_compact_trigger_tokens = budget.compact_trigger_tokens
+        if self.context_max_prompt_chars == 0:
+            self.context_max_prompt_chars = self.context_max_prompt_tokens * 4
+        if self.context_compact_trigger_chars == 0:
+            self.context_compact_trigger_chars = self.context_compact_trigger_tokens * 4
+
         positive_values = {
             "model_max_tokens": self.model_max_tokens,
+            "model_context_fallback_tokens": self.model_context_fallback_tokens,
+            "context_safety_tokens": self.context_safety_tokens,
             "memory_max_turns": self.memory_max_turns,
             "context_compact_trigger_chars": self.context_compact_trigger_chars,
             "context_max_prompt_chars": self.context_max_prompt_chars,
+            "context_compact_trigger_tokens": self.context_compact_trigger_tokens,
+            "context_max_prompt_tokens": self.context_max_prompt_tokens,
             "conversation_summary_trigger_chars": self.conversation_summary_trigger_chars,
             "conversation_summary_max_chars": self.conversation_summary_max_chars,
+            "conversation_summary_trigger_tokens": self.conversation_summary_trigger_tokens,
+            "conversation_summary_max_tokens": self.conversation_summary_max_tokens,
             "retriever_top_k": self.retriever_top_k,
             "retriever_candidate_k": self.retriever_candidate_k,
             "retriever_rrf_k": self.retriever_rrf_k,
@@ -205,8 +263,12 @@ class Config:
             raise ValueError(f"configuration values must be positive: {', '.join(invalid)}")
         if self.context_max_prompt_chars < 1200:
             raise ValueError("MAX_PROMPT_CHARS must be at least 1200")
+        if self.context_max_prompt_tokens < 1200:
+            raise ValueError("MAX_PROMPT_TOKENS must be at least 1200")
         if self.context_compact_trigger_chars > self.context_max_prompt_chars:
             raise ValueError("COMPACT_TRIGGER_CHARS must not exceed MAX_PROMPT_CHARS")
+        if self.context_compact_trigger_tokens > self.context_max_prompt_tokens:
+            raise ValueError("COMPACT_TRIGGER_TOKENS must not exceed MAX_PROMPT_TOKENS")
         if not 0.0 <= self.retriever_threshold <= 1.0:
             raise ValueError("RETRIEVER_THRESHOLD must be between 0 and 1")
         if self.retriever_strategy not in {"dense", "hybrid"}:

@@ -1512,6 +1512,49 @@ class SQLiteFaissRetriever:
                 db_path=self.db_path,
             )
 
+    def delete_sources(self, sources: Sequence[str]) -> ToolResult:
+        """Delete all chunks owned by the supplied exact source identifiers.
+
+        The method is intentionally source-scoped: callers cannot provide SQL
+        fragments or paths, and an empty input is a successful no-op.
+        """
+        normalized = list(
+            dict.fromkeys(
+                str(source).strip()
+                for source in sources
+                if str(source).strip()
+            )
+        )
+        if not normalized:
+            return ToolResult.ok(
+                data={"deleted": 0},
+                backend=self.backend_name,
+                db_path=self.db_path,
+            )
+        try:
+            with self._lock:
+                connection = self._ensure_connection_locked()
+                placeholders = ",".join("?" for _ in normalized)
+                with connection:
+                    cursor = connection.execute(
+                        f"DELETE FROM knowledge_chunks WHERE source IN ({placeholders})",
+                        tuple(normalized),
+                    )
+                deleted = max(0, int(cursor.rowcount))
+                self._index_ready = False
+                self._rebuild_index_locked()
+            return ToolResult.ok(
+                data={"deleted": deleted, "sources": normalized},
+                backend=self.backend_name,
+                db_path=self.db_path,
+            )
+        except Exception as exc:
+            return ToolResult.fail(
+                _vector_store_error_code(exc),
+                f"SQLite+FAISS source deletion failed: {exc}",
+                db_path=self.db_path,
+            )
+
     def close(self) -> None:
         with self._lock:
             if self._connection is not None:

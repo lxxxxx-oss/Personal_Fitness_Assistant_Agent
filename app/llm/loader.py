@@ -14,6 +14,10 @@ import os
 import threading
 from typing import Any, Dict, Generator, Optional, Tuple
 
+from app.llm.context_window import (
+    detect_runtime_context_window,
+    resolve_model_context_window,
+)
 from app.tools.types import ErrorCode, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -39,7 +43,7 @@ class LLMLoader:
     """加载本地 Qwen3-0.6B 模型,提供统一的 generate() 和流式 generate_stream() 接口.
 
     Input:
-        prompt: non-empty str, bounded by MAX_PROMPT_CHARS
+        prompt: non-empty str, bounded by the model-derived prompt budget
         max_new_tokens: int (optional)
         temperature: float (optional)
         top_p: float (optional)
@@ -163,12 +167,14 @@ class LLMLoader:
                 "The model prompt exceeds the configured size limit.",
             )
 
-    def _prepare_inputs(self, prompt: str):
+    def _prepare_inputs(self, prompt: str, max_new_tokens: int):
         """Validate prompt and convert to model input tensors.
 
         Raises:
             LLMGenerationError: If the prompt is invalid or the model is unavailable.
         """
+        from app.config import config
+
         self._validate_prompt(prompt)
 
         result = self._ensure_loaded()
@@ -179,11 +185,54 @@ class LLMLoader:
                 "The local language model is unavailable.",
             )
 
+        if max_new_tokens <= 0:
+            raise LLMGenerationError(
+                ErrorCode.INVALID_PARAM,
+                "The requested generation length must be positive.",
+            )
+
         messages = [{"role": "user", "content": prompt}]
         text = self._tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        return self._tokenizer(text, return_tensors="pt").to(self.device), text
+        inputs = self._tokenizer(text, return_tensors="pt").to(self.device)
+        input_tokens = int(inputs["input_ids"].shape[-1])
+
+        runtime_limit = detect_runtime_context_window(self._model)
+        if runtime_limit is None:
+            resolved = resolve_model_context_window(
+                self.model_path,
+                override_tokens=config.model_context_window_override,
+                fallback_tokens=config.model_context_fallback_tokens,
+            )
+            context_window_tokens = resolved.tokens
+            limit_source = resolved.source
+        else:
+            context_window_tokens, limit_source = runtime_limit
+
+        if input_tokens > config.context_max_prompt_tokens:
+            logger.error(
+                "tokenized prompt too long: %s tokens (application max %s)",
+                input_tokens,
+                config.context_max_prompt_tokens,
+            )
+            raise LLMGenerationError(
+                ErrorCode.INVALID_PARAM,
+                "The tokenized prompt exceeds the application input budget.",
+            )
+        if input_tokens + max_new_tokens > context_window_tokens:
+            logger.error(
+                "model context exceeded: %s input + %s output > %s (%s)",
+                input_tokens,
+                max_new_tokens,
+                context_window_tokens,
+                limit_source,
+            )
+            raise LLMGenerationError(
+                ErrorCode.INVALID_PARAM,
+                "The tokenized prompt and requested output exceed the model context window.",
+            )
+        return inputs, text
 
     def generate(
         self,
@@ -209,7 +258,7 @@ class LLMLoader:
         temp = self.temperature if temperature is None else temperature
         p = self.top_p if top_p is None else top_p
 
-        inputs, _ = self._prepare_inputs(prompt)
+        inputs, _ = self._prepare_inputs(prompt, tokens)
 
         # The shared model is intentionally serialized. Concurrent generation
         # would create multiple KV caches and can exhaust CPU/GPU memory.
@@ -260,7 +309,7 @@ class LLMLoader:
         temp = self.temperature if temperature is None else temperature
         p = self.top_p if top_p is None else top_p
 
-        inputs, _ = self._prepare_inputs(prompt)
+        inputs, _ = self._prepare_inputs(prompt, tokens)
         with _MODEL_GENERATION_LOCK:
             past_key_values = None
             current_ids = inputs["input_ids"]
