@@ -22,15 +22,13 @@ def _get_registry() -> ToolRegistry:
 
 def query_understanding_node(state: RouterState) -> RouterState:
     """Query Understanding: LLM rewrites query into optimized search keywords."""
-    from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     user_input = state["user_input"]
     prompt = PromptBuilder.search_query_rewrite(user_input)
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=64,
         temperature=0.3,
     )
@@ -90,7 +88,7 @@ def search_node(state: RouterState) -> RouterState:
 def synthesis_node(state: RouterState) -> RouterState:
     """Answer Synthesis: LLM generates structured answer from search results."""
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     results = state.get("_search_results", [])  # type: ignore
     sources = []
@@ -113,9 +111,8 @@ def synthesis_node(state: RouterState) -> RouterState:
         state["_sources"] = sources  # type: ignore
         return state
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=config.model_max_tokens,
     )
     answer = llm.generate(prompt)

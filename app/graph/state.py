@@ -43,6 +43,7 @@ class RouterState(TypedDict, total=False):
     _long_term_memories: List[Dict[str, Any]]
     _conversation_summary: str
     _streaming: bool  # Build the final prompt without generating twice.
+    _model_id: str  # Stable per-request provider/model selection.
     _route_scores: Dict[str, float]
     _route_confidence: float
     _route_reason: str

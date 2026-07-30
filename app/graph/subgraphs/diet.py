@@ -72,14 +72,12 @@ def parse_diet_profile(profile_text: str) -> Tuple[DietProfile, Optional[str]]:
 
 def extract_profile_node(state: RouterState) -> RouterState:
     """Extract user body parameters and goals."""
-    from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     prompt = PromptBuilder.diet_profile_extraction(state["user_input"])
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=256,
         temperature=0.2,
     )
@@ -134,7 +132,7 @@ def retrieve_nutrition_node(state: RouterState) -> RouterState:
 def recommend_node(state: RouterState) -> RouterState:
     """Generate personalized diet recommendations."""
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     profile = state.get("_user_profile", {})
     retrieved = state.get("_retrieved", [])  # type: ignore
@@ -151,9 +149,8 @@ def recommend_node(state: RouterState) -> RouterState:
         state["result"] = ""
         return state
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=config.model_max_tokens,
     )
     answer = llm.generate(prompt)

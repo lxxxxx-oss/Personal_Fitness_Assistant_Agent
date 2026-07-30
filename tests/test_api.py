@@ -21,6 +21,60 @@ class TestHealthCheck:
         assert response.json()["status"] == "ok"
 
 
+class TestModelSelection:
+    def test_models_endpoint_is_public_and_does_not_expose_api_key(self, monkeypatch):
+        from app.config import config
+
+        monkeypatch.setattr(config, "llm_mock", True)
+        monkeypatch.setattr(config, "deepseek_api_key", "do-not-leak")
+        response = client.get("/models")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert [item["id"] for item in data["models"]] == [
+            "qwen-local",
+            "deepseek-api",
+        ]
+        assert "do-not-leak" not in response.text
+
+    def test_selected_model_is_threaded_into_graph_and_response(self, monkeypatch):
+        import app.main as main_module
+
+        seen = {}
+
+        class FakeGraph:
+            def invoke(self, state):
+                seen["model"] = state["_model_id"]
+                return {**state, "intent": "chat", "result": "selected model answer"}
+
+        monkeypatch.setattr(main_module, "_router_graph", FakeGraph())
+        response = client.post(
+            "/chat",
+            json={
+                "user_id": "selected_model_user",
+                "message": "你好",
+                "model": "deepseek-api",
+            },
+        )
+
+        assert response.status_code == 200
+        assert seen["model"] == "deepseek-api"
+        assert response.json()["model"] == "deepseek-api"
+
+    def test_unknown_model_is_rejected(self):
+        response = client.post(
+            "/chat",
+            json={
+                "user_id": "unknown_model_user",
+                "message": "你好",
+                "model": "not-a-model",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "INVALID_PARAM"
+
+
 class TestChatEndpoint:
     def test_chat_returns_valid_response(self):
         payload = {"user_id": "test_user", "message": "how to squat?"}

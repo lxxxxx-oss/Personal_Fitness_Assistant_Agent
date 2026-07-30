@@ -31,6 +31,24 @@ def test_local_vector_store_defaults(monkeypatch):
     assert config.memory_vector_db_path == DEFAULT_MEMORY_VECTOR_DB_PATH
 
 
+def test_deepseek_api_key_supports_windows_compatibility_name(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("DeepSeek", " compatibility-key ")
+
+    config = Config()
+
+    assert config.deepseek_api_key == "compatibility-key"
+
+
+def test_standard_deepseek_api_key_takes_priority(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "standard-key")
+    monkeypatch.setenv("DeepSeek", "compatibility-key")
+
+    config = Config()
+
+    assert config.deepseek_api_key == "standard-key"
+
+
 def test_local_vector_store_environment_values(monkeypatch):
     monkeypatch.setenv("RETRIEVER_BACKEND", "memory")
     monkeypatch.setenv("RETRIEVER_DB_PATH", "tmp/custom-knowledge.db")

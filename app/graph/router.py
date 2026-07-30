@@ -600,18 +600,18 @@ def _build_llm_router_prompt(user_input: str) -> str:
 """
 
 
-def _call_llm_router(prompt: str) -> Optional[str]:
-    """Call the configured local classifier; return None when disabled/unavailable."""
+def _call_llm_router(prompt: str, model_id: Optional[str] = None) -> Optional[str]:
+    """Call the request-selected classifier; return None when disabled/unavailable."""
     from app.config import config
 
     if not config.llm_router_enabled:
         return None
 
-    from app.llm.loader import LLMGenerationError, LLMLoader
+    from app.llm.loader import LLMGenerationError
+    from app.llm.providers import create_llm
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        model_id,
         max_tokens=config.llm_router_max_tokens,
         temperature=0.0,
         top_p=1.0,
@@ -624,7 +624,7 @@ def _call_llm_router(prompt: str) -> Optional[str]:
             top_p=1.0,
         )
     except LLMGenerationError as exc:
-        logger.error("Local LLM router failed [%s]", exc.error_code)
+        logger.error("LLM router failed [%s]", exc.error_code)
         return None
 
 
@@ -640,7 +640,10 @@ def _extract_json_object(text: str) -> Optional[Dict[str, Any]]:
     return payload if isinstance(payload, dict) else None
 
 
-def _llm_classifier_route(user_input: str) -> RouteDecision:
+def _llm_classifier_route(
+    user_input: str,
+    model_id: Optional[str] = None,
+) -> RouteDecision:
     """Try the LLM classifier fallback contract.
 
     A decision is accepted only when the JSON is valid, the intent is allowed,
@@ -648,7 +651,13 @@ def _llm_classifier_route(user_input: str) -> RouteDecision:
     """
     started_at = time.perf_counter()
     prompt = _build_llm_router_prompt(user_input)
-    raw = _call_llm_router(prompt)
+    # Keep the original one-argument hook compatible for tests and extensions;
+    # only pass an explicit model when the request actually selected one.
+    raw = (
+        _call_llm_router(prompt, model_id)
+        if model_id is not None
+        else _call_llm_router(prompt)
+    )
     if not raw:
         return _with_llm_router_metric(
             RouteDecision(
@@ -809,7 +818,10 @@ def _detect_ambiguity(text: str, scores: Dict[str, float]) -> List[str]:
     return list(dict.fromkeys(signals))
 
 
-def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
+def _classify_primary_intent_with_scores(
+    user_input: str,
+    model_id: Optional[str] = None,
+) -> RouteDecision:
     """Classify intent with weighted rule scores and route metadata."""
     text = _normalize_text(user_input)
     scores = _empty_scores()
@@ -844,7 +856,7 @@ def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
         if embedding_decision["source"] == "embedding_examples":
             embedding_decision["ambiguity_signals"] = ambiguity_signals
             return embedding_decision
-        llm_decision = _llm_classifier_route(user_input)
+        llm_decision = _llm_classifier_route(user_input, model_id)
         if llm_decision["source"] == "llm_classifier":
             _record_llm_router_selection("selected")
             llm_decision["ambiguity_signals"] = ambiguity_signals
@@ -889,7 +901,7 @@ def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
         if signal in LLM_REVIEW_AMBIGUITY_SIGNALS
     ]
     if llm_review_signals and confidence >= SEMANTIC_TRIGGER_CONFIDENCE:
-        llm_decision = _llm_classifier_route(user_input)
+        llm_decision = _llm_classifier_route(user_input, model_id)
         if (
             llm_decision["source"] == "llm_classifier"
             and llm_decision["confidence"] > confidence
@@ -938,7 +950,7 @@ def _classify_primary_intent_with_scores(user_input: str) -> RouteDecision:
             )
             embedding_decision["ambiguity_signals"] = ambiguity_signals
             return embedding_decision
-        llm_decision = _llm_classifier_route(user_input)
+        llm_decision = _llm_classifier_route(user_input, model_id)
         if (
             llm_decision["source"] == "llm_classifier"
             and llm_decision["confidence"] > confidence
@@ -1076,9 +1088,12 @@ def _multi_intent_metadata(
     return observed, route_plan, reason, needs_clarification
 
 
-def classify_intent_with_scores(user_input: str) -> RouteDecision:
+def classify_intent_with_scores(
+    user_input: str,
+    model_id: Optional[str] = None,
+) -> RouteDecision:
     """Classify primary intent and attach Phase 4 multi-intent observations."""
-    decision = _classify_primary_intent_with_scores(user_input)
+    decision = _classify_primary_intent_with_scores(user_input, model_id)
     secondary, route_plan, reason, needs_clarification = _multi_intent_metadata(
         user_input, decision
     )
@@ -1204,14 +1219,17 @@ def _apply_order_constraint(
         matches.append(f"{intent}:constraint(first_task)+24")
 
 
-def classify_intent(user_input: str) -> str:
+def classify_intent(user_input: str, model_id: Optional[str] = None) -> str:
     """Return only the selected intent for backward-compatible callers."""
-    return classify_intent_with_scores(user_input)["intent"]
+    return classify_intent_with_scores(user_input, model_id)["intent"]
 
 
 def intent_classify_node(state: RouterState) -> RouterState:
     """Set intent and route metadata based on weighted rules."""
-    decision = classify_intent_with_scores(state["user_input"])
+    decision = classify_intent_with_scores(
+        state["user_input"],
+        state.get("_model_id"),
+    )
     state["intent"] = decision["intent"]
     state["_route_scores"] = decision["scores"]
     state["_route_confidence"] = decision["confidence"]
@@ -1401,11 +1419,11 @@ def synthesize_route_results_node(state: RouterState) -> RouterState:
         return state
 
     from app.config import config
-    from app.llm.loader import LLMGenerationError, LLMLoader
+    from app.llm.loader import LLMGenerationError
+    from app.llm.providers import create_llm
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=config.model_max_tokens,
         temperature=config.model_temperature,
         top_p=config.model_top_p,

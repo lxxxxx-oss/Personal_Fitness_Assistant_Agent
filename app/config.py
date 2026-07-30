@@ -45,9 +45,21 @@ def _get_bool_env(name: str, default: bool) -> bool:
     return default
 
 
+def _get_first_nonempty_env(*names: str) -> str:
+    """Return the first configured environment value, in priority order."""
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 @dataclass
 class Config:
     # LLM
+    llm_default_model: str = field(
+        default_factory=lambda: os.getenv("LLM_DEFAULT_MODEL", "qwen-local").strip()
+    )
     model_path: str = field(
         default_factory=lambda: os.getenv(
             "MODEL_PATH",
@@ -78,6 +90,25 @@ class Config:
     model_top_p: float = field(default_factory=lambda: _get_float_env("MODEL_TOP_P", 0.95))
     llm_mock: bool = field(
         default_factory=lambda: os.getenv("LLM_MOCK", "").lower() in {"1", "true", "yes"}
+    )
+    deepseek_api_key: str = field(
+        default_factory=lambda: _get_first_nonempty_env(
+            "DEEPSEEK_API_KEY",
+            "DeepSeek",
+        )
+    )
+    deepseek_base_url: str = field(
+        default_factory=lambda: os.getenv(
+            "DEEPSEEK_BASE_URL", "https://api.deepseek.com"
+        ).strip()
+    )
+    deepseek_model: str = field(
+        default_factory=lambda: os.getenv(
+            "DEEPSEEK_MODEL", "deepseek-v4-flash"
+        ).strip()
+    )
+    deepseek_timeout_seconds: float = field(
+        default_factory=lambda: _get_float_env("DEEPSEEK_TIMEOUT_SECONDS", 90.0)
     )
     llm_router_enabled: bool = field(
         default_factory=lambda: os.getenv("LLM_ROUTER_ENABLED", "").lower()
@@ -293,6 +324,16 @@ class Config:
             raise ValueError("MODEL_TOP_P must be greater than 0 and at most 1")
         if self.model_temperature < 0.0:
             raise ValueError("MODEL_TEMPERATURE must not be negative")
+        if self.llm_default_model not in {"qwen-local", "deepseek-api"}:
+            raise ValueError(
+                "LLM_DEFAULT_MODEL must be 'qwen-local' or 'deepseek-api'"
+            )
+        if not self.deepseek_base_url:
+            raise ValueError("DEEPSEEK_BASE_URL must not be empty")
+        if not self.deepseek_model:
+            raise ValueError("DEEPSEEK_MODEL must not be empty")
+        if self.deepseek_timeout_seconds <= 0:
+            raise ValueError("DEEPSEEK_TIMEOUT_SECONDS must be positive")
 
 
 # 全局单例

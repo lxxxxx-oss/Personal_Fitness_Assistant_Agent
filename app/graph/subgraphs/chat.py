@@ -51,7 +51,7 @@ def retrieve_node(state: RouterState) -> RouterState:
 
 def generate_node(state: RouterState) -> RouterState:
     """Generate answer based on retrieved context + memory + user input."""
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
     from app.config import config
 
     retrieved = state.get("_retrieved", [])  # type: ignore
@@ -68,9 +68,8 @@ def generate_node(state: RouterState) -> RouterState:
         state["result"] = ""
         return state
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=config.model_max_tokens,
         temperature=config.model_temperature,
         top_p=config.model_top_p,

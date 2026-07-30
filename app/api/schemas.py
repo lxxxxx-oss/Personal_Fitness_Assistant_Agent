@@ -16,16 +16,32 @@ class ChatRequest(BaseModel):
     user_id: str = Field(..., min_length=1, max_length=64)
     message: str = Field(..., min_length=1, max_length=4096)
     conversation_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    model: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class ChatResponse(BaseModel):
     user_id: str
     conversation_id: str
+    model: str
     intent: str
     reply: str
     sources: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     execution: List[ExecutionTraceItem] = Field(default_factory=list)
+
+
+class ModelInfoResponse(BaseModel):
+    id: str
+    label: str
+    provider: str
+    backend_model: str
+    available: bool
+    default: bool
+    detail: str = ""
+
+
+class ModelListResponse(BaseModel):
+    models: List[ModelInfoResponse] = Field(default_factory=list)
 
 
 class HistoryResponse(BaseModel):

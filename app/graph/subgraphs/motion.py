@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 def think_node(state: RouterState) -> RouterState:
     """Think node: LLM analyzes user intent, decides which tools to use."""
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
     from app.tools.motion_tool import list_motion_library
 
     library_result = list_motion_library(config.motion_library_dir)
@@ -40,9 +40,8 @@ def think_node(state: RouterState) -> RouterState:
 
 请用中文输出你的分析计划："""
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=512,
         temperature=0.3,
     )
@@ -171,7 +170,7 @@ def tool_node(state: RouterState) -> RouterState:
 def check_node(state: RouterState) -> RouterState:
     """Check node: evaluate results and produce final answer."""
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     tool_results = state.get("_tool_results", [])  # type: ignore
 
@@ -237,9 +236,8 @@ def check_node(state: RouterState) -> RouterState:
         state["_check_pass"] = True  # type: ignore
         return state
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=config.model_max_tokens,
     )
     answer = llm.generate(prompt)

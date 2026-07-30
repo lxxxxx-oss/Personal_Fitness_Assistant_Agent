@@ -111,7 +111,7 @@ def discover_tools_node(state: RouterState) -> RouterState:
 def plan_tool_call_node(state: RouterState) -> RouterState:
     """LLM decides which MCP tool to call and with what parameters."""
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     if config.llm_mock:
         state["_tool_plan"] = json.dumps(  # type: ignore
@@ -123,9 +123,8 @@ def plan_tool_call_node(state: RouterState) -> RouterState:
     tools = state.get("_mcp_tools", [])  # type: ignore
     prompt = PromptBuilder.mcp_tool_plan(state["user_input"], tools)
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=256,
         temperature=0.2,
     )
@@ -225,7 +224,7 @@ def execute_tool_node(state: RouterState) -> RouterState:
 def format_result_node(state: RouterState) -> RouterState:
     """Format MCP tool result into user-friendly reply."""
     from app.config import config
-    from app.llm.loader import LLMLoader
+    from app.llm.providers import create_llm
 
     tool_result = state.get("_tool_result")  # type: ignore
 
@@ -246,9 +245,8 @@ def format_result_node(state: RouterState) -> RouterState:
         state["result"] = ""
         return state
 
-    llm = LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
+    llm = create_llm(
+        state.get("_model_id"),
         max_tokens=config.model_max_tokens,
     )
     answer = llm.generate(prompt)

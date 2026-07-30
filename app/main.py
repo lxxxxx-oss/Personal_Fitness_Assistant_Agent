@@ -33,6 +33,7 @@ from app.api.schemas import (
     MotionAnalyzeImageResponse,
     MotionAnalyzeResponse,
     MotionAnalyzeVideoResponse,
+    ModelListResponse,
     MotionReferenceItem,
     MotionReferencesResponse,
 )
@@ -172,11 +173,20 @@ def _result_metadata(
         }
         if item not in execution:
             execution.append(item)
+    model_id = result_state.get("_model_id", config.llm_default_model)
     llm_item = {
         "component": "llm",
-        "mode": "mock" if config.llm_mock else "local_qwen",
-        "degraded": bool(config.llm_mock),
-        "detail": "LLM demo mode configured" if config.llm_mock else "",
+        "mode": (
+            "mock"
+            if model_id == "qwen-local" and config.llm_mock
+            else ("local_qwen" if model_id == "qwen-local" else "deepseek_api")
+        ),
+        "degraded": bool(model_id == "qwen-local" and config.llm_mock),
+        "detail": (
+            "LLM demo mode configured"
+            if model_id == "qwen-local" and config.llm_mock
+            else (config.deepseek_model if model_id == "deepseek-api" else "")
+        ),
     }
     if llm_item not in execution:
         execution.append(llm_item)
@@ -364,10 +374,14 @@ def _prepare_chat_sync(
     user_id: str,
     message: str,
     conversation_id: Optional[str],
+    model_id: Optional[str],
     *,
     streaming: bool,
 ) -> PreparedChat:
     """Resolve persistence and build one shared RouterState."""
+    from app.llm.providers import resolve_model_id
+
+    resolved_model_id = resolve_model_id(model_id)
     resolved_id = _resolve_conversation_id(user_id, conversation_id)
     memory = _get_or_restore_memory(user_id, resolved_id)
     state: RouterState = {
@@ -379,6 +393,7 @@ def _prepare_chat_sync(
         "_long_term_memories": _retrieve_long_term_memories(user_id, message),
         "result": "",
         "error": None,
+        "_model_id": resolved_model_id,
     }
     if streaming:
         state["_streaming"] = True
@@ -390,6 +405,7 @@ async def _prepare_chat(
     user_id: str,
     message: str,
     conversation_id: Optional[str],
+    model_id: Optional[str],
     *,
     streaming: bool,
 ) -> PreparedChat:
@@ -399,6 +415,7 @@ async def _prepare_chat(
         user_id,
         message,
         conversation_id,
+        model_id,
         streaming=streaming,
     )
 
@@ -415,16 +432,10 @@ async def _persist_prepared_chat(prepared: PreparedChat, reply: str) -> Dict[str
     )
 
 
-def _create_llm():
-    from app.llm.loader import LLMLoader
+def _create_llm(model_id: Optional[str] = None):
+    from app.llm.providers import create_llm
 
-    return LLMLoader(
-        model_path=config.model_path,
-        device=config.model_device,
-        max_tokens=config.model_max_tokens,
-        temperature=config.model_temperature,
-        top_p=config.model_top_p,
-    )
+    return create_llm(model_id)
 
 
 def _sse_event(event: str, payload: Dict[str, Any]) -> str:
@@ -440,6 +451,14 @@ def _sse_event(event: str, payload: Dict[str, Any]) -> str:
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/models", response_model=ModelListResponse)
+def get_models():
+    """Expose selectable models and configuration availability to clients."""
+    from app.llm.providers import list_models
+
+    return ModelListResponse(models=list_models())
 
 
 @app.get("/memory", response_model=MemoryListResponse)
@@ -597,6 +616,7 @@ async def chat(request: ChatRequest):
             request.user_id,
             request.message,
             request.conversation_id,
+            request.model,
             streaming=False,
         )
         graph = _get_router_graph()
@@ -622,6 +642,7 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             user_id=request.user_id,
             conversation_id=prepared.conversation_id,
+            model=result_state.get("_model_id", config.llm_default_model),
             intent=intent,
             reply=reply,
             sources=sources,
@@ -632,11 +653,12 @@ async def chat(request: ChatRequest):
         raise
     except Exception as exc:
         from app.llm.loader import LLMGenerationError
+        from app.tools.types import ErrorCode
 
         logger.exception("Error processing chat")
         if isinstance(exc, LLMGenerationError):
             raise HTTPException(
-                status_code=503,
+                status_code=(400 if exc.error_code == ErrorCode.INVALID_PARAM else 503),
                 detail={"code": exc.error_code, "message": exc.public_message},
             ) from exc
         raise HTTPException(
@@ -1066,6 +1088,7 @@ async def chat_stream(request: ChatRequest):
         request.user_id,
         request.message,
         request.conversation_id,
+        request.model,
         streaming=True,
     )
 
@@ -1078,6 +1101,7 @@ async def chat_stream(request: ChatRequest):
             sources, warnings, execution = _result_metadata(result_state)
             yield _sse_event("meta", {
                 "conversation_id": prepared.conversation_id,
+                "model": result_state.get("_model_id", config.llm_default_model),
                 "intent": intent,
                 "sources": sources,
                 "warnings": warnings,
@@ -1095,7 +1119,7 @@ async def chat_stream(request: ChatRequest):
                 return
 
             full_reply = ""
-            llm = _create_llm()
+            llm = _create_llm(result_state.get("_model_id"))
             async for token in _iterate_llm_tokens(llm, prompt):
                 full_reply += token
                 yield _sse_event("token", {"text": token})
@@ -1169,6 +1193,7 @@ async def chat_websocket(websocket: WebSocket):
                 request.user_id,
                 request.message,
                 request.conversation_id,
+                request.model,
                 streaming=True,
             )
         except HTTPException as exc:
@@ -1191,6 +1216,7 @@ async def chat_websocket(websocket: WebSocket):
         await websocket.send_json({
             "type": "meta",
             "conversation_id": prepared.conversation_id,
+            "model": result_state.get("_model_id", config.llm_default_model),
             "intent": intent,
             "sources": sources,
             "warnings": warnings,
@@ -1209,7 +1235,7 @@ async def chat_websocket(websocket: WebSocket):
         # Step 2: Stream LLM tokens via WebSocket
         # Bridge sync generation through an async queue so each token is sent
         # as soon as it is produced without blocking the event loop.
-        llm = _create_llm()
+        llm = _create_llm(result_state.get("_model_id"))
         full_reply = await _stream_llm_to_websocket(websocket, llm, prompt)
         if not full_reply.strip():
             raise RuntimeError("LLM stream completed without reply text")
