@@ -6,7 +6,7 @@
     <meta name="theme-color" content="#f7f8f5">
     <meta name="description" content="具备知识检索、记忆与动作分析能力的个人健身助手智能体">
     <title>FitAgent · 个人健身助手</title>
-    <link rel="stylesheet" href="./styles.css?v=20260729-model-picker">
+    <link rel="stylesheet" href="./styles.css?v=20260731-memory-v2">
 </head>
 <body>
     <div class="app-shell">
@@ -26,20 +26,38 @@
                 </button>
             </div>
 
-            <button class="new-chat-button" id="new-chat-button" type="button">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
-                新建对话
-            </button>
-
-            <nav class="sidebar-section" aria-label="会话">
-                <p class="sidebar-label">当前会话</p>
-                <button class="conversation-item active" id="current-conversation" type="button">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3a2 2 0 0 1-1-1.73V6a2 2 0 0 1 2-2Zm0 2v10h1v1.45L8.45 16H19V6H5Z"/></svg>
-                    <span id="conversation-title">新的健身对话</span>
+            <div class="sidebar-tools" aria-label="会话操作">
+                <button class="sidebar-tool" id="new-chat-button" type="button">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a2 2 0 0 1 2 2v3h-2V6H5v12h10v-3h2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm13.3 5.3 1.4 1.4-6 6-3.2.8.8-3.2 6-6Z"/></svg>
+                    <span>新聊天</span>
                 </button>
-            </nav>
+                <button class="sidebar-tool" id="search-conversations-button" type="button" aria-expanded="false" aria-controls="conversation-search">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 1 1-4.73 13.32L2.7 19.4l-1.4-1.4 3.08-3.08A7.5 7.5 0 0 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z"/></svg>
+                    <span>搜索聊天</span>
+                </button>
+                <button class="sidebar-tool" id="temporary-chat-button" type="button" aria-pressed="false">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a8 8 0 1 1-5.66 13.66l1.42-1.42A6 6 0 1 0 6 10H3l4-4 4 4H8a4 4 0 1 1 2.34 3.64l.83-1.82A2 2 0 1 0 10 10H8a4 4 0 0 1 4-4v2a2 2 0 1 0 0 4v2a4 4 0 0 1 0-8Z"/></svg>
+                    <span>临时对话</span>
+                </button>
+                <button class="sidebar-tool" id="memory-manager-button" type="button">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a7 7 0 0 1 4.9 12l-1.4-1.42A5 5 0 1 0 12 15v-2l4 3-4 3v-2a7 7 0 0 1 0-14Zm-1 4h2v4.59l2.7 2.7-1.4 1.42-3.3-3.3V7Z"/></svg>
+                    <span>管理记忆</span>
+                </button>
+            </div>
 
-            <div class="sidebar-spacer"></div>
+            <div class="conversation-search" id="conversation-search" hidden>
+                <input id="conversation-search-input" type="search" placeholder="搜索最近对话" autocomplete="off" aria-label="搜索最近对话">
+                <button id="clear-conversation-search" type="button" aria-label="清空搜索">×</button>
+            </div>
+
+            <nav class="sidebar-section conversation-browser" aria-label="最近会话">
+                <div class="sidebar-section-heading">
+                    <p class="sidebar-label">最近</p>
+                    <span id="conversation-count" aria-live="polite"></span>
+                </div>
+                <div class="conversation-list" id="conversation-list"></div>
+                <p class="conversation-list-empty" id="conversation-list-empty" hidden>暂无最近对话</p>
+            </nav>
 
             <section class="capability-panel" aria-label="当前能力">
                 <p class="sidebar-label">当前能力</p>
@@ -70,7 +88,7 @@
                     <svg viewBox="0 0 24 24"><path d="M4 6h16v2H4V6Zm0 5h16v2H4v-2Zm0 5h16v2H4v-2Z"/></svg>
                 </button>
                 <div class="topbar-title">
-                    <strong>个人健身助手</strong>
+                    <strong id="conversation-title">新对话</strong>
                     <span id="active-capability">智能路由 · 上下文记忆</span>
                 </div>
                 <div class="topbar-actions">
@@ -152,7 +170,28 @@
         </main>
     </div>
 
+    <div class="memory-dialog-backdrop" id="memory-dialog-backdrop" hidden>
+        <section class="memory-dialog" role="dialog" aria-modal="true" aria-labelledby="memory-dialog-title">
+            <header class="memory-dialog-header">
+                <div>
+                    <p class="eyebrow">MEMORY CONTROL</p>
+                    <h2 id="memory-dialog-title">记忆管理</h2>
+                    <p>已确认记忆会稳定参与回答；待验证线索只作为不确定参考，敏感信息必须由你确认。</p>
+                </div>
+                <button class="icon-button" id="close-memory-dialog" type="button" aria-label="关闭记忆管理">×</button>
+            </header>
+            <div class="memory-tabs" role="tablist" aria-label="记忆分类">
+                <button class="memory-tab active" type="button" data-memory-tab="durable" role="tab" aria-selected="true">已确认</button>
+                <button class="memory-tab" type="button" data-memory-tab="observations" role="tab" aria-selected="false">待验证</button>
+                <button class="memory-tab" type="button" data-memory-tab="events" role="tab" aria-selected="false">变更记录</button>
+            </div>
+            <div class="memory-dialog-body" id="memory-dialog-body">
+                <p class="memory-loading">正在读取记忆…</p>
+            </div>
+        </section>
+    </div>
+
     <div class="toast-region" id="toast-region" aria-live="assertive"></div>
-    <script src="./app.js?v=20260729-model-picker" defer></script>
+    <script src="./app.js?v=20260731-memory-v2" defer></script>
 </body>
 </html>

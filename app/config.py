@@ -138,6 +138,33 @@ class Config:
     memory_db_path: str = field(
         default_factory=lambda: os.getenv("MEMORY_DB_PATH", "data/memory/memory.db")
     )
+    memory_v2_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("MEMORY_V2_ENABLED", True)
+    )
+    memory_soft_injection_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("MEMORY_SOFT_INJECTION_ENABLED", True)
+    )
+    memory_auto_promotion_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("MEMORY_AUTO_PROMOTION_ENABLED", True)
+    )
+    memory_llm_extraction_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("MEMORY_LLM_EXTRACTION_ENABLED", False)
+    )
+    memory_auto_promotion_evidence: int = field(
+        default_factory=lambda: _get_int_env("MEMORY_AUTO_PROMOTION_EVIDENCE", 2)
+    )
+    memory_auto_promotion_conversations: int = field(
+        default_factory=lambda: _get_int_env("MEMORY_AUTO_PROMOTION_CONVERSATIONS", 2)
+    )
+    memory_auto_promotion_confidence: float = field(
+        default_factory=lambda: _get_float_env("MEMORY_AUTO_PROMOTION_CONFIDENCE", 0.82)
+    )
+    memory_soft_min_confidence: float = field(
+        default_factory=lambda: _get_float_env("MEMORY_SOFT_MIN_CONFIDENCE", 0.62)
+    )
+    memory_observation_ttl_days: int = field(
+        default_factory=lambda: _get_int_env("MEMORY_OBSERVATION_TTL_DAYS", 30)
+    )
     context_compact_trigger_chars: int = field(
         default_factory=lambda: _get_int_env("COMPACT_TRIGGER_CHARS", 0)
     )
@@ -275,6 +302,9 @@ class Config:
             "model_context_fallback_tokens": self.model_context_fallback_tokens,
             "context_safety_tokens": self.context_safety_tokens,
             "memory_max_turns": self.memory_max_turns,
+            "memory_auto_promotion_evidence": self.memory_auto_promotion_evidence,
+            "memory_auto_promotion_conversations": self.memory_auto_promotion_conversations,
+            "memory_observation_ttl_days": self.memory_observation_ttl_days,
             "context_compact_trigger_chars": self.context_compact_trigger_chars,
             "context_max_prompt_chars": self.context_max_prompt_chars,
             "context_compact_trigger_tokens": self.context_compact_trigger_tokens,
@@ -302,6 +332,10 @@ class Config:
             raise ValueError("COMPACT_TRIGGER_TOKENS must not exceed MAX_PROMPT_TOKENS")
         if not 0.0 <= self.retriever_threshold <= 1.0:
             raise ValueError("RETRIEVER_THRESHOLD must be between 0 and 1")
+        if not 0.0 <= self.memory_auto_promotion_confidence <= 1.0:
+            raise ValueError("MEMORY_AUTO_PROMOTION_CONFIDENCE must be between 0 and 1")
+        if not 0.0 <= self.memory_soft_min_confidence <= 1.0:
+            raise ValueError("MEMORY_SOFT_MIN_CONFIDENCE must be between 0 and 1")
         if self.retriever_strategy not in {"dense", "hybrid"}:
             raise ValueError("RETRIEVER_STRATEGY must be 'dense' or 'hybrid'")
         if self.retriever_backend not in {"sqlite_faiss", "memory"}:

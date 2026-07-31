@@ -5,6 +5,7 @@
     const CHAT_TIMEOUT_MS = 90_000;
     const TEXTAREA_MIN_HEIGHT = 38;
     const TEXTAREA_MAX_HEIGHT = 150;
+    const AUTO_FOLLOW_THRESHOLD_PX = 80;
     const CHAT_TRANSPORT = new URLSearchParams(window.location.search).get("transport") === "sse"
         ? "sse"
         : "http";
@@ -19,6 +20,15 @@
         openSidebar: document.getElementById("open-sidebar-button"),
         closeSidebar: document.getElementById("close-sidebar-button"),
         newChat: document.getElementById("new-chat-button"),
+        temporaryChat: document.getElementById("temporary-chat-button"),
+        memoryManager: document.getElementById("memory-manager-button"),
+        searchConversations: document.getElementById("search-conversations-button"),
+        conversationSearch: document.getElementById("conversation-search"),
+        conversationSearchInput: document.getElementById("conversation-search-input"),
+        clearConversationSearch: document.getElementById("clear-conversation-search"),
+        conversationList: document.getElementById("conversation-list"),
+        conversationListEmpty: document.getElementById("conversation-list-empty"),
+        conversationCount: document.getElementById("conversation-count"),
         conversationTitle: document.getElementById("conversation-title"),
         serviceStatus: document.getElementById("service-status"),
         activeCapability: document.getElementById("active-capability"),
@@ -35,6 +45,10 @@
         attachmentDetail: document.getElementById("attachment-detail"),
         removeAttachment: document.getElementById("remove-attachment-button"),
         toastRegion: document.getElementById("toast-region"),
+        memoryBackdrop: document.getElementById("memory-dialog-backdrop"),
+        closeMemoryDialog: document.getElementById("close-memory-dialog"),
+        memoryDialogBody: document.getElementById("memory-dialog-body"),
+        memoryTabs: Array.from(document.querySelectorAll("[data-memory-tab]")),
     };
 
     const state = {
@@ -46,6 +60,11 @@
         userStopped: false,
         selectedFile: null,
         hasMessages: false,
+        autoFollow: true,
+        conversations: [],
+        conversationSearch: "",
+        temporary: false,
+        memoryTab: "durable",
     };
 
     const ICONS = {
@@ -68,7 +87,7 @@
 
     function setConversationId(conversationId) {
         state.conversationId = conversationId || null;
-        if (state.conversationId) {
+        if (state.conversationId && !state.temporary && !state.conversationId.startsWith("tmp_")) {
             localStorage.setItem(CONVERSATION_ID_KEY, state.conversationId);
         } else {
             localStorage.removeItem(CONVERSATION_ID_KEY);
@@ -109,7 +128,7 @@
         const normalized = String(text || "").replace(/\s+/g, " ").trim();
         elements.conversationTitle.textContent = normalized
             ? (normalized.length > 18 ? `${normalized.slice(0, 18)}…` : normalized)
-            : "新的健身对话";
+            : "新对话";
     }
 
     function showConversation() {
@@ -120,12 +139,21 @@
         elements.emptyState.hidden = true;
     }
 
-    function scrollToBottom(behavior = "smooth") {
+    function isNearBottom() {
+        const distance = elements.chatScroll.scrollHeight
+            - elements.chatScroll.scrollTop
+            - elements.chatScroll.clientHeight;
+        return distance <= AUTO_FOLLOW_THRESHOLD_PX;
+    }
+
+    function scrollToBottom(behavior = "smooth", force = false) {
         window.requestAnimationFrame(() => {
+            if (!force && !state.autoFollow) return;
             elements.chatScroll.scrollTo({
                 top: elements.chatScroll.scrollHeight,
                 behavior,
             });
+            state.autoFollow = true;
         });
     }
 
@@ -238,7 +266,7 @@
         content.textContent = text;
         article.appendChild(content);
         elements.messages.appendChild(article);
-        scrollToBottom();
+        scrollToBottom("smooth", true);
         return article;
     }
 
@@ -275,7 +303,7 @@
         main.append(role, content, metadata, actions);
         article.append(avatar, main);
         elements.messages.appendChild(article);
-        scrollToBottom();
+        scrollToBottom("smooth", true);
 
         return { article, avatar, role, content, metadata, actions, rawText: "" };
     }
@@ -433,6 +461,7 @@
         };
         if (state.conversationId) payload.conversation_id = state.conversationId;
         if (state.modelId) payload.model = state.modelId;
+        if (state.temporary) payload.temporary = true;
         return payload;
     }
 
@@ -475,7 +504,7 @@
         if (!prompt || state.isBusy) return;
 
         if (showUser) createUserMessage(prompt);
-        if (elements.conversationTitle.textContent === "新的健身对话") setConversationTitle(prompt);
+        if (elements.conversationTitle.textContent === "新对话") setConversationTitle(prompt);
         elements.input.value = "";
         resizeTextarea();
 
@@ -621,6 +650,7 @@
             state.activeController = null;
             state.userStopped = false;
             setBusy(false);
+            if (!state.temporary) await refreshConversationList();
             elements.input.focus();
             scrollToBottom();
         }
@@ -640,6 +670,7 @@
         elements.send.disabled = isBusy ? !canStop : !canSubmit();
         elements.attach.disabled = isBusy;
         elements.newChat.disabled = isBusy;
+        elements.temporaryChat.disabled = isBusy;
         elements.modelSelect.disabled = isBusy || !elements.modelSelect.options.length;
         elements.send.setAttribute("aria-label", canStop ? "停止生成" : isBusy ? "处理中" : "发送消息");
     }
@@ -741,7 +772,7 @@
         if (!file || state.isBusy) return;
         const video = isVideoFile(file);
         createUserMessage(`上传${video ? "动作视频" : "姿态图片"}：${file.name}`);
-        if (elements.conversationTitle.textContent === "新的健身对话") {
+        if (elements.conversationTitle.textContent === "新对话") {
             setConversationTitle(`分析 ${file.name}`);
         }
         const assistantMessage = createAssistantMessage({
@@ -775,19 +806,143 @@
         }
     }
 
-    async function loadHistory() {
+    function clearConversationView() {
+        for (const message of elements.messages.querySelectorAll(".message")) message.remove();
+        state.hasMessages = false;
+        state.autoFollow = true;
+        setConversationTitle("");
+        setCapability("");
+        setAttachment(null);
+        showConversation();
+        elements.chatScroll.scrollTop = 0;
+    }
+
+    function closeConversationMenus(except = null) {
+        for (const menu of elements.conversationList.querySelectorAll(".conversation-menu")) {
+            if (menu !== except) {
+                menu.hidden = true;
+                menu.classList.remove("open-up");
+                menu.style.left = "";
+                menu.style.top = "";
+                menu.closest(".conversation-row")
+                    ?.querySelector(".conversation-more")
+                    ?.setAttribute("aria-expanded", "false");
+            }
+        }
+    }
+
+    function positionConversationMenu(menu) {
+        menu.classList.remove("open-up");
+        const rowBounds = menu.closest(".conversation-row").getBoundingClientRect();
+        const menuWidth = menu.offsetWidth;
+        const menuHeight = menu.offsetHeight;
+        const viewportGap = 8;
+        const opensUp = rowBounds.bottom + 4 + menuHeight > window.innerHeight - viewportGap;
+        const top = opensUp
+            ? Math.max(viewportGap, rowBounds.top - menuHeight - 4)
+            : rowBounds.bottom + 4;
+        const left = Math.min(
+            window.innerWidth - menuWidth - viewportGap,
+            Math.max(viewportGap, rowBounds.right - menuWidth),
+        );
+        menu.style.top = `${top}px`;
+        menu.style.left = `${left}px`;
+        if (opensUp) {
+            menu.classList.add("open-up");
+        }
+    }
+
+    function renderConversationList() {
+        const query = state.conversationSearch.trim().toLocaleLowerCase("zh-CN");
+        const visible = state.conversations.filter((item) => (
+            !query || String(item.title || "").toLocaleLowerCase("zh-CN").includes(query)
+        ));
+        elements.conversationList.replaceChildren();
+        elements.conversationCount.textContent = state.conversations.length
+            ? String(state.conversations.length)
+            : "";
+        elements.conversationListEmpty.hidden = visible.length > 0;
+        elements.conversationListEmpty.textContent = query ? "没有匹配的对话" : "暂无最近对话";
+
+        for (const item of visible) {
+            const row = document.createElement("div");
+            row.className = `conversation-row${item.id === state.conversationId ? " active" : ""}`;
+            row.dataset.conversationId = item.id;
+
+            const select = document.createElement("button");
+            select.className = "conversation-item";
+            select.type = "button";
+            select.title = item.title || "新对话";
+            select.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3a2 2 0 0 1-1-1.73V6a2 2 0 0 1 2-2Zm0 2v10h1v1.45L8.45 16H19V6H5Z"/></svg>';
+            const label = document.createElement("span");
+            label.textContent = item.title || "新对话";
+            select.appendChild(label);
+            select.addEventListener("click", () => loadConversation(item.id));
+
+            const more = document.createElement("button");
+            more.className = "conversation-more";
+            more.type = "button";
+            more.textContent = "•••";
+            more.setAttribute("aria-label", `管理对话：${item.title || "新对话"}`);
+            more.setAttribute("aria-expanded", "false");
+
+            const menu = document.createElement("div");
+            menu.className = "conversation-menu";
+            menu.hidden = true;
+            const rename = document.createElement("button");
+            rename.type = "button";
+            rename.textContent = "重命名";
+            rename.addEventListener("click", () => renameConversation(item));
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "danger";
+            remove.textContent = "删除";
+            remove.addEventListener("click", () => deleteConversation(item));
+            menu.append(rename, remove);
+
+            more.addEventListener("click", (event) => {
+                event.stopPropagation();
+                const willOpen = menu.hidden;
+                closeConversationMenus(menu);
+                menu.hidden = !willOpen;
+                more.setAttribute("aria-expanded", String(willOpen));
+                if (willOpen) positionConversationMenu(menu);
+            });
+            row.append(select, more, menu);
+            elements.conversationList.appendChild(row);
+        }
+    }
+
+    async function refreshConversationList() {
         try {
-            const response = await fetch(`${API_ROOT}/chat/${encodeURIComponent(state.userId)}/history`);
+            const response = await fetch(
+                `${API_ROOT}/chat/${encodeURIComponent(state.userId)}/conversations?limit=50`,
+            );
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
-            setConversationId(data.conversation_id);
-            if (!Array.isArray(data.history) || !data.history.length) return;
+            state.conversations = Array.isArray(data.conversations) ? data.conversations : [];
+            renderConversationList();
+            const active = state.conversations.find((item) => item.id === state.conversationId);
+            if (active) setConversationTitle(active.title);
+        } catch (error) {
+            showToast(`最近会话加载失败：${error.message}`, "error");
+        }
+    }
 
-            let firstUserMessage = "";
-            for (const item of data.history) {
-                if (!item || !item.content) continue;
+    async function loadConversation(conversationId) {
+        if (!conversationId || state.isBusy) return;
+        try {
+            const response = await fetch(
+                `${API_ROOT}/chat/${encodeURIComponent(state.userId)}/conversations/${encodeURIComponent(conversationId)}`,
+            );
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            setTemporaryMode(false);
+            clearConversationView();
+            setConversationId(data.conversation_id);
+            for (const item of Array.isArray(data.history) ? data.history : []) {
+                if (!item?.content) continue;
                 if (item.role === "user") {
-                    if (!firstUserMessage) firstUserMessage = item.content;
                     createUserMessage(item.content);
                 } else if (item.role === "assistant") {
                     const message = createAssistantMessage({ pendingText: "正在恢复历史回答" });
@@ -795,37 +950,133 @@
                     addCopyAction(message);
                 }
             }
-            setConversationTitle(firstUserMessage);
-            scrollToBottom("auto");
+            const active = state.conversations.find((item) => item.id === conversationId);
+            setConversationTitle(active?.title || "");
+            renderConversationList();
+            scrollToBottom("auto", true);
+            closeSidebar();
         } catch (error) {
-            showToast(`历史会话恢复失败：${error.message}`, "error");
+            showToast(`会话打开失败：${error.message}`, "error");
         }
     }
 
-    async function startNewConversation() {
+    async function startNewConversation({ silent = false } = {}) {
         if (state.isBusy) return;
-        if (state.hasMessages && !window.confirm("新建对话会归档当前用户的活动会话，确定继续吗？")) return;
-
         elements.newChat.disabled = true;
         try {
-            const response = await fetch(`${API_ROOT}/chat/${encodeURIComponent(state.userId)}/history`, {
-                method: "DELETE",
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            setConversationId(null);
-            state.hasMessages = false;
-            for (const message of elements.messages.querySelectorAll(".message")) message.remove();
-            setConversationTitle("");
-            setCapability("");
-            showConversation();
-            setAttachment(null);
-            showToast("已开始新对话");
+            setTemporaryMode(false);
+            const response = await fetch(
+                `${API_ROOT}/chat/${encodeURIComponent(state.userId)}/conversations`,
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: "{}",
+                },
+            );
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(formatApiError(data, response.status));
+            setConversationId(data.id);
+            clearConversationView();
+            await refreshConversationList();
+            if (!silent) showToast("已开始新对话");
             closeSidebar();
             elements.input.focus();
         } catch (error) {
             showToast(`新建对话失败：${error.message}`, "error");
         } finally {
             elements.newChat.disabled = false;
+        }
+    }
+
+    function setTemporaryMode(enabled) {
+        state.temporary = Boolean(enabled);
+        elements.temporaryChat.classList.toggle("active", state.temporary);
+        elements.temporaryChat.setAttribute("aria-pressed", String(state.temporary));
+    }
+
+    function startTemporaryConversation() {
+        if (state.isBusy) return;
+        setTemporaryMode(true);
+        setConversationId(null);
+        clearConversationView();
+        setConversationTitle("临时对话");
+        elements.activeCapability.textContent = "临时对话 · 不读取或保存长期记忆";
+        renderConversationList();
+        closeSidebar();
+        showToast("临时对话已开启，刷新页面或新建对话后内容即消失");
+        elements.input.focus();
+    }
+
+    async function renameConversation(item) {
+        closeConversationMenus();
+        const title = window.prompt("输入新的对话名称", item.title || "新对话");
+        if (title === null || !title.trim()) return;
+        try {
+            const response = await fetch(
+                `${API_ROOT}/chat/${encodeURIComponent(state.userId)}/conversations/${encodeURIComponent(item.id)}`,
+                {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ title: title.trim() }),
+                },
+            );
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(formatApiError(data, response.status));
+            await refreshConversationList();
+            showToast("对话已重命名");
+        } catch (error) {
+            showToast(`重命名失败：${error.message}`, "error");
+        }
+    }
+
+    async function deleteConversation(item) {
+        closeConversationMenus();
+        if (!window.confirm(`删除“${item.title || "新对话"}”？此操作不可撤销。`)) return;
+        try {
+            const response = await fetch(
+                `${API_ROOT}/chat/${encodeURIComponent(state.userId)}/conversations/${encodeURIComponent(item.id)}`,
+                { method: "DELETE" },
+            );
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(formatApiError(data, response.status));
+            const wasActive = item.id === state.conversationId;
+            if (wasActive) {
+                setConversationId(null);
+                clearConversationView();
+            }
+            await refreshConversationList();
+            if (wasActive) {
+                const next = state.conversations[0];
+                if (next) await loadConversation(next.id);
+                else await startNewConversation({ silent: true });
+            }
+            showToast("对话已删除");
+        } catch (error) {
+            showToast(`删除失败：${error.message}`, "error");
+        }
+    }
+
+    async function loadConversations() {
+        await refreshConversationList();
+        const saved = state.conversations.find((item) => item.id === state.conversationId);
+        const target = saved || state.conversations[0];
+        if (target) {
+            await loadConversation(target.id);
+        } else {
+            await startNewConversation({ silent: true });
+        }
+    }
+
+    function toggleConversationSearch(forceOpen = null) {
+        const willOpen = forceOpen ?? elements.conversationSearch.hidden;
+        elements.conversationSearch.hidden = !willOpen;
+        elements.searchConversations.setAttribute("aria-expanded", String(willOpen));
+        if (willOpen) {
+            elements.conversationSearchInput.focus();
+        } else {
+            state.conversationSearch = "";
+            elements.conversationSearchInput.value = "";
+            renderConversationList();
         }
     }
 
@@ -898,6 +1149,242 @@
         elements.body.classList.remove("sidebar-open");
     }
 
+    async function requestJson(path, options = {}) {
+        const response = await fetch(`${API_ROOT}${path}`, options);
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(formatApiError(data, response.status));
+        return data;
+    }
+
+    function formatMemoryTime(value) {
+        if (!value) return "";
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN");
+    }
+
+    function createMemoryBadge(text, tone = "") {
+        const badge = document.createElement("span");
+        badge.className = `memory-badge${tone ? ` ${tone}` : ""}`;
+        badge.textContent = text;
+        return badge;
+    }
+
+    function createMemoryCard({ title, content, badges = [], detail = "", actions = [] }) {
+        const card = document.createElement("article");
+        card.className = "memory-card";
+        const header = document.createElement("div");
+        header.className = "memory-card-header";
+        const heading = document.createElement("strong");
+        heading.textContent = title;
+        const badgeRow = document.createElement("div");
+        badgeRow.className = "memory-badges";
+        badges.forEach((badge) => badgeRow.appendChild(createMemoryBadge(badge.text, badge.tone)));
+        header.append(heading, badgeRow);
+        const body = document.createElement("p");
+        body.className = "memory-card-content";
+        body.textContent = content;
+        card.append(header, body);
+        if (detail) {
+            const meta = document.createElement("small");
+            meta.className = "memory-card-detail";
+            meta.textContent = detail;
+            card.appendChild(meta);
+        }
+        if (actions.length) {
+            const actionRow = document.createElement("div");
+            actionRow.className = "memory-card-actions";
+            actions.forEach(({ label, tone = "", onClick }) => {
+                const button = document.createElement("button");
+                button.type = "button";
+                button.className = `memory-action${tone ? ` ${tone}` : ""}`;
+                button.textContent = label;
+                button.addEventListener("click", onClick);
+                actionRow.appendChild(button);
+            });
+            card.appendChild(actionRow);
+        }
+        return card;
+    }
+
+    function renderMemoryEmpty(message) {
+        const empty = document.createElement("div");
+        empty.className = "memory-empty";
+        empty.textContent = message;
+        elements.memoryDialogBody.replaceChildren(empty);
+    }
+
+    async function runMemoryAction(action, successMessage) {
+        try {
+            await action();
+            showToast(successMessage);
+            await loadMemoryTab();
+        } catch (error) {
+            showToast(`记忆操作失败：${error.message}`, "error");
+        }
+    }
+
+    async function renderDurableMemories() {
+        const data = await requestJson(`/memory?user_id=${encodeURIComponent(state.userId)}&limit=100`);
+        const items = Array.isArray(data.memories) ? data.memories : [];
+        if (!items.length) {
+            renderMemoryEmpty("还没有已确认的长期记忆。");
+            return;
+        }
+        elements.memoryDialogBody.replaceChildren(...items.map((item) => createMemoryCard({
+            title: item.kind || "长期记忆",
+            content: item.content,
+            badges: [
+                { text: "已确认", tone: "confirmed" },
+                { text: `置信度 ${Math.round((item.confidence ?? 1) * 100)}%` },
+            ],
+            detail: `更新时间：${formatMemoryTime(item.updated_at)}`,
+            actions: [{
+                label: "删除",
+                tone: "danger",
+                onClick: () => {
+                    if (!window.confirm("删除这条长期记忆？后续回答将不再使用它。")) return;
+                    runMemoryAction(
+                        () => requestJson(
+                            `/memory/${encodeURIComponent(item.id)}?user_id=${encodeURIComponent(state.userId)}`,
+                            { method: "DELETE" },
+                        ),
+                        "长期记忆已删除",
+                    );
+                },
+            }],
+        })));
+    }
+
+    async function renderMemoryObservations() {
+        const data = await requestJson(
+            `/memory/observations?user_id=${encodeURIComponent(state.userId)}&status=open&limit=100`,
+        );
+        const items = Array.isArray(data.observations) ? data.observations : [];
+        if (!items.length) {
+            renderMemoryEmpty("暂无待验证线索。系统只会在有依据时生成线索。");
+            return;
+        }
+        elements.memoryDialogBody.replaceChildren(...items.map((item) => {
+            const needsReview = item.status === "review_required";
+            return createMemoryCard({
+                title: item.kind || "待验证线索",
+                content: item.content,
+                badges: [
+                    { text: needsReview ? "需你确认" : "低风险线索", tone: needsReview ? "review" : "observed" },
+                    { text: `${item.evidence_count} 条证据 / ${item.conversation_count} 次对话` },
+                    { text: `置信度 ${Math.round((item.confidence ?? 0) * 100)}%` },
+                ],
+                detail: item.expires_at ? `未再次出现时将于 ${formatMemoryTime(item.expires_at)} 过期` : "",
+                actions: [
+                    {
+                        label: "确认记住",
+                        tone: "primary",
+                        onClick: () => runMemoryAction(
+                            () => requestJson(
+                                `/memory/observations/${encodeURIComponent(item.id)}/confirm?user_id=${encodeURIComponent(state.userId)}`,
+                                { method: "POST" },
+                            ),
+                            "已转为长期记忆",
+                        ),
+                    },
+                    {
+                        label: "忽略",
+                        onClick: () => runMemoryAction(
+                            () => requestJson(
+                                `/memory/observations/${encodeURIComponent(item.id)}/reject?user_id=${encodeURIComponent(state.userId)}`,
+                                { method: "POST" },
+                            ),
+                            "线索已忽略",
+                        ),
+                    },
+                ],
+            });
+        }));
+    }
+
+    async function renderMemoryEvents() {
+        const data = await requestJson(`/memory/events?user_id=${encodeURIComponent(state.userId)}&limit=100`);
+        const items = Array.isArray(data.events) ? data.events : [];
+        if (!items.length) {
+            renderMemoryEmpty("暂无记忆变更记录。");
+            return;
+        }
+        const eventLabels = {
+            capture: "捕获线索",
+            reinforce: "补充证据",
+            promote: "自动晋升",
+            confirm: "用户确认",
+            reject: "用户忽略",
+            edit: "修改记忆",
+            delete: "删除记忆",
+            supersede: "替换旧记忆",
+            expire: "线索过期",
+            undo: "撤销操作",
+        };
+        elements.memoryDialogBody.replaceChildren(...items.map((item) => createMemoryCard({
+            title: eventLabels[item.event_type] || item.event_type,
+            content: item.payload?.content || item.payload?.observation_content || `对象：${item.subject_type}`,
+            badges: [
+                { text: item.actor === "user" ? "用户操作" : "系统操作" },
+                ...(item.undone_at ? [{ text: "已撤销", tone: "review" }] : []),
+            ],
+            detail: formatMemoryTime(item.created_at),
+            actions: item.reversible && !item.undone_at ? [{
+                label: "撤销",
+                onClick: () => runMemoryAction(
+                    () => requestJson(
+                        `/memory/events/${encodeURIComponent(item.id)}/undo?user_id=${encodeURIComponent(state.userId)}`,
+                        { method: "POST" },
+                    ),
+                    "记忆变更已撤销",
+                ),
+            }] : [],
+        })));
+    }
+
+    async function loadMemoryTab() {
+        elements.memoryDialogBody.replaceChildren();
+        const loading = document.createElement("p");
+        loading.className = "memory-loading";
+        loading.textContent = "正在读取记忆…";
+        elements.memoryDialogBody.appendChild(loading);
+        try {
+            if (state.memoryTab === "observations") {
+                await renderMemoryObservations();
+            } else if (state.memoryTab === "events") {
+                await renderMemoryEvents();
+            } else {
+                await renderDurableMemories();
+            }
+        } catch (error) {
+            renderMemoryEmpty(`读取失败：${error.message}`);
+        }
+    }
+
+    function selectMemoryTab(tab) {
+        state.memoryTab = tab;
+        for (const button of elements.memoryTabs) {
+            const selected = button.dataset.memoryTab === tab;
+            button.classList.toggle("active", selected);
+            button.setAttribute("aria-selected", String(selected));
+        }
+        loadMemoryTab();
+    }
+
+    function openMemoryDialog() {
+        elements.memoryBackdrop.hidden = false;
+        elements.body.classList.add("memory-dialog-open");
+        closeSidebar();
+        loadMemoryTab();
+        elements.closeMemoryDialog.focus();
+    }
+
+    function closeMemoryDialog() {
+        elements.memoryBackdrop.hidden = true;
+        elements.body.classList.remove("memory-dialog-open");
+        elements.memoryManager.focus();
+    }
+
     function handlePrimaryAction() {
         if (state.activeController) {
             stopGeneration();
@@ -910,11 +1397,48 @@
         sendMessage(elements.input.value);
     }
 
+    function handleChatWheel(event) {
+        if (event.ctrlKey || elements.chatScroll.scrollHeight <= elements.chatScroll.clientHeight) return;
+        const target = event.target instanceof Element ? event.target : null;
+        if (target?.closest("textarea, input, select, pre")) return;
+        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+            ? 32
+            : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+                ? elements.chatScroll.clientHeight
+                : 1;
+        const maximum = elements.chatScroll.scrollHeight - elements.chatScroll.clientHeight;
+        const next = Math.max(0, Math.min(maximum, elements.chatScroll.scrollTop + event.deltaY * unit));
+        if (next === elements.chatScroll.scrollTop) return;
+        elements.chatScroll.scrollTop = next;
+        state.autoFollow = isNearBottom();
+        event.preventDefault();
+    }
+
     function bindEvents() {
         elements.openSidebar.addEventListener("click", openSidebar);
         elements.closeSidebar.addEventListener("click", closeSidebar);
         elements.backdrop.addEventListener("click", closeSidebar);
         elements.newChat.addEventListener("click", startNewConversation);
+        elements.temporaryChat.addEventListener("click", startTemporaryConversation);
+        elements.memoryManager.addEventListener("click", openMemoryDialog);
+        elements.closeMemoryDialog.addEventListener("click", closeMemoryDialog);
+        elements.memoryBackdrop.addEventListener("click", (event) => {
+            if (event.target === elements.memoryBackdrop) closeMemoryDialog();
+        });
+        elements.memoryTabs.forEach((button) => {
+            button.addEventListener("click", () => selectMemoryTab(button.dataset.memoryTab));
+        });
+        elements.searchConversations.addEventListener("click", () => toggleConversationSearch());
+        elements.clearConversationSearch.addEventListener("click", () => {
+            state.conversationSearch = "";
+            elements.conversationSearchInput.value = "";
+            renderConversationList();
+            elements.conversationSearchInput.focus();
+        });
+        elements.conversationSearchInput.addEventListener("input", () => {
+            state.conversationSearch = elements.conversationSearchInput.value;
+            renderConversationList();
+        });
         elements.send.addEventListener("click", handlePrimaryAction);
         elements.attach.addEventListener("click", () => elements.mediaInput.click());
         elements.removeAttachment.addEventListener("click", () => setAttachment(null));
@@ -929,6 +1453,10 @@
         });
 
         elements.input.addEventListener("input", resizeTextarea);
+        elements.chatScroll.addEventListener("scroll", () => {
+            state.autoFollow = isNearBottom();
+        }, { passive: true });
+        elements.chatScroll.addEventListener("wheel", handleChatWheel, { passive: false });
         elements.input.addEventListener("keydown", (event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
                 event.preventDefault();
@@ -947,12 +1475,18 @@
         window.addEventListener("resize", () => {
             if (window.innerWidth > 840) closeSidebar();
         });
+        document.addEventListener("click", (event) => {
+            if (!elements.conversationList.contains(event.target)) closeConversationMenus();
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape" && !elements.memoryBackdrop.hidden) closeMemoryDialog();
+        });
     }
 
     async function initialize() {
         bindEvents();
         resizeTextarea();
-        await Promise.all([checkHealth(), loadModels(), loadHistory()]);
+        await Promise.all([checkHealth(), loadModels(), loadConversations()]);
         elements.input.focus();
     }
 

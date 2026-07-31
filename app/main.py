@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import threading
+import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,13 +23,19 @@ from app.api.schemas import (
     ChatRequest,
     ChatResponse,
     ClearResponse,
+    ConversationCreateRequest,
+    ConversationItemResponse,
+    ConversationListResponse,
+    ConversationUpdateRequest,
     EmbeddingJobListResponse,
     EmbeddingJobProcessResponse,
     ExecutionTraceItem,
     HistoryResponse,
     MemoryCreateRequest,
+    MemoryEventListResponse,
     MemoryItemResponse,
     MemoryListResponse,
+    MemoryObservationListResponse,
     MemoryUpdateRequest,
     MotionAnalyzeImageResponse,
     MotionAnalyzeResponse,
@@ -227,9 +234,20 @@ def _get_memory_store():
     return _memory_store
 
 
-def _remember_explicit_user_memory(user_id: str, message: str) -> None:
+def _remember_explicit_user_memory(
+    user_id: str,
+    message: str,
+    conversation_id: Optional[str] = None,
+    message_id: Optional[str] = None,
+) -> None:
+    """Compatibility-named entry point for explicit and implicit capture."""
     try:
-        _get_memory_store().remember_user_message(user_id, message)
+        _get_memory_store().remember_user_message(
+            user_id,
+            message,
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
     except ValueError:
         logger.warning("Memory write skipped due to invalid content")
     except Exception:
@@ -241,6 +259,15 @@ def _retrieve_long_term_memories(user_id: str, message: str) -> List[Dict]:
         return _get_memory_store().search_memories(user_id, message, limit=5)
     except Exception:
         logger.exception("Long-term memory retrieval failed")
+        return []
+
+
+def _retrieve_soft_memories(user_id: str, message: str) -> List[Dict]:
+    """Retrieve low-risk observations as explicitly uncertain context."""
+    try:
+        return _get_memory_store().search_soft_memories(user_id, message, limit=3)
+    except Exception:
+        logger.exception("Soft-memory retrieval failed")
         return []
 
 
@@ -317,14 +344,19 @@ def _persist_conversation_turn(
     assistant_message: str,
 ) -> Dict[str, Any]:
     """Persist one turn and best-effort update its deterministic summary."""
-    _get_conversation_store().add_turn(
+    message_ids = _get_conversation_store().add_turn(
         conversation_id,
         user_id,
         user_message,
         assistant_message,
     )
     memory.add_turn(user_message, assistant_message)
-    _remember_explicit_user_memory(user_id, user_message)
+    _remember_explicit_user_memory(
+        user_id,
+        user_message,
+        conversation_id,
+        message_ids["user_message_id"],
+    )
     if not config.conversation_summary_enabled:
         return {"updated": False, "reason": "disabled"}
     try:
@@ -368,6 +400,7 @@ class PreparedChat:
     conversation_id: str
     memory: Any
     state: RouterState
+    temporary: bool = False
 
 
 def _prepare_chat_sync(
@@ -377,28 +410,56 @@ def _prepare_chat_sync(
     model_id: Optional[str],
     *,
     streaming: bool,
+    temporary: bool = False,
 ) -> PreparedChat:
     """Resolve persistence and build one shared RouterState."""
     from app.llm.providers import resolve_model_id
+    from app.memory.sliding_window import SlidingWindowMemory
 
     resolved_model_id = resolve_model_id(model_id)
-    resolved_id = _resolve_conversation_id(user_id, conversation_id)
-    memory = _get_or_restore_memory(user_id, resolved_id)
+    if temporary:
+        resolved_id = (
+            conversation_id
+            if conversation_id and conversation_id.startswith("tmp_")
+            else f"tmp_{uuid.uuid4().hex}"
+        )
+        key = _session_key(user_id, resolved_id)
+        with _SESSION_LOCK:
+            memory = _sessions.setdefault(
+                key,
+                SlidingWindowMemory(max_turns=config.memory_max_turns),
+            )
+    else:
+        resolved_id = _resolve_conversation_id(user_id, conversation_id)
+        memory = _get_or_restore_memory(user_id, resolved_id)
     state: RouterState = {
         "user_input": message,
         "user_id": user_id,
         "conversation_id": resolved_id,
         "intent": "",
         "memory": memory.get_all(),
-        "_long_term_memories": _retrieve_long_term_memories(user_id, message),
+        "_long_term_memories": (
+            [] if temporary else _retrieve_long_term_memories(user_id, message)
+        ),
+        "_soft_memories": (
+            [] if temporary else _retrieve_soft_memories(user_id, message)
+        ),
         "result": "",
         "error": None,
         "_model_id": resolved_model_id,
     }
     if streaming:
         state["_streaming"] = True
-    _attach_conversation_summary(state, user_id, resolved_id)
-    return PreparedChat(user_id, message, resolved_id, memory, state)
+    if not temporary:
+        _attach_conversation_summary(state, user_id, resolved_id)
+    return PreparedChat(
+        user_id,
+        message,
+        resolved_id,
+        memory,
+        state,
+        temporary=temporary,
+    )
 
 
 async def _prepare_chat(
@@ -408,6 +469,7 @@ async def _prepare_chat(
     model_id: Optional[str],
     *,
     streaming: bool,
+    temporary: bool = False,
 ) -> PreparedChat:
     """Prepare chat state without blocking the event loop on SQLite/retrieval."""
     return await asyncio.to_thread(
@@ -417,11 +479,15 @@ async def _prepare_chat(
         conversation_id,
         model_id,
         streaming=streaming,
+        temporary=temporary,
     )
 
 
 async def _persist_prepared_chat(prepared: PreparedChat, reply: str) -> Dict[str, Any]:
     """Persist one successful complete turn outside the event loop."""
+    if prepared.temporary:
+        prepared.memory.add_turn(prepared.message, reply)
+        return {"updated": False, "reason": "temporary_chat"}
     return await asyncio.to_thread(
         _persist_conversation_turn,
         prepared.memory,
@@ -555,6 +621,72 @@ def reject_candidate_memory(candidate_id: str, user_id: str):
     return {"id": candidate_id, "status": "rejected"}
 
 
+@app.get("/memory/observations", response_model=MemoryObservationListResponse)
+def list_memory_observations(
+    user_id: str,
+    status: str = "open",
+    limit: int = 50,
+):
+    """List implicit observations, including evidence counts and review state."""
+    try:
+        observations = _get_memory_store().list_observations(
+            user_id,
+            status=status,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return MemoryObservationListResponse(
+        user_id=user_id,
+        observations=observations,
+    )
+
+
+@app.post(
+    "/memory/observations/{observation_id}/confirm",
+    response_model=MemoryItemResponse,
+)
+def confirm_memory_observation(observation_id: str, user_id: str):
+    """Promote one observed clue into durable memory after user confirmation."""
+    item = _get_memory_store().promote_observation(
+        user_id,
+        observation_id,
+        actor="user",
+        auto=False,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="memory observation was not found")
+    return item
+
+
+@app.post("/memory/observations/{observation_id}/reject")
+def reject_memory_observation(observation_id: str, user_id: str):
+    """Reject an observation so it can no longer influence prompts."""
+    rejected = _get_memory_store().reject_observation(user_id, observation_id)
+    if not rejected:
+        raise HTTPException(status_code=404, detail="memory observation was not found")
+    return {"id": observation_id, "status": "rejected"}
+
+
+@app.get("/memory/events", response_model=MemoryEventListResponse)
+def list_memory_events(user_id: str, limit: int = 50):
+    """List auditable memory lifecycle events for one user."""
+    events = _get_memory_store().list_memory_events(user_id, limit=limit)
+    return MemoryEventListResponse(user_id=user_id, events=events)
+
+
+@app.post("/memory/events/{event_id}/undo")
+def undo_memory_event(event_id: str, user_id: str):
+    """Undo a reversible memory promotion event."""
+    undone = _get_memory_store().undo_memory_event(user_id, event_id)
+    if not undone:
+        raise HTTPException(
+            status_code=409,
+            detail="memory event is not reversible, was already undone, or was not found",
+        )
+    return {"id": event_id, "status": "undone"}
+
+
 @app.get("/memory/embedding-jobs", response_model=EmbeddingJobListResponse)
 def list_memory_embedding_jobs(status: str = "pending", limit: int = 50):
     """List memory embedding jobs for the optional local vector sync worker."""
@@ -618,6 +750,7 @@ async def chat(request: ChatRequest):
             request.conversation_id,
             request.model,
             streaming=False,
+            temporary=request.temporary,
         )
         graph = _get_router_graph()
         result_state = await _invoke_graph(graph, prepared.state)
@@ -648,6 +781,7 @@ async def chat(request: ChatRequest):
             sources=sources,
             warnings=warnings,
             execution=execution,
+            temporary=prepared.temporary,
         )
     except HTTPException:
         raise
@@ -681,6 +815,137 @@ async def get_history(user_id: str):
         user_id=user_id,
         conversation_id=conversation_id,
         history=memory.get_all(),
+    )
+
+
+@app.post(
+    "/chat/{user_id}/conversations",
+    response_model=ConversationItemResponse,
+)
+async def create_conversation(
+    user_id: str,
+    request: Optional[ConversationCreateRequest] = None,
+):
+    """Create an independent active conversation for one user."""
+    store = _get_conversation_store()
+    conversation_id = await asyncio.to_thread(
+        store.create_conversation,
+        user_id,
+        request.title if request else None,
+    )
+    conversation = await asyncio.to_thread(
+        store.get_conversation,
+        conversation_id,
+        user_id,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=500, detail="conversation creation failed")
+    return ConversationItemResponse(
+        id=conversation_id,
+        title=str(conversation.get("title") or "新对话"),
+        message_count=0,
+        created_at=str(conversation["created_at"]),
+        updated_at=str(conversation["updated_at"]),
+        last_active_at=str(conversation["last_active_at"]),
+    )
+
+
+@app.get(
+    "/chat/{user_id}/conversations",
+    response_model=ConversationListResponse,
+)
+async def list_conversations(user_id: str, limit: int = 30):
+    """List recent active conversations, scoped to one user."""
+    conversations = await asyncio.to_thread(
+        _get_conversation_store().list_conversations,
+        user_id,
+        limit,
+    )
+    return ConversationListResponse(
+        user_id=user_id,
+        conversations=[ConversationItemResponse(**item) for item in conversations],
+    )
+
+
+@app.get(
+    "/chat/{user_id}/conversations/{conversation_id}",
+    response_model=HistoryResponse,
+)
+async def get_conversation_history(user_id: str, conversation_id: str):
+    """Load the complete persisted history for one active conversation."""
+    store = _get_conversation_store()
+    conversation = await asyncio.to_thread(
+        store.get_conversation,
+        conversation_id,
+        user_id,
+    )
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation was not found")
+    history = await asyncio.to_thread(
+        store.get_messages,
+        conversation_id,
+        user_id,
+    )
+    return HistoryResponse(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        history=history,
+    )
+
+
+@app.patch(
+    "/chat/{user_id}/conversations/{conversation_id}",
+    response_model=ConversationItemResponse,
+)
+async def rename_conversation(
+    user_id: str,
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+):
+    """Rename one active conversation without touching its messages."""
+    store = _get_conversation_store()
+    try:
+        await asyncio.to_thread(
+            store.rename_conversation,
+            conversation_id,
+            user_id,
+            request.title,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    conversations = await asyncio.to_thread(store.list_conversations, user_id, 100)
+    item = next(
+        (conversation for conversation in conversations if conversation["id"] == conversation_id),
+        None,
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="conversation was not found")
+    return ConversationItemResponse(**item)
+
+
+@app.delete(
+    "/chat/{user_id}/conversations/{conversation_id}",
+    response_model=ClearResponse,
+)
+async def delete_conversation(user_id: str, conversation_id: str):
+    """Soft-delete one conversation and evict only its in-process cache."""
+    try:
+        await asyncio.to_thread(
+            _get_conversation_store().delete_conversation,
+            conversation_id,
+            user_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    key = _session_key(user_id, conversation_id)
+    with _SESSION_LOCK:
+        memory = _sessions.pop(key, None)
+        if memory is not None:
+            memory.clear()
+    return ClearResponse(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        status="deleted",
     )
 
 
@@ -1090,6 +1355,7 @@ async def chat_stream(request: ChatRequest):
         request.conversation_id,
         request.model,
         streaming=True,
+        temporary=request.temporary,
     )
 
     async def event_stream():
@@ -1103,6 +1369,7 @@ async def chat_stream(request: ChatRequest):
                 "conversation_id": prepared.conversation_id,
                 "model": result_state.get("_model_id", config.llm_default_model),
                 "intent": intent,
+                "temporary": prepared.temporary,
                 "sources": sources,
                 "warnings": warnings,
                 "execution": execution,
@@ -1195,6 +1462,7 @@ async def chat_websocket(websocket: WebSocket):
                 request.conversation_id,
                 request.model,
                 streaming=True,
+                temporary=request.temporary,
             )
         except HTTPException as exc:
             await websocket.send_json({
@@ -1218,6 +1486,7 @@ async def chat_websocket(websocket: WebSocket):
             "conversation_id": prepared.conversation_id,
             "model": result_state.get("_model_id", config.llm_default_model),
             "intent": intent,
+            "temporary": prepared.temporary,
             "sources": sources,
             "warnings": warnings,
             "execution": execution,

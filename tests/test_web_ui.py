@@ -44,6 +44,12 @@ def test_web_ui_exposes_semantic_chat_shell():
     assert {
         "sidebar",
         "new-chat-button",
+        "temporary-chat-button",
+        "memory-manager-button",
+        "search-conversations-button",
+        "conversation-search",
+        "conversation-list",
+        "conversation-count",
         "messages",
         "empty-state",
         "chat-scroll",
@@ -51,6 +57,9 @@ def test_web_ui_exposes_semantic_chat_shell():
         "send-button",
         "media-input",
         "model-select",
+        "memory-dialog-backdrop",
+        "memory-dialog-body",
+        "close-memory-dialog",
     }.issubset(parser.ids)
     assert len(parser.stylesheets) == 1
     assert parser.stylesheets[0].startswith("./styles.css")
@@ -96,6 +105,58 @@ def test_web_ui_static_assets_are_served_and_contain_core_flows():
     assert "const TEXTAREA_MAX_HEIGHT = 150" in script.text
     assert 'elements.input.style.overflowY = contentHeight > TEXTAREA_MAX_HEIGHT' in script.text
     assert 'canStop ? "停止生成" : isBusy ? "处理中"' in script.text
+
+
+def test_long_answers_stay_inside_scrollable_chat_region():
+    stylesheet = client.get("/ui/styles.css").text
+    script = client.get("/ui/app.js").text
+
+    assert ".app-shell" in stylesheet
+    assert ".chat-layout" in stylesheet
+    assert "position: fixed;" in stylesheet
+    assert "height: 100dvh;" in stylesheet
+    assert "min-height: 0;" in stylesheet
+    assert "overflow-y: auto;" in stylesheet
+    assert "overscroll-behavior-y: contain;" in stylesheet
+    assert "scrollbar-width: thin;" in stylesheet
+    assert "const AUTO_FOLLOW_THRESHOLD_PX = 80" in script
+    assert "function isNearBottom()" in script
+    assert "if (!force && !state.autoFollow) return;" in script
+    assert 'elements.chatScroll.addEventListener("scroll"' in script
+    assert 'elements.chatScroll.addEventListener("wheel", handleChatWheel' in script
+
+
+def test_sidebar_uses_persisted_conversation_management_endpoints():
+    script = client.get("/ui/app.js").text
+    stylesheet = client.get("/ui/styles.css").text
+
+    assert "function renderConversationList()" in script
+    assert "function positionConversationMenu(menu)" in script
+    assert 'const rowBounds = menu.closest(".conversation-row").getBoundingClientRect()' in script
+    assert 'menu.style.top = `${top}px`' in script
+    assert 'menu.classList.add("open-up")' in script
+    assert "position: fixed;" in stylesheet
+    assert ".conversation-menu.open-up" in stylesheet
+    assert "async function loadConversation(conversationId)" in script
+    assert "async function startNewConversation" in script
+    assert 'method: "PATCH"' in script
+    assert 'method: "DELETE"' in script
+    assert "/conversations" in script
+
+
+def test_web_ui_exposes_memory_controls_and_temporary_chat_boundary():
+    script = client.get("/ui/app.js").text
+    stylesheet = client.get("/ui/styles.css").text
+
+    assert "function startTemporaryConversation" in script
+    assert "if (state.temporary) payload.temporary = true" in script
+    assert 'elements.temporaryChat.addEventListener("click"' in script
+    assert "function openMemoryDialog" in script
+    assert "/memory/observations" in script
+    assert "/memory/events" in script
+    assert "/undo" in script
+    assert ".memory-dialog-backdrop" in stylesheet
+    assert ".memory-card-actions" in stylesheet
 
 
 def test_web_ui_defaults_to_http_and_keeps_sse_as_explicit_opt_in():

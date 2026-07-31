@@ -3,35 +3,37 @@
 ## Current Task
 
 - Status: idle
-- Goal: 核对当前阶段改动、运行提交前验证并推送到 GitHub。
-- Updated: 2026-07-30
+- Goal: 完成记忆系统 V2，实现自动提取、证据累积、分级写入、审计撤销、临时聊天与网页端管理，并同步项目和学习文档。
+- Updated: 2026-07-31
 
 ## Progress
 
-- 已核对当前公开 API、Web UI 交互、模型目录、外部依赖和 Motion 素材边界。
-- 已新增 `docs/project/手动验收测试清单.md`，覆盖真实 API、离线演示、网页交互、全部 Agent 能力、RAG、记忆、动作、HTTP/SSE/WebSocket、降级与小程序补充验收。
-- 已同步 `docs/project/README.md` 和 `docs/project/运行与排错.md` 的入口。
-- 当前阶段的 DeepSeek 模型切换、Web UI、Agent 执行轨迹、测试与文档已完成提交前核对，准备推送 GitHub。
+- 新增 observation、evidence、event 三层数据模型，保留完整会话与正式长期记忆的原有结构。
+- 低风险稳定信息可跨会话累积独立证据并自动晋升；中等置信线索以低信任区块软注入；敏感、冲突信息必须确认；疑似密钥不落库。
+- 增加证据去重、过期清理、确认、拒绝、审计事件和撤销能力。
+- 临时聊天使用进程内短期窗口，不写入会话、摘要、观察或长期记忆。
+- 网页端增加临时聊天入口、记忆管理器、观察确认/拒绝和事件撤销。
+- 已同步项目设计、实施状态、接口、运行排错、UI、手动验收、项目证据和学习/面试文档。
 
 ## Key Decisions
 
-- 真实 DeepSeek、Tavily、mock MCP 和本地 Qwen 分开验收，不能把降级结果记成真实外部调用成功。
-- 当前 `data/motions/squat.npz` 与 MediaPipe 图片/视频 schema 不兼容；清单必须明确“姿态提取成功”不等于“标准动作相似度成功”。
-- Web/FastAPI 作为本清单主线，小程序仅提供独立补充验收入口。
+- 自动晋升默认要求至少 2 条独立证据、来自 2 个会话且置信度不低于 0.82；30 天未验证观察可过期。这些是可配置的保守起点，不是已证明最优参数。
+- 不确定信息不会冒充事实进入正式长期记忆，而是放入独立的“待验证线索”低信任 Prompt 区块。
+- 当前默认关闭 LLM 自由抽取，仅使用有限、可解释的稳定信息规则，降低误记和提示注入风险。
+- 当前 `user_id` 只实现原型级数据隔离，不等同于真实身份认证；生产化仍需鉴权、加密和多实例一致性。
 
 ## Verification
 
-- 全部 Markdown 相对链接检查通过。
-- 文档代码围栏成对，公开 API 路径已与 `app/main.py` 复核。
-- `git diff --check` 通过，仅有仓库既有的 LF/CRLF 提示。
-- 提交前全量回归：`301 passed, 1 skipped, 3 warnings`。
-- `docs/learning/agent.json` 仍由 `.gitignore` 排除，未发现形似真实 API Key 的待提交内容。
-- 本轮编写的是可执行测试方案，未把尚未实际执行的项目功能登记为通过证据。
+- `python -m pytest -q`：315 passed，1 skipped，3 warnings，64.42s。
+- 记忆/UI 专项测试：55 passed，2 warnings。
+- `node --check app/static/app.js`：通过。
+- `git diff --check`：通过，仅有 Git 的换行符提示。
 
 ## Next Steps
 
-- 后续按手动验收清单补齐 Tavily、真实 MCP、本地 Qwen 与图片/视频动作素材的真实证据。
+- 在浏览器按手动验收清单验证：跨会话自动晋升、敏感信息确认、冲突处理、事件撤销和临时聊天零持久化。
+- 若进入生产化阶段，再补充真实用户认证、静态数据加密、多实例并发控制，以及基于评测集校准抽取规则和晋升阈值。
 
 ## Resume Prompt
 
-先读 `AGENTS.md`、本文件和 `git status --short`。当前阶段已完成自动化回归与 GitHub 推送；下一步按手动验收清单补齐尚未验证的真实外部依赖和媒体链路。
+继续检查记忆系统 V2 的浏览器手动验收结果；如发现问题，优先修复并同步 `docs/project/optimization/记忆系统设计.md`、接口说明、项目证据和相关学习文档。

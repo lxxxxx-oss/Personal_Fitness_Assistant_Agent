@@ -308,6 +308,85 @@ class MemoryStore:
                 ON candidate_memories(user_id, status, updated_at)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_observations (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    normalized_key TEXT NOT NULL,
+                    memory_slot TEXT,
+                    risk_level TEXT NOT NULL
+                        CHECK (risk_level IN ('low','sensitive','secret')),
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'observed'
+                        CHECK (status IN (
+                            'observed','review_required','promoted','rejected',
+                            'expired','superseded'
+                        )),
+                    evidence_count INTEGER NOT NULL DEFAULT 0,
+                    conversation_count INTEGER NOT NULL DEFAULT 0,
+                    promoted_memory_id TEXT,
+                    expires_at TEXT,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_observations_user_status
+                ON memory_observations(user_id, status, updated_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_observations_open_key
+                ON memory_observations(user_id, normalized_key)
+                WHERE status IN ('observed','review_required')
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_evidence (
+                    id TEXT PRIMARY KEY,
+                    observation_id TEXT NOT NULL REFERENCES memory_observations(id),
+                    conversation_id TEXT,
+                    message_id TEXT,
+                    source_ref TEXT NOT NULL,
+                    snippet TEXT NOT NULL,
+                    polarity TEXT NOT NULL DEFAULT 'support'
+                        CHECK (polarity IN ('support','contradict')),
+                    extractor TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(observation_id, source_ref)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memory_events (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    subject_type TEXT NOT NULL,
+                    subject_id TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    payload TEXT NOT NULL DEFAULT '{}',
+                    reversible INTEGER NOT NULL DEFAULT 0,
+                    undone_at TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_events_user_created
+                ON memory_events(user_id, created_at DESC)
+                """
+            )
             try:
                 conn.execute(
                     """
@@ -635,11 +714,15 @@ class MemoryStore:
         self,
         user_id: str,
         message: str,
+        *,
+        conversation_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Capture explicit memory or a conservative implicit candidate.
+        """Capture explicit memory or a conservative implicit observation.
 
-        Explicit non-sensitive, non-conflicting content may be committed. All
-        implicit content requires confirmation; secrets are never persisted.
+        Explicit low-risk content may be committed. Implicit low-risk content
+        accumulates independent evidence; sensitive content requires review and
+        secrets are never persisted.
         """
         explicit = self.remember_explicit(user_id, message)
         if explicit is not None or extract_explicit_memory_content(message):
@@ -650,6 +733,27 @@ class MemoryStore:
         kind = infer_explicit_memory_kind(content)
         slot = infer_memory_slot(kind, content)
         conflicts = self._find_slot_conflicts(user_id, slot, content) if slot else []
+        try:
+            from app.config import config
+
+            v2_enabled = bool(config.memory_v2_enabled)
+        except Exception:
+            v2_enabled = True
+        if v2_enabled:
+            return self.observe_memory(
+                user_id=user_id,
+                kind=kind,
+                content=content,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                has_conflict=bool(conflicts),
+                metadata={
+                    "source_message": message,
+                    "memory_slot": slot,
+                    "conflicting_memory_ids": [item["id"] for item in conflicts],
+                    "extraction_mode": "conservative_rules",
+                },
+            )
         return self.create_candidate_memory(
             user_id=user_id,
             kind=kind,
@@ -665,6 +769,525 @@ class MemoryStore:
                 "extraction_mode": "conservative_rules",
             },
         )
+
+    def observe_memory(
+        self,
+        *,
+        user_id: str,
+        kind: str,
+        content: str,
+        conversation_id: Optional[str] = None,
+        message_id: Optional[str] = None,
+        has_conflict: bool = False,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Record one user-grounded observation and independently sourced evidence."""
+        from app.config import config
+        from app.memory.models import MemoryRisk
+        from app.memory.policy import MemoryPolicy
+
+        self._validate_kind(kind)
+        content = content.strip()
+        if not content:
+            raise ValueError("content must not be empty")
+        policy = MemoryPolicy(
+            auto_promotion_evidence=config.memory_auto_promotion_evidence,
+            auto_promotion_conversations=config.memory_auto_promotion_conversations,
+            auto_promotion_confidence=config.memory_auto_promotion_confidence,
+            soft_memory_min_confidence=config.memory_soft_min_confidence,
+            observation_ttl_days=config.memory_observation_ttl_days,
+        )
+        risk = policy.risk_for(content)
+        if risk is MemoryRisk.SECRET:
+            return None
+        slot = (metadata or {}).get("memory_slot") or infer_memory_slot(kind, content)
+        normalized_key = build_memory_key(
+            user_id,
+            kind,
+            f"{slot or ''}:{normalize_memory_content(content)}",
+        )
+        now = _utc_now()
+        expires_at = (
+            datetime.now(timezone.utc) + timedelta(days=policy.observation_ttl_days)
+        ).isoformat()
+        source_ref = message_id or (
+            f"{conversation_id}:{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}"
+            if conversation_id
+            else f"message:{hashlib.sha256(content.encode('utf-8')).hexdigest()[:16]}"
+        )
+        evidence_added = False
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM memory_observations
+                WHERE user_id = ? AND normalized_key = ?
+                  AND status IN ('observed','review_required')
+                """,
+                (user_id, normalized_key),
+            ).fetchone()
+            observation_id = str(row["id"]) if row else str(uuid.uuid4())
+            if row is None:
+                status = (
+                    "review_required"
+                    if policy.requires_confirmation(risk, has_conflict=has_conflict)
+                    else "observed"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO memory_observations (
+                        id, user_id, kind, content, normalized_key, memory_slot,
+                        risk_level, confidence, status, evidence_count,
+                        conversation_count, expires_at, metadata, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0.0, ?, 0, 0, ?, ?, ?, ?)
+                    """,
+                    (
+                        observation_id,
+                        user_id,
+                        kind,
+                        content,
+                        normalized_key,
+                        slot,
+                        risk.value,
+                        status,
+                        expires_at,
+                        json.dumps(dict(metadata or {}), ensure_ascii=False),
+                        now,
+                        now,
+                    ),
+                )
+            cursor = conn.execute(
+                """
+                INSERT OR IGNORE INTO memory_evidence (
+                    id, observation_id, conversation_id, message_id, source_ref,
+                    snippet, polarity, extractor, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'support', 'conservative_rules_v2', ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    observation_id,
+                    conversation_id,
+                    message_id,
+                    source_ref,
+                    content[:500],
+                    now,
+                ),
+            )
+            if cursor.rowcount:
+                evidence_added = True
+                counts = conn.execute(
+                    """
+                    SELECT COUNT(*) AS evidence_count,
+                           COUNT(DISTINCT COALESCE(conversation_id, source_ref))
+                               AS conversation_count
+                    FROM memory_evidence
+                    WHERE observation_id = ? AND polarity = 'support'
+                    """,
+                    (observation_id,),
+                ).fetchone()
+                evidence_count = int(counts["evidence_count"])
+                conversation_count = int(counts["conversation_count"])
+                confidence = min(0.95, 0.68 + 0.14 * (evidence_count - 1))
+                conn.execute(
+                    """
+                    UPDATE memory_observations
+                    SET evidence_count = ?, conversation_count = ?,
+                        confidence = ?, expires_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        evidence_count,
+                        conversation_count,
+                        confidence,
+                        expires_at,
+                        now,
+                        observation_id,
+                    ),
+                )
+                self._record_event_locked(
+                    conn,
+                    user_id=user_id,
+                    event_type="capture" if evidence_count == 1 else "reinforce",
+                    subject_type="observation",
+                    subject_id=observation_id,
+                    actor="system",
+                    payload={"source_ref": source_ref},
+                )
+        observation = self.get_observation(user_id, observation_id)
+        if observation:
+            observation["candidate"] = True
+            observation["deduplicated"] = not evidence_added
+            observation["privacy_level"] = (
+                "health"
+                if observation["risk_level"] == "sensitive"
+                else observation["risk_level"]
+            )
+            observation["metadata"] = {
+                **observation.get("metadata", {}),
+                "candidate_reason": "implicit_stable_fact",
+            }
+        if (
+            observation
+            and config.memory_auto_promotion_enabled
+            and policy.can_auto_promote(
+                risk=risk,
+                confidence=float(observation["confidence"]),
+                evidence_count=int(observation["evidence_count"]),
+                conversation_count=int(observation["conversation_count"]),
+                has_conflict=has_conflict,
+            )
+        ):
+            return self.promote_observation(
+                user_id, observation_id, actor="system", auto=True
+            )
+        return observation
+
+    def get_observation(
+        self, user_id: str, observation_id: str
+    ) -> Optional[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM memory_observations WHERE id = ? AND user_id = ?",
+                (observation_id, user_id),
+            ).fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_observations(
+        self,
+        user_id: str,
+        *,
+        status: str = "open",
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        self.expire_stale_observations(user_id)
+        allowed = {
+            "open",
+            "observed",
+            "review_required",
+            "promoted",
+            "rejected",
+            "expired",
+            "superseded",
+            "all",
+        }
+        if status not in allowed:
+            raise ValueError(f"status must be one of {sorted(allowed)}")
+        where = ["user_id = ?"]
+        params: List[Any] = [user_id]
+        if status == "open":
+            where.append("status IN ('observed','review_required')")
+        elif status != "all":
+            where.append("status = ?")
+            params.append(status)
+        params.append(max(1, min(int(limit), 200)))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM memory_observations
+                WHERE {' AND '.join(where)}
+                ORDER BY updated_at DESC LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def expire_stale_observations(self, user_id: str) -> int:
+        """Expire open observations whose evidence has gone stale."""
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id FROM memory_observations
+                WHERE user_id = ? AND status IN ('observed','review_required')
+                  AND expires_at IS NOT NULL AND expires_at <= ?
+                """,
+                (user_id, now),
+            ).fetchall()
+            for row in rows:
+                observation_id = str(row["id"])
+                conn.execute(
+                    """
+                    UPDATE memory_observations
+                    SET status = 'expired', updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (now, observation_id, user_id),
+                )
+                self._record_event_locked(
+                    conn,
+                    user_id=user_id,
+                    event_type="expire",
+                    subject_type="observation",
+                    subject_id=observation_id,
+                    actor="system",
+                )
+        return len(rows)
+
+    def promote_observation(
+        self,
+        user_id: str,
+        observation_id: str,
+        *,
+        actor: str = "user",
+        auto: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        observation = self.get_observation(user_id, observation_id)
+        if observation is None or observation["status"] not in {
+            "observed",
+            "review_required",
+        }:
+            return None
+        if observation["risk_level"] == "secret":
+            return None
+        memory = self.create_memory(
+            user_id=user_id,
+            kind=observation["kind"],
+            content=observation["content"],
+            source_type="llm_candidate",
+            importance=0.75 if auto else 0.85,
+            confidence=float(observation["confidence"]) if auto else 1.0,
+            metadata={
+                **observation.get("metadata", {}),
+                "observation_id": observation_id,
+                "promotion": "automatic" if auto else "confirmed",
+            },
+        )
+        now = _utc_now()
+        conflicting_ids = [
+            str(item)
+            for item in observation.get("metadata", {}).get(
+                "conflicting_memory_ids", []
+            )
+            if item
+        ]
+        with self._lock, self._connect() as conn:
+            for conflicting_id in conflicting_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE memory_items
+                    SET status = 'deleted', superseded_by = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ? AND status = 'active'
+                    """,
+                    (memory["id"], now, conflicting_id, user_id),
+                )
+                if cursor.rowcount:
+                    self._delete_fts_locked(conn, conflicting_id)
+                    conn.execute(
+                        """
+                        INSERT INTO memory_relations (
+                            id, from_memory_id, to_memory_id, relation_type,
+                            metadata, created_at
+                        ) VALUES (?, ?, ?, 'supersedes', '{}', ?)
+                        """,
+                        (
+                            str(uuid.uuid4()),
+                            memory["id"],
+                            conflicting_id,
+                            now,
+                        ),
+                    )
+            conn.execute(
+                """
+                UPDATE memory_observations
+                SET status = 'promoted', promoted_memory_id = ?, updated_at = ?
+                WHERE id = ? AND user_id = ?
+                """,
+                (memory["id"], now, observation_id, user_id),
+            )
+            self._record_event_locked(
+                conn,
+                user_id=user_id,
+                event_type="promote" if auto else "confirm",
+                subject_type="memory",
+                subject_id=memory["id"],
+                actor=actor,
+                payload={"observation_id": observation_id, "auto": auto},
+                reversible=True,
+            )
+        if conflicting_ids:
+            self._delete_semantic_sources(conflicting_ids)
+        return {**memory, "promoted": True, "automatic": auto}
+
+    def reject_observation(self, user_id: str, observation_id: str) -> bool:
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE memory_observations
+                SET status = 'rejected', updated_at = ?
+                WHERE id = ? AND user_id = ?
+                  AND status IN ('observed','review_required')
+                """,
+                (now, observation_id, user_id),
+            )
+            if cursor.rowcount:
+                self._record_event_locked(
+                    conn,
+                    user_id=user_id,
+                    event_type="reject",
+                    subject_type="observation",
+                    subject_id=observation_id,
+                    actor="user",
+                )
+            return cursor.rowcount > 0
+
+    def search_soft_memories(
+        self, user_id: str, query: str, *, limit: int = 3
+    ) -> List[Dict[str, Any]]:
+        """Return only low-risk, sufficiently confident, non-expired observations."""
+        from app.config import config
+
+        if not config.memory_soft_injection_enabled:
+            return []
+        self.expire_stale_observations(user_id)
+        terms = {
+            item
+            for item in re.findall(r"[\w\u4e00-\u9fff]{2,}", query.lower())
+            if item
+        }
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_observations
+                WHERE user_id = ? AND status = 'observed' AND risk_level = 'low'
+                  AND confidence >= ?
+                  AND (expires_at IS NULL OR expires_at > ?)
+                ORDER BY confidence DESC, updated_at DESC LIMIT 100
+                """,
+                (user_id, config.memory_soft_min_confidence, now),
+            ).fetchall()
+        ranked = []
+        for row in rows:
+            item = self._row_to_dict(row)
+            content = str(item["content"]).lower()
+            overlap = sum(1 for term in terms if term in content)
+            item["score"] = float(item["confidence"]) + min(0.15, overlap * 0.05)
+            item["uncertain"] = True
+            ranked.append(item)
+        ranked.sort(key=lambda item: item["score"], reverse=True)
+        return ranked[: max(1, min(int(limit), 10))]
+
+    def list_memory_events(
+        self, user_id: str, *, limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_events WHERE user_id = ?
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                (user_id, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def undo_memory_event(self, user_id: str, event_id: str) -> bool:
+        """Undo a promotion by deleting its durable item and reopening observation."""
+        now = _utc_now()
+        from app.config import config
+
+        refreshed_expiry = (
+            datetime.now(timezone.utc)
+            + timedelta(days=config.memory_observation_ttl_days)
+        ).isoformat()
+        with self._lock, self._connect() as conn:
+            event = conn.execute(
+                """
+                SELECT * FROM memory_events
+                WHERE id = ? AND user_id = ? AND reversible = 1 AND undone_at IS NULL
+                """,
+                (event_id, user_id),
+            ).fetchone()
+            if event is None or event["event_type"] not in {"promote", "confirm"}:
+                return False
+            payload = json.loads(event["payload"] or "{}")
+            memory_id = str(event["subject_id"])
+            conn.execute(
+                """
+                UPDATE memory_items SET status = 'deleted', updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'active'
+                """,
+                (now, memory_id, user_id),
+            )
+            observation_id = payload.get("observation_id")
+            if observation_id:
+                observation = conn.execute(
+                    """
+                    SELECT risk_level FROM memory_observations
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (observation_id, user_id),
+                ).fetchone()
+                reopened_status = (
+                    "review_required"
+                    if observation is not None
+                    and observation["risk_level"] == "sensitive"
+                    else "observed"
+                )
+                conn.execute(
+                    """
+                    UPDATE memory_observations
+                    SET status = ?, promoted_memory_id = NULL,
+                        expires_at = ?, updated_at = ?
+                    WHERE id = ? AND user_id = ?
+                    """,
+                    (
+                        reopened_status,
+                        refreshed_expiry,
+                        now,
+                        observation_id,
+                        user_id,
+                    ),
+                )
+            conn.execute(
+                "UPDATE memory_events SET undone_at = ? WHERE id = ?",
+                (now, event_id),
+            )
+            self._delete_fts_locked(conn, memory_id)
+            self._record_event_locked(
+                conn,
+                user_id=user_id,
+                event_type="undo",
+                subject_type="event",
+                subject_id=event_id,
+                actor="user",
+                payload={"memory_id": memory_id},
+            )
+        self._delete_semantic_sources([memory_id])
+        return True
+
+    def _record_event_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: str,
+        event_type: str,
+        subject_type: str,
+        subject_id: str,
+        actor: str,
+        payload: Optional[Mapping[str, Any]] = None,
+        reversible: bool = False,
+    ) -> str:
+        event_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO memory_events (
+                id, user_id, event_type, subject_type, subject_id, actor,
+                payload, reversible, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                user_id,
+                event_type,
+                subject_type,
+                subject_id,
+                actor,
+                json.dumps(dict(payload or {}), ensure_ascii=False),
+                int(reversible),
+                _utc_now(),
+            ),
+        )
+        return event_id
 
     def create_candidate_memory(
         self,
@@ -755,7 +1378,31 @@ class MemoryStore:
                 """,
                 tuple(params),
             ).fetchall()
-        return [self._row_to_dict(row) for row in rows]
+        legacy = [self._row_to_dict(row) for row in rows]
+        if status in {"pending", "all"}:
+            observations = self.list_observations(
+                user_id,
+                status="open" if status == "pending" else "all",
+                limit=limit,
+            )
+            for item in observations:
+                if item["status"] not in {"observed", "review_required"}:
+                    continue
+                item["candidate"] = True
+                item["scope"] = "global"
+                item["source_type"] = "llm_candidate"
+                item["importance"] = 0.65
+                item["privacy_level"] = (
+                    "health" if item["risk_level"] == "sensitive" else "normal"
+                )
+                item["status"] = "pending"
+                item["metadata"] = {
+                    **item.get("metadata", {}),
+                    "candidate_reason": "implicit_stable_fact",
+                }
+                legacy.append(item)
+        legacy.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+        return legacy[: max(1, min(int(limit), 200))]
 
     def get_candidate_memory(
         self,
@@ -778,6 +1425,8 @@ class MemoryStore:
         candidate_id: str,
     ) -> Optional[Dict[str, Any]]:
         candidate = self.get_candidate_memory(user_id, candidate_id)
+        if candidate is None:
+            return self.promote_observation(user_id, candidate_id, actor="user")
         if candidate is None or candidate["status"] != "pending":
             return None
         memory = self.create_memory(
@@ -834,6 +1483,8 @@ class MemoryStore:
         return memory
 
     def reject_candidate_memory(self, user_id: str, candidate_id: str) -> bool:
+        if self.get_candidate_memory(user_id, candidate_id) is None:
+            return self.reject_observation(user_id, candidate_id)
         now = _utc_now()
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
@@ -1287,6 +1938,11 @@ class MemoryStore:
             item["metadata"] = json.loads(item.get("metadata") or "{}")
         except (TypeError, json.JSONDecodeError):
             item["metadata"] = {}
+        if "payload" in item:
+            try:
+                item["payload"] = json.loads(item.get("payload") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                item["payload"] = {}
         return item
 
     def _validate_kind(self, kind: str) -> None:

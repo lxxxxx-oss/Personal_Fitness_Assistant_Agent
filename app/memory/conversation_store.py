@@ -14,6 +14,13 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _conversation_title(value: str, max_length: int = 36) -> str:
+    normalized = " ".join(str(value or "").split()).strip()
+    if not normalized:
+        return "新对话"
+    return normalized if len(normalized) <= max_length else f"{normalized[:max_length]}…"
+
+
 class ConversationStore:
     """Persist conversations and messages in SQLite.
 
@@ -43,6 +50,7 @@ class ConversationStore:
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
                     user_id TEXT NOT NULL,
+                    title TEXT,
                     version INTEGER NOT NULL DEFAULT 0,
                     last_compacted_message_id TEXT,
                     status TEXT NOT NULL DEFAULT 'active'
@@ -54,6 +62,12 @@ class ConversationStore:
                 )
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in conn.execute("PRAGMA table_info(conversations)").fetchall()
+            }
+            if "title" not in columns:
+                conn.execute("ALTER TABLE conversations ADD COLUMN title TEXT")
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_conversations_user_status
@@ -105,21 +119,87 @@ class ConversationStore:
                 """
             )
 
-    def create_conversation(self, user_id: str) -> str:
+    def create_conversation(self, user_id: str, title: Optional[str] = None) -> str:
         conversation_id = str(uuid.uuid4())
         now = _utc_now()
+        stored_title = _conversation_title(title) if title else None
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO conversations (
-                    id, user_id, version, status, created_at, updated_at,
+                    id, user_id, title, version, status, created_at, updated_at,
                     last_active_at, idle_timeout_minutes
                 )
-                VALUES (?, ?, 0, 'active', ?, ?, ?, 30)
+                VALUES (?, ?, ?, 0, 'active', ?, ?, ?, 30)
                 """,
-                (conversation_id, user_id, now, now, now),
+                (conversation_id, user_id, stored_title, now, now, now),
             )
         return conversation_id
+
+    def list_conversations(self, user_id: str, limit: int = 30) -> List[Dict]:
+        safe_limit = max(1, min(int(limit), 100))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    c.id,
+                    COALESCE(NULLIF(TRIM(c.title), ''), '新对话') AS title,
+                    c.created_at,
+                    c.updated_at,
+                    c.last_active_at,
+                    COUNT(m.id) AS message_count
+                FROM conversations AS c
+                LEFT JOIN messages AS m
+                    ON m.conversation_id = c.id AND m.user_id = c.user_id
+                WHERE c.user_id = ? AND c.status = 'active'
+                GROUP BY c.id
+                ORDER BY c.last_active_at DESC, c.created_at DESC
+                LIMIT ?
+                """,
+                (user_id, safe_limit),
+            ).fetchall()
+        return [
+            {
+                **dict(row),
+                "message_count": int(row["message_count"]),
+            }
+            for row in rows
+        ]
+
+    def rename_conversation(
+        self,
+        conversation_id: str,
+        user_id: str,
+        title: str,
+    ) -> Dict:
+        normalized = _conversation_title(title, max_length=80)
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE conversations
+                SET title = ?, updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'active'
+                """,
+                (normalized, now, conversation_id, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("active conversation was not found for this user")
+        return self.get_conversation(conversation_id, user_id) or {}
+
+    def delete_conversation(self, conversation_id: str, user_id: str) -> None:
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE conversations
+                SET status = 'deleted', updated_at = ?
+                WHERE id = ? AND user_id = ? AND status = 'active'
+                """,
+                (now, conversation_id, user_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("active conversation was not found for this user")
 
     def get_conversation(
         self,
@@ -184,11 +264,23 @@ class ConversationStore:
                 """
                 UPDATE conversations
                 SET version = version + 1,
+                    title = CASE
+                        WHEN ? = 'user' AND (title IS NULL OR TRIM(title) = '')
+                            THEN ?
+                        ELSE title
+                    END,
                     updated_at = ?,
                     last_active_at = ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (now, now, conversation_id, user_id),
+                (
+                    role,
+                    _conversation_title(content),
+                    now,
+                    now,
+                    conversation_id,
+                    user_id,
+                ),
             )
         return message_id
 
@@ -198,8 +290,8 @@ class ConversationStore:
         user_id: str,
         user_msg: str,
         assistant_msg: str,
-    ) -> None:
-        """Persist one complete user/assistant turn in a single transaction."""
+    ) -> Dict[str, str]:
+        """Persist one complete turn and return stable evidence identifiers."""
         now = _utc_now()
         rows = [
             (str(uuid.uuid4()), conversation_id, user_id, "user", user_msg, now),
@@ -235,12 +327,26 @@ class ConversationStore:
                 """
                 UPDATE conversations
                 SET version = version + 1,
+                    title = CASE
+                        WHEN title IS NULL OR TRIM(title) = '' THEN ?
+                        ELSE title
+                    END,
                     updated_at = ?,
                     last_active_at = ?
                 WHERE id = ? AND user_id = ?
                 """,
-                (now, now, conversation_id, user_id),
+                (
+                    _conversation_title(user_msg),
+                    now,
+                    now,
+                    conversation_id,
+                    user_id,
+                ),
             )
+        return {
+            "user_message_id": rows[0][0],
+            "assistant_message_id": rows[1][0],
+        }
 
     def get_messages(
         self,

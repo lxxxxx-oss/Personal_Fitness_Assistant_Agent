@@ -204,6 +204,34 @@ class PromptBuilder:
         return "\n".join(lines)
 
     @staticmethod
+    def soft_memory_block(
+        memories: Sequence[Mapping[str, Any]],
+        *,
+        max_chars: int = 600,
+    ) -> str:
+        """Render unconfirmed observations with an explicit trust boundary."""
+        if not memories:
+            return "无待验证的个性化线索"
+        lines: List[str] = [
+            "以下内容只是系统从历史表达中提取的低风险线索，尚未成为长期记忆。",
+            "只能用于温和地个性化回答；不得当作医疗事实、硬性约束或用户明确承诺。",
+            "若它影响结论，应使用不确定措辞或向用户确认：",
+        ]
+        used = sum(len(line) for line in lines)
+        for item in memories:
+            line = (
+                f"- [待验证/{item.get('kind', 'note')}] "
+                f"{item.get('content', '')} "
+                f"(confidence={item.get('confidence', 0):.2f})"
+            )
+            if used + len(line) > max_chars:
+                lines.append("- ...[待验证线索已按预算截断]")
+                break
+            lines.append(line)
+            used += len(line)
+        return "\n".join(lines)
+
+    @staticmethod
     def conversation_summary_block(state: RouterState) -> str:
         summary = str(state.get("_conversation_summary", "")).strip()
         if not summary:
@@ -241,6 +269,9 @@ class PromptBuilder:
         long_term_memory_text = PromptBuilder.long_term_memory_block(
             state.get("_long_term_memories", [])
         )
+        soft_memory_text = PromptBuilder.soft_memory_block(
+            state.get("_soft_memories", [])
+        )
         conversation_summary = PromptBuilder.conversation_summary_block(state)
         prompt = f"""# 角色
 你是一个专业的健身知识助手，由运动科学和力量训练领域的知识库支持。你的专长包括：
@@ -261,6 +292,9 @@ class PromptBuilder:
 ## 长期记忆
 {long_term_memory_text}
 
+## 待验证的个性化线索
+{soft_memory_text}
+
 ## 当前会话摘要
 {conversation_summary}
 
@@ -279,6 +313,7 @@ class PromptBuilder:
                 "safety_rules",
                 "rag_evidence",
                 "long_term_memory",
+                "soft_memory",
                 "conversation_summary",
                 "recent_conversation",
                 "user_question",
@@ -325,6 +360,9 @@ class PromptBuilder:
         long_term_memory_text = PromptBuilder.long_term_memory_block(
             state.get("_long_term_memories", [])
         )
+        soft_memory_text = PromptBuilder.soft_memory_block(
+            state.get("_soft_memories", [])
+        )
         conversation_summary = PromptBuilder.conversation_summary_block(state)
         prompt = f"""# 角色
 你是一位注册运动营养师，专长于减脂饮食规划和增肌营养方案。
@@ -345,6 +383,9 @@ class PromptBuilder:
 
 # 长期记忆
 {long_term_memory_text}
+
+# 待验证的个性化线索
+{soft_memory_text}
 
 # 当前会话摘要
 {conversation_summary}

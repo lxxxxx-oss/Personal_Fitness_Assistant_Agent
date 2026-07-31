@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4096)
     conversation_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     model: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    temporary: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -28,6 +29,7 @@ class ChatResponse(BaseModel):
     sources: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     execution: List[ExecutionTraceItem] = Field(default_factory=list)
+    temporary: bool = False
 
 
 class ModelInfoResponse(BaseModel):
@@ -48,6 +50,28 @@ class HistoryResponse(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None
     history: List[Dict[str, str]]
+
+
+class ConversationCreateRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=80)
+
+
+class ConversationUpdateRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=80)
+
+
+class ConversationItemResponse(BaseModel):
+    id: str
+    title: str
+    message_count: int = 0
+    created_at: str
+    updated_at: str
+    last_active_at: str
+
+
+class ConversationListResponse(BaseModel):
+    user_id: str
+    conversations: List[ConversationItemResponse] = Field(default_factory=list)
 
 
 class ClearResponse(BaseModel):
@@ -132,6 +156,48 @@ class CandidateMemoryResponse(BaseModel):
 class CandidateMemoryListResponse(BaseModel):
     user_id: str
     candidates: List[CandidateMemoryResponse] = Field(default_factory=list)
+
+
+class MemoryObservationResponse(BaseModel):
+    id: str
+    user_id: str
+    kind: str
+    content: str
+    normalized_key: str
+    memory_slot: Optional[str] = None
+    risk_level: str
+    confidence: float
+    status: str
+    evidence_count: int
+    conversation_count: int
+    promoted_memory_id: Optional[str] = None
+    expires_at: Optional[str] = None
+    metadata: Dict = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+
+class MemoryObservationListResponse(BaseModel):
+    user_id: str
+    observations: List[MemoryObservationResponse] = Field(default_factory=list)
+
+
+class MemoryEventResponse(BaseModel):
+    id: str
+    user_id: str
+    event_type: str
+    subject_type: str
+    subject_id: str
+    actor: str
+    payload: Dict = Field(default_factory=dict)
+    reversible: bool = False
+    undone_at: Optional[str] = None
+    created_at: str
+
+
+class MemoryEventListResponse(BaseModel):
+    user_id: str
+    events: List[MemoryEventResponse] = Field(default_factory=list)
 
 
 class EmbeddingJobResponse(BaseModel):
