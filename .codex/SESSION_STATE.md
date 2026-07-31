@@ -1,39 +1,35 @@
 # Codex Session State
 
+> 注意：本段为 2026-07-31 最新交接状态；下方若出现乱码旧内容，视为已废弃。
+
 ## Current Task
 
 - Status: idle
-- Goal: 完成记忆系统 V2，实现自动提取、证据累积、分级写入、审计撤销、临时聊天与网页端管理，并同步项目和学习文档。
+- Goal: 将近期 RAG / RAGAS / 检索指标相关问答整理进面试学习文档。
 - Updated: 2026-07-31
 
 ## Progress
 
-- 新增 observation、evidence、event 三层数据模型，保留完整会话与正式长期记忆的原有结构。
-- 低风险稳定信息可跨会话累积独立证据并自动晋升；中等置信线索以低信任区块软注入；敏感、冲突信息必须确认；疑似密钥不落库。
-- 增加证据去重、过期清理、确认、拒绝、审计事件和撤销能力。
-- 临时聊天使用进程内短期窗口，不写入会话、摘要、观察或长期记忆。
-- 网页端增加临时聊天入口、记忆管理器、观察确认/拒绝和事件撤销。
-- 已同步项目设计、实施状态、接口、运行排错、UI、手动验收、项目证据和学习/面试文档。
+- 已把用户追问和推荐回答整理到 `docs/learning/04_高频技术问答.md`，覆盖 Recall@5、MRR、BM25、RRF、RRF vs MRR、为什么 Dense/Hybrid 分开评测、Hybrid MRR 如何提升。
+- 已同步更新 `docs/learning/03_简历技术点总表.md`、`02_项目讲解与面试话术.md`、`07_面试前速记.md`、`08_模拟面试.md`、`09_简历项目描述与防守边界.md`、`11_求职投递与打招呼策略.md`、`00_RESUME_TECH_INDEX.md`、`06_技术深挖与白板.md`、`README.md`。
+- 统一了最新事实口径：Dense `Recall@5=0.895, MRR=0.833`；Hybrid `Recall@5=0.947, MRR=0.816`；RAGAS 本地裁判单样例 smoke 为 context `1.000`、faithfulness `1.000`、answer relevance `0.988`。
 
 ## Key Decisions
 
-- 自动晋升默认要求至少 2 条独立证据、来自 2 个会话且置信度不低于 0.82；30 天未验证观察可过期。这些是可配置的保守起点，不是已证明最优参数。
-- 不确定信息不会冒充事实进入正式长期记忆，而是放入独立的“待验证线索”低信任 Prompt 区块。
-- 当前默认关闭 LLM 自由抽取，仅使用有限、可解释的稳定信息规则，降低误记和提示注入风险。
-- 当前 `user_id` 只实现原型级数据隔离，不等同于真实身份认证；生产化仍需鉴权、加密和多实例一致性。
+- 面试中可以说 Hybrid 提升了 Top-5 召回覆盖，但因 MRR 略低，不能说“所有检索质量指标全面提升”。
+- RAGAS 单样例 smoke 只能证明链路跑通和兼容性，完整 19 条生成质量基线尚未稳定复现。
+- `eval_retrieval.py` 的 Dense/Hybrid 对比是开发诊断和消融实验，不是线上运行时拆成两个 RAG 系统。
 
 ## Verification
 
-- `python -m pytest -q`：315 passed，1 skipped，3 warnings，64.42s。
-- 记忆/UI 专项测试：55 passed，2 warnings。
-- `node --check app/static/app.js`：通过。
-- `git diff --check`：通过，仅有 Git 的换行符提示。
+- `rg` 已检查 `docs/learning` 中旧口径关键词，未保留过期 Dense 19/19 表述。
+- `git diff --check` 已运行，无空白格式错误；仅出现 Windows CRLF warning。
 
 ## Next Steps
 
-- 在浏览器按手动验收清单验证：跨会话自动晋升、敏感信息确认、冲突处理、事件撤销和临时聊天零持久化。
-- 若进入生产化阶段，再补充真实用户认证、静态数据加密、多实例并发控制，以及基于评测集校准抽取规则和晋升阈值。
+- 若继续增强面试证据，优先分批跑完整 19 条可回答样例 RAGAS 基线。
+- 若要交付当前整理结果，下一步可检查 diff 后提交。
 
 ## Resume Prompt
 
-继续检查记忆系统 V2 的浏览器手动验收结果；如发现问题，优先修复并同步 `docs/project/optimization/记忆系统设计.md`、接口说明、项目证据和相关学习文档。
+继续本项目：先读 `AGENTS.md`、`.codex/SESSION_STATE.md`、`git status --short` 和 `docs/project/README.md`。当前已把近期 RAG 指标、BM25/RRF/MRR、Dense/Hybrid 消融和 RAGAS smoke 结论整理进 `docs/learning/`；注意完整 19 条 RAGAS 生成质量基线尚未稳定复现。

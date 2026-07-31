@@ -7,7 +7,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import app.llm.loader as loader_module
-from app.llm.loader import LLMGenerationError, LLMLoader, _mock_response
+from app.llm.loader import (
+    LLMGenerationError,
+    LLMLoader,
+    _mock_response,
+    strip_model_thinking,
+)
 from app.tools.types import ErrorCode
 
 
@@ -132,6 +137,16 @@ class TestLLMLoader:
         )
         assert loader.model_path == config.model_path
         assert loader.device == "cpu"
+
+    def test_strip_model_thinking_removes_complete_block(self):
+        result = strip_model_thinking("<think>草稿推理</think>\n核心结论：每周150分钟。")
+
+        assert result == "核心结论：每周150分钟。"
+
+    def test_strip_model_thinking_removes_unclosed_block(self):
+        result = strip_model_thinking("最终答案\n<think>后续内部草稿")
+
+        assert result == "最终答案"
 
     def test_generate_returns_string(self):
         """注意: 此测试需要模型文件存在,在不满足条件时skip."""

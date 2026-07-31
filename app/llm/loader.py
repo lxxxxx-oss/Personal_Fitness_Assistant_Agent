@@ -11,6 +11,7 @@ Users should consult qualified professionals for health-related decisions.
 import gc
 import logging
 import os
+import re
 import threading
 from typing import Any, Dict, Generator, Optional, Tuple
 
@@ -28,6 +29,23 @@ logger = logging.getLogger(__name__)
 _MODEL_CACHE: Dict[Tuple[str, str, str], Tuple[Any, Any]] = {}
 _MODEL_LOAD_LOCK = threading.Lock()
 _MODEL_GENERATION_LOCK = threading.Lock()
+_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*?</think>\s*", re.IGNORECASE)
+_UNCLOSED_THINK_BLOCK_RE = re.compile(r"<think>[\s\S]*$", re.IGNORECASE)
+
+
+def strip_model_thinking(text: str) -> str:
+    """Remove Qwen-style private thinking blocks from final model output.
+
+    The web UI keeps its own defensive cleanup for streaming display, but
+    backend callers and evaluation scripts receive `generate()` output directly.
+    Keeping the cleanup here prevents RAG/RAGAS samples from being polluted by
+    model-internal reasoning text.
+    """
+    if not isinstance(text, str):
+        return ""
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    cleaned = _UNCLOSED_THINK_BLOCK_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 class LLMGenerationError(RuntimeError):
@@ -192,9 +210,17 @@ class LLMLoader:
             )
 
         messages = [{"role": "user", "content": prompt}]
-        text = self._tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        try:
+            text = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError:
+            text = self._tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
         inputs = self._tokenizer(text, return_tensors="pt").to(self.device)
         input_tokens = int(inputs["input_ids"].shape[-1])
 
@@ -281,7 +307,7 @@ class LLMLoader:
 
         generated = outputs[0][inputs["input_ids"].shape[1] :]
         result = self._tokenizer.decode(generated, skip_special_tokens=True)
-        return result.strip()
+        return strip_model_thinking(result)
 
     def generate_stream(
         self,
