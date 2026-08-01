@@ -53,6 +53,55 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
     return ordered[index]
 
 
+def select_rows_by_split(
+    rows: Iterable[Mapping[str, Any]], split: str
+) -> List[Mapping[str, Any]]:
+    """Select the tuning, holdout, or complete evaluation set."""
+    if split not in {"all", "tuning", "holdout"}:
+        raise ValueError(f"Unsupported split: {split}")
+    return [row for row in rows if split == "all" or row.get("split") == split]
+
+
+def _summarize_cases(cases: Sequence[Mapping[str, Any]]) -> Dict[str, Any]:
+    answerable = [case for case in cases if bool(case["answerable"])]
+    unanswerable = [case for case in cases if not bool(case["answerable"])]
+    hit_count = sum(case["relevant_rank"] is not None for case in answerable)
+    reciprocal_rank_sum = sum(
+        1.0 / int(case["relevant_rank"])
+        for case in answerable
+        if case["relevant_rank"] is not None
+    )
+    empty_unanswerable = sum(int(case["result_count"] == 0) for case in unanswerable)
+    return {
+        "case_count": len(cases),
+        "answerable_count": len(answerable),
+        "hit_count": hit_count,
+        "recall_at_k": hit_count / len(answerable) if answerable else None,
+        "mrr": reciprocal_rank_sum / len(answerable) if answerable else None,
+        "unanswerable_count": len(unanswerable),
+        "unanswerable_empty_result_rate": (
+            empty_unanswerable / len(unanswerable) if unanswerable else None
+        ),
+    }
+
+
+def summarize_breakdowns(
+    cases: Sequence[Mapping[str, Any]],
+    dimensions: Sequence[str] = ("split", "category", "difficulty", "query_type"),
+) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """Report the same metrics by dataset slice to expose uneven performance."""
+    breakdowns: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for dimension in dimensions:
+        values = sorted({str(case.get(dimension, "unspecified")) for case in cases})
+        breakdowns[dimension] = {
+            value: _summarize_cases(
+                [case for case in cases if str(case.get(dimension, "unspecified")) == value]
+            )
+            for value in values
+        }
+    return breakdowns
+
+
 def evaluate_retrieval(
     rows: Iterable[Mapping[str, Any]],
     retriever: Any,
@@ -60,15 +109,9 @@ def evaluate_retrieval(
     top_k: int,
     threshold: float,
 ) -> Dict[str, Any]:
-    """Measure hit-style Recall@K, MRR, refusal rate, and retrieval latency."""
+    """Measure hit-style Recall@K, MRR, empty-result rate, and retrieval latency."""
     cases: List[Dict[str, Any]] = []
     latencies: List[float] = []
-    answerable_count = 0
-    hits = 0
-    reciprocal_rank_sum = 0.0
-    unanswerable_count = 0
-    empty_unanswerable = 0
-
     for row in rows:
         started = time.perf_counter()
         result = retriever.search(str(row["query"]), top_k, threshold)
@@ -81,22 +124,19 @@ def evaluate_retrieval(
         retrieved = list(result.data or [])
         rank = None
         if bool(row["answerable"]):
-            answerable_count += 1
             rank = relevant_rank(
                 retrieved,
                 row.get("expected_sources", []),
                 row.get("relevant_contains", []),
             )
-            if rank is not None:
-                hits += 1
-                reciprocal_rank_sum += 1.0 / rank
-        else:
-            unanswerable_count += 1
-            empty_unanswerable += int(not retrieved)
         latencies.append(latency_ms)
         cases.append(
             {
                 "id": row["id"],
+                "category": row.get("category", "unspecified"),
+                "split": row.get("split", "unspecified"),
+                "difficulty": row.get("difficulty", "unspecified"),
+                "query_type": row.get("query_type", "unspecified"),
                 "answerable": bool(row["answerable"]),
                 "relevant_rank": rank,
                 "result_count": len(retrieved),
@@ -106,21 +146,17 @@ def evaluate_retrieval(
             }
         )
 
-    if answerable_count == 0:
+    summary = _summarize_cases(cases)
+    if summary["answerable_count"] == 0:
         raise ValueError("Retrieval evaluation needs at least one answerable case")
     return {
-        "case_count": len(cases),
-        "answerable_count": answerable_count,
-        "recall_at_k": hits / answerable_count,
-        "mrr": reciprocal_rank_sum / answerable_count,
-        "unanswerable_rejection_rate": (
-            empty_unanswerable / unanswerable_count if unanswerable_count else None
-        ),
+        **summary,
         "latency_ms": {
             "mean": statistics.fmean(latencies),
             "p50": statistics.median(latencies),
             "p95": _percentile(latencies, 0.95),
         },
+        "breakdowns": summarize_breakdowns(cases),
         "cases": cases,
     }
 
@@ -165,6 +201,12 @@ def main() -> int:
     )
     parser.add_argument("--candidate-k", type=int, default=config.retriever_candidate_k)
     parser.add_argument("--rrf-k", type=int, default=config.retriever_rrf_k)
+    parser.add_argument(
+        "--split",
+        choices=("all", "tuning", "holdout"),
+        default="all",
+        help="Evaluate all cases, the tuning split, or the untouched holdout split",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--show-cases", action="store_true")
     args = parser.parse_args()
@@ -178,7 +220,7 @@ def main() -> int:
     if not 0.0 <= args.threshold <= 1.0:
         parser.error("--threshold must be between 0 and 1")
 
-    rows = load_rows(args.dataset)
+    rows = select_rows_by_split(load_rows(args.dataset), args.split)
     strategies = ("dense", "hybrid") if args.strategy == "both" else (args.strategy,)
     report: Dict[str, Any] = {
         "config": {
@@ -189,6 +231,7 @@ def main() -> int:
             "hybrid_dense_threshold_applied": False,
             "candidate_k": args.candidate_k,
             "rrf_k": args.rrf_k,
+            "split": args.split,
         },
         "strategies": {},
     }

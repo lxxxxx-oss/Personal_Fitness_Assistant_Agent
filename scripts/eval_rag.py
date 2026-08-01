@@ -17,7 +17,13 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from app.config import config
-from app.graph.subgraphs.chat import generate_node
+from app.graph.prompt_builder import CHAT_ANSWER_PROMPT_VERSION
+from app.graph.subgraphs.chat import (
+    CHAT_GENERATION_MAX_TOKENS,
+    CHAT_GENERATION_TEMPERATURE,
+    CHAT_GENERATION_TOP_P,
+    generate_node,
+)
 from app.tools.retriever import HybridRetriever, MemoryRetriever, SQLiteFaissRetriever
 
 
@@ -33,6 +39,8 @@ METRIC_LABELS = {
     "faithfulness": "忠实度",
     "answer_relevance": "答案相关性",
 }
+VALID_SPLITS = {"tuning", "holdout"}
+VALID_DIFFICULTIES = {"easy", "medium", "hard"}
 
 
 class RagasMetric(Protocol):
@@ -61,6 +69,10 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
             answerable = row.get("answerable")
             expected_sources = row.get("expected_sources", [])
             relevant_contains = row.get("relevant_contains", [])
+            category = row.get("category")
+            split = row.get("split")
+            difficulty = row.get("difficulty")
+            query_type = row.get("query_type")
             if not isinstance(case_id, str) or not case_id.strip():
                 raise ValueError(f"Line {line_no} must include non-empty id")
             if case_id in seen_ids:
@@ -71,6 +83,20 @@ def load_rows(path: Path) -> List[Dict[str, Any]]:
                 raise ValueError(f"Line {line_no} must include non-empty reference")
             if not isinstance(answerable, bool):
                 raise ValueError(f"Line {line_no} must include boolean answerable")
+            if not isinstance(category, str) or not category.strip():
+                raise ValueError(f"Line {line_no} must include non-empty category")
+            if split not in VALID_SPLITS:
+                raise ValueError(
+                    f"Line {line_no} split must be one of: "
+                    f"{', '.join(sorted(VALID_SPLITS))}"
+                )
+            if difficulty not in VALID_DIFFICULTIES:
+                raise ValueError(
+                    f"Line {line_no} difficulty must be one of: "
+                    f"{', '.join(sorted(VALID_DIFFICULTIES))}"
+                )
+            if not isinstance(query_type, str) or not query_type.strip():
+                raise ValueError(f"Line {line_no} must include non-empty query_type")
             if not _is_string_list(expected_sources):
                 raise ValueError(f"Line {line_no} expected_sources must be string list")
             if not _is_string_list(relevant_contains):
@@ -459,16 +485,26 @@ def print_report(result: Dict[str, Any], *, show_cases: bool = False) -> None:
 
 
 def _select_rows(
-    rows: Sequence[Dict[str, Any]], case_ids: Sequence[str]
+    rows: Sequence[Dict[str, Any]],
+    case_ids: Sequence[str],
+    split: str = "all",
 ) -> List[Dict[str, Any]]:
+    if split != "all" and split not in VALID_SPLITS:
+        raise ValueError(
+            f"Unknown split {split!r}; expected all, "
+            f"{', '.join(sorted(VALID_SPLITS))}"
+        )
+    selected = [row for row in rows if split == "all" or row["split"] == split]
     if not case_ids:
-        return list(rows)
+        return selected
     requested = set(case_ids)
-    known = {row["id"] for row in rows}
+    known = {row["id"] for row in selected}
     unknown = sorted(requested - known)
     if unknown:
-        raise ValueError(f"Unknown case ids: {', '.join(unknown)}")
-    return [row for row in rows if row["id"] in requested]
+        raise ValueError(
+            f"Unknown case ids for split {split!r}: {', '.join(unknown)}"
+        )
+    return [row for row in selected if row["id"] in requested]
 
 
 def _generation_config(args: argparse.Namespace) -> Dict[str, Any]:
@@ -484,6 +520,11 @@ def _generation_config(args: argparse.Namespace) -> Dict[str, Any]:
         "embedding_model": args.embedding_model,
         # The same local model may live under different absolute paths on two PCs.
         "generator_model": Path(str(config.model_path)).name,
+        "generator_prompt_version": CHAT_ANSWER_PROMPT_VERSION,
+        "generator_temperature": CHAT_GENERATION_TEMPERATURE,
+        "generator_top_p": CHAT_GENERATION_TOP_P,
+        "generator_max_tokens": CHAT_GENERATION_MAX_TOKENS,
+        "split": args.split,
         "case_ids": sorted(set(args.case_id or [])),
     }
     if args.retriever_backend == "sqlite_faiss":
@@ -592,6 +633,12 @@ def main() -> int:
         action="append",
         help="Restrict the run to one or more case ids; may be repeated",
     )
+    parser.add_argument(
+        "--split",
+        choices=("all", "tuning", "holdout"),
+        default="all",
+        help="Evaluate all cases, the tuning split, or the untouched holdout split",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--show-cases", action="store_true")
     args = parser.parse_args()
@@ -612,7 +659,7 @@ def main() -> int:
         parser.error("LLM_MOCK must be disabled; mock answers make RAGAS scores invalid")
 
     try:
-        rows = _select_rows(load_rows(args.dataset), args.case_id or [])
+        rows = _select_rows(load_rows(args.dataset), args.case_id or [], args.split)
         expected_answerable = sum(bool(row["answerable"]) for row in rows)
         skipped_unanswerable = sum(not row["answerable"] for row in rows)
         generation_config = _generation_config(args)

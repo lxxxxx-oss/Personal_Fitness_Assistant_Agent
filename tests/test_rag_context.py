@@ -1,8 +1,13 @@
 """RAG evidence formatting and source propagation tests."""
-from app.graph.subgraphs.chat import generate_node
+from app.graph.subgraphs.chat import (
+    CHAT_GENERATION_MAX_TOKENS,
+    CHAT_GENERATION_TEMPERATURE,
+    CHAT_GENERATION_TOP_P,
+    generate_node,
+)
 from app.graph.subgraphs.diet import recommend_node
 from app.graph.subgraphs.rag_context import build_rag_context
-from app.graph.prompt_builder import PromptBuilder
+from app.graph.prompt_builder import CHAT_ANSWER_PROMPT_VERSION, PromptBuilder
 from app.memory.token_budget import estimate_tokens
 
 
@@ -57,6 +62,69 @@ def test_chat_generate_node_propagates_rag_sources_in_streaming_mode():
     assert "long_term_memory" in result["_prompt_meta"]["sections"]
     assert "用户正在制定深蹲训练计划" in result["_prompt"]
     assert "conversation_summary" in result["_prompt_meta"]["sections"]
+    assert result["_prompt_meta"]["generation"] == {
+        "max_tokens": CHAT_GENERATION_MAX_TOKENS,
+        "temperature": CHAT_GENERATION_TEMPERATURE,
+        "top_p": CHAT_GENERATION_TOP_P,
+    }
+
+
+def test_chat_answer_prompt_enforces_evidence_only_grounding_contract():
+    state = {
+        "user_input": "成年人每周至少练几天力量？",
+        "memory": [{"role": "assistant", "content": "以前随口说过三天。"}],
+        "_streaming": True,
+        "_retrieved": [
+            {
+                "content": "成年人每周至少进行两天肌肉强化活动。",
+                "source": "cdc_strength_training.txt",
+            }
+        ],
+    }
+
+    prompt = generate_node(state)["_prompt"]
+
+    assert CHAT_ANSWER_PROMPT_VERSION == "grounded-v3"
+    assert "证据是唯一事实来源" in prompt
+    assert "保留原文逻辑方向" in prompt
+    assert "顺着错误前提回答" in prompt
+    assert "条件与方案不能混合" in prompt
+    assert "加载期与非加载方案" in prompt
+    assert "每个关键事实或数字后紧跟直接支持它的参考编号" in prompt
+    assert "证据不足就停止" in prompt
+    assert "不能作为专业事实证据" in prompt
+    assert "然后给出你的通用建议" not in prompt
+
+
+def test_chat_generate_node_uses_deterministic_grounded_decoding(monkeypatch):
+    captured = {}
+
+    class FakeLLM:
+        def generate(self, prompt):
+            captured["prompt"] = prompt
+            return "每天 3-5 克即可。[Ref1]"
+
+    def fake_create_llm(model_id, **kwargs):
+        captured["model_id"] = model_id
+        captured.update(kwargs)
+        return FakeLLM()
+
+    monkeypatch.setattr("app.llm.providers.create_llm", fake_create_llm)
+    result = generate_node({
+        "user_input": "不加载时肌酸怎么补？",
+        "memory": [],
+        "_model_id": "qwen-local",
+        "_retrieved": [{
+            "content": "不采用加载期时，每天摄入 3-5 克即可。",
+            "source": "creatine.txt",
+        }],
+    })
+
+    assert result["result"] == "每天 3-5 克即可。[Ref1]"
+    assert captured["model_id"] == "qwen-local"
+    assert captured["max_tokens"] == CHAT_GENERATION_MAX_TOKENS
+    assert captured["temperature"] == CHAT_GENERATION_TEMPERATURE
+    assert captured["top_p"] == CHAT_GENERATION_TOP_P
 
 
 def test_diet_recommend_node_propagates_rag_sources_in_streaming_mode():

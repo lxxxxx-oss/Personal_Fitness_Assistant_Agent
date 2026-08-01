@@ -498,10 +498,20 @@ async def _persist_prepared_chat(prepared: PreparedChat, reply: str) -> Dict[str
     )
 
 
-def _create_llm(model_id: Optional[str] = None):
+def _create_llm_for_result(result_state: RouterState):
+    """Create the selected LLM with generation options attached to its prompt."""
     from app.llm.providers import create_llm
 
-    return create_llm(model_id)
+    prompt_meta = result_state.get("_prompt_meta", {})
+    generation = prompt_meta.get("generation", {})
+    if not isinstance(generation, dict):
+        generation = {}
+    return create_llm(
+        result_state.get("_model_id"),
+        max_tokens=generation.get("max_tokens"),
+        temperature=generation.get("temperature"),
+        top_p=generation.get("top_p"),
+    )
 
 
 def _sse_event(event: str, payload: Dict[str, Any]) -> str:
@@ -1386,7 +1396,7 @@ async def chat_stream(request: ChatRequest):
                 return
 
             full_reply = ""
-            llm = _create_llm(result_state.get("_model_id"))
+            llm = _create_llm_for_result(result_state)
             async for token in _iterate_llm_tokens(llm, prompt):
                 full_reply += token
                 yield _sse_event("token", {"text": token})
@@ -1504,7 +1514,7 @@ async def chat_websocket(websocket: WebSocket):
         # Step 2: Stream LLM tokens via WebSocket
         # Bridge sync generation through an async queue so each token is sent
         # as soon as it is produced without blocking the event loop.
-        llm = _create_llm(result_state.get("_model_id"))
+        llm = _create_llm_for_result(result_state)
         full_reply = await _stream_llm_to_websocket(websocket, llm, prompt)
         if not full_reply.strip():
             raise RuntimeError("LLM stream completed without reply text")

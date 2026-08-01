@@ -76,6 +76,40 @@ class TestModelSelection:
 
 
 class TestChatEndpoint:
+    def test_streaming_llm_uses_prompt_generation_options(self, monkeypatch):
+        from app.main import _create_llm_for_result
+
+        captured = {}
+        marker = object()
+
+        def fake_create_llm(model_id=None, **kwargs):
+            captured["model_id"] = model_id
+            captured.update(kwargs)
+            return marker
+
+        monkeypatch.setattr("app.llm.providers.create_llm", fake_create_llm)
+
+        llm = _create_llm_for_result(
+            {
+                "_model_id": "qwen-local",
+                "_prompt_meta": {
+                    "generation": {
+                        "max_tokens": 512,
+                        "temperature": 0.0,
+                        "top_p": 1.0,
+                    }
+                },
+            }
+        )
+
+        assert llm is marker
+        assert captured == {
+            "model_id": "qwen-local",
+            "max_tokens": 512,
+            "temperature": 0.0,
+            "top_p": 1.0,
+        }
+
     def test_chat_returns_valid_response(self):
         payload = {"user_id": "test_user", "message": "how to squat?"}
         response = client.post("/chat", json=payload)

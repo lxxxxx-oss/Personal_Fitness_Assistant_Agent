@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ import pytest
 
 from app.tools.types import ToolResult
 from scripts.eval_rag import (
+    _select_rows,
     build_retriever,
     build_ragas_metrics,
     collect_samples,
@@ -96,10 +98,52 @@ def test_build_retriever_rejects_unknown_strategy():
 def test_rag_eval_dataset_has_reference_and_no_answer_cases():
     rows = load_rows(DATASET_PATH)
 
-    assert len(rows) == 21
+    assert len(rows) == 80
     assert all(row["reference"].strip() for row in rows)
-    assert sum(row["answerable"] for row in rows) == 19
-    assert sum(not row["answerable"] for row in rows) == 2
+    assert sum(row["answerable"] for row in rows) == 60
+    assert sum(not row["answerable"] for row in rows) == 20
+    assert Counter(row["split"] for row in rows) == {"tuning": 55, "holdout": 25}
+    assert Counter((row["split"], row["answerable"]) for row in rows) == {
+        ("tuning", True): 42,
+        ("tuning", False): 13,
+        ("holdout", True): 18,
+        ("holdout", False): 7,
+    }
+    assert {row["difficulty"] for row in rows} == {"easy", "medium", "hard"}
+    assert all(row["query_type"].strip() for row in rows)
+
+
+def test_rag_eval_gold_evidence_exists_in_expected_sources():
+    rows = load_rows(DATASET_PATH)
+    knowledge_dir = Path("data/knowledge")
+    knowledge = {
+        path.name: "".join(path.read_text(encoding="utf-8").lower().split())
+        for path in knowledge_dir.iterdir()
+        if path.suffix.lower() in {".txt", ".md"}
+    }
+
+    for row in rows:
+        if not row["answerable"]:
+            continue
+        assert set(row["expected_sources"]) <= set(knowledge), row["id"]
+        for fragment in row["relevant_contains"]:
+            normalized = "".join(fragment.lower().split())
+            assert any(
+                normalized in knowledge[source]
+                for source in row["expected_sources"]
+            ), (row["id"], fragment)
+
+
+def test_select_rows_supports_tuning_holdout_and_case_ids():
+    rows = load_rows(DATASET_PATH)
+    tuning = _select_rows(rows, [], "tuning")
+    holdout = _select_rows(rows, [], "holdout")
+
+    assert len(tuning) == 55
+    assert len(holdout) == 25
+    assert _select_rows(rows, [holdout[0]["id"]], "holdout") == [holdout[0]]
+    with pytest.raises(ValueError, match="Unknown case ids for split"):
+        _select_rows(rows, [holdout[0]["id"]], "tuning")
 
 
 def test_collect_samples_runs_retrieval_and_generation_for_answerable_only():
@@ -366,6 +410,37 @@ def test_load_rows_rejects_case_without_reference(tmp_path):
     )
 
     with pytest.raises(ValueError, match="non-empty reference"):
+        load_rows(dataset)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("split", "dev", "split must be one of"),
+        ("difficulty", "extreme", "difficulty must be one of"),
+        ("query_type", "", "non-empty query_type"),
+    ],
+)
+def test_load_rows_rejects_invalid_evaluation_metadata(
+    tmp_path, field, value, message
+):
+    row = {
+        "id": "invalid-metadata",
+        "category": "test",
+        "query": "问题",
+        "reference": "参考答案",
+        "answerable": True,
+        "expected_sources": ["gold.txt"],
+        "relevant_contains": ["事实"],
+        "split": "tuning",
+        "difficulty": "easy",
+        "query_type": "numeric",
+    }
+    row[field] = value
+    dataset = tmp_path / "invalid.jsonl"
+    dataset.write_text(json.dumps(row, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
         load_rows(dataset)
 
 

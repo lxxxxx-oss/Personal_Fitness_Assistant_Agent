@@ -1,35 +1,36 @@
 # Codex Session State
 
-> 注意：本段为 2026-07-31 最新交接状态；下方若出现乱码旧内容，视为已废弃。
-
 ## Current Task
 
 - Status: idle
-- Goal: 将近期 RAG / RAGAS / 检索指标相关问答整理进面试学习文档。
-- Updated: 2026-07-31
+- Goal: 扩展 RAG 评测集、收紧生成证据约束，并完成 tuning 对照验证。
+- Updated: 2026-08-01
 
-## Progress
+## Completed
 
-- 已把用户追问和推荐回答整理到 `docs/learning/04_高频技术问答.md`，覆盖 Recall@5、MRR、BM25、RRF、RRF vs MRR、为什么 Dense/Hybrid 分开评测、Hybrid MRR 如何提升。
-- 已同步更新 `docs/learning/03_简历技术点总表.md`、`02_项目讲解与面试话术.md`、`07_面试前速记.md`、`08_模拟面试.md`、`09_简历项目描述与防守边界.md`、`11_求职投递与打招呼策略.md`、`00_RESUME_TECH_INDEX.md`、`06_技术深挖与白板.md`、`README.md`。
-- 统一了最新事实口径：Dense `Recall@5=0.895, MRR=0.833`；Hybrid `Recall@5=0.947, MRR=0.816`；RAGAS 本地裁判单样例 smoke 为 context `1.000`、faithfulness `1.000`、answer relevance `0.988`。
+- 黄金集扩展为 80 条：60 条可回答、20 条无答案；55 条 tuning、25 条 holdout，并补齐 split、难度、领域和问法类型元数据。
+- `eval_retrieval.py` 与 `eval_rag.py` 支持分区、分层报告、分阶段执行、断点续跑和配置指纹；RAGAS 仍是主评测，Recall@K/MRR 只作检索诊断。
+- Chat 升级为 `grounded-v3`：只依据检索证据，保留否定和适用条件，不混合人群/剂量阶段，证据不足即停止，关键结论使用 `[RefN]`；普通和流式路径统一为 `max_tokens=512`、`temperature=0`、`top_p=1`。
+- 42 条可回答 tuning 已完成前后两轮真实生成、本地 RAGAS 评分和重点失败样例人工复核；项目事实文档与面试材料已同步。
+- 未运行 18 条可回答 holdout，避免调参期间污染最终验收；未改动未跟踪的 `docs/interview/`。
 
-## Key Decisions
+## Key Results
 
-- 面试中可以说 Hybrid 提升了 Top-5 召回覆盖，但因 MRR 略低，不能说“所有检索质量指标全面提升”。
-- RAGAS 单样例 smoke 只能证明链路跑通和兼容性，完整 19 条生成质量基线尚未稳定复现。
-- `eval_retrieval.py` 的 Dense/Hybrid 对比是开发诊断和消融实验，不是线上运行时拆成两个 RAG 系统。
+- 60 条可回答样例：Dense/Hybrid Recall@5 均为 `0.967`，MRR 为 `0.844/0.895`。
+- 42 条 tuning RAGAS：`1.000/0.725/0.788 -> 1.000/0.897/0.798`；忠实度中位数 `0.800 -> 1.000`，忠实度低于 `0.5` 的样例 `8 -> 3`。
+- 人工审计仍发现 Top-1 排序/证据覆盖问题、小模型残余越界和本地 8B 量化裁判假阴性，因此当前数字是调参证据，不是生产或 holdout 泛化结论。
 
 ## Verification
 
-- `rg` 已检查 `docs/learning` 中旧口径关键词，未保留过期 Dense 19/19 表述。
-- `git diff --check` 已运行，无空白格式错误；仅出现 Windows CRLF warning。
+- 全量测试：`326 passed, 1 skipped, 2 warnings`。
+- `git diff --check` 通过；文档旧口径搜索通过。
+- grounded-v3 生成约 `6m19s`，评分约 `14m08s`，进度文件为 `tmp/rag_eval_hybrid_tuning_grounded_v3_20260801.json`。
 
 ## Next Steps
 
-- 若继续增强面试证据，优先分批跑完整 19 条可回答样例 RAGAS 基线。
-- 若要交付当前整理结果，下一步可检查 diff 后提交。
+1. 当前配置冻结后，只运行一次 18 条可回答 holdout，作为最终泛化验收。
+2. 若 holdout 暴露排序问题，优先单独评估 reranker；不要继续向 prompt 堆样例特判。
 
 ## Resume Prompt
 
-继续本项目：先读 `AGENTS.md`、`.codex/SESSION_STATE.md`、`git status --short` 和 `docs/project/README.md`。当前已把近期 RAG 指标、BM25/RRF/MRR、Dense/Hybrid 消融和 RAGAS smoke 结论整理进 `docs/learning/`；注意完整 19 条 RAGAS 生成质量基线尚未稳定复现。
+继续 RAG 验收：先确认当前配置已冻结，再仅运行一次 18 条可回答 holdout，比较 RAGAS 与人工抽检结果。不要改动未跟踪的 `docs/interview/`。

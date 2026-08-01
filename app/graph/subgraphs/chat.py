@@ -11,6 +11,10 @@ from app.graph.subgraphs.rag_context import build_rag_context, retrieve_knowledg
 
 logger = logging.getLogger(__name__)
 
+CHAT_GENERATION_MAX_TOKENS = 512
+CHAT_GENERATION_TEMPERATURE = 0.0
+CHAT_GENERATION_TOP_P = 1.0
+
 
 def retrieve_node(state: RouterState) -> RouterState:
     """Retrieve relevant documents from the shared knowledge base."""
@@ -52,7 +56,6 @@ def retrieve_node(state: RouterState) -> RouterState:
 def generate_node(state: RouterState) -> RouterState:
     """Generate answer based on retrieved context + memory + user input."""
     from app.llm.providers import create_llm
-    from app.config import config
 
     retrieved = state.get("_retrieved", [])  # type: ignore
     context_text, sources = build_rag_context(retrieved)
@@ -64,15 +67,20 @@ def generate_node(state: RouterState) -> RouterState:
         context_text=context_text,
         sources=sources,
     )
+    state["_prompt_meta"]["generation"] = {
+        "max_tokens": CHAT_GENERATION_MAX_TOKENS,
+        "temperature": CHAT_GENERATION_TEMPERATURE,
+        "top_p": CHAT_GENERATION_TOP_P,
+    }
     if state.get("_streaming"):
         state["result"] = ""
         return state
 
     llm = create_llm(
         state.get("_model_id"),
-        max_tokens=config.model_max_tokens,
-        temperature=config.model_temperature,
-        top_p=config.model_top_p,
+        max_tokens=CHAT_GENERATION_MAX_TOKENS,
+        temperature=CHAT_GENERATION_TEMPERATURE,
+        top_p=CHAT_GENERATION_TOP_P,
     )
     answer = llm.generate(prompt)
     state["result"] = answer

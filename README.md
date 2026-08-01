@@ -10,7 +10,7 @@
 
 - Hybrid Router：加权规则、语义样例、歧义检测和四种白名单多意图组合；本地 Qwen Router 完成 A/B 后因无准确率收益且延迟较高而默认关闭。
 - Knowledge：产品层将 Chat/Diet 统一为 Knowledge 能力域；代码层保留两个兼容执行分支，并共用 RAG、来源约束和上下文组装。
-- RAG：默认由 `BAAI/bge-small-zh-v1.5` 完成 Dense 向量检索，与 BM25 各召回 20 条；融合前不做固定相似度硬过滤，经 RRF 融合去重后向本地 `Qwen3-0.6B` 注入 Top-5 证据。SQLite 持久化文本、向量与来源元数据，FAISS 在进程内重建余弦索引，并保留结构感知分块、章节透传、同源幂等替换和内存降级。当前收录 12 份可索引知识文档，并建立 21 条检索/RAGAS 黄金集、Dense/Hybrid 对比入口及可断点续跑的三指标评测入口。
+- RAG：默认由 `BAAI/bge-small-zh-v1.5` 完成 Dense 向量检索，与 BM25 各召回 20 条；融合前不做固定相似度硬过滤，经 RRF 融合去重后向本地 `Qwen3-0.6B` 注入 Top-5 证据。生成端采用 `grounded-v3` 证据约束和确定性解码，要求保留否定关系、适用人群与剂量阶段，并用 `[RefN]` 标注依据。SQLite 持久化文本、向量与来源元数据，FAISS 在进程内重建余弦索引，并保留结构感知分块、章节透传、同源幂等替换和内存降级。当前收录 12 份可索引知识文档，并建立 80 条分层检索/RAGAS 黄金集（60 条可回答、20 条无答案）、Dense/Hybrid 对比入口及可断点续跑的三指标评测入口。
 - Motion：标准参考动作分析原型，支持图片/视频转 PoseSequence、同 schema 标准视频构建、髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离，并输出可解释的结构化反馈。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - Knowledge-Diet：作为 Knowledge 内部 `diet_advice` 链路，LLM 提取结果经过 Pydantic JSON 解析、范围与枚举校验，再进入营养检索和推荐；非法输出安全降级并公开 warning。

@@ -1,7 +1,12 @@
 import pytest
 
 from app.tools.types import ToolResult
-from scripts.eval_retrieval import comparison_delta, evaluate_retrieval, relevant_rank
+from scripts.eval_retrieval import (
+    comparison_delta,
+    evaluate_retrieval,
+    relevant_rank,
+    select_rows_by_split,
+)
 
 
 class StubRetriever:
@@ -25,10 +30,14 @@ def test_relevant_rank_requires_matching_source_and_evidence_text():
     assert relevant_rank(results, ["who.txt"], ["150-300分钟中等强度"]) == 3
 
 
-def test_evaluate_retrieval_calculates_hit_mrr_rejection_and_latency():
+def test_evaluate_retrieval_calculates_hit_mrr_empty_result_rate_and_latency():
     rows = [
         {
             "id": "hit-at-2",
+            "category": "exercise",
+            "split": "tuning",
+            "difficulty": "easy",
+            "query_type": "numeric",
             "query": "q1",
             "answerable": True,
             "expected_sources": ["gold.txt"],
@@ -36,6 +45,10 @@ def test_evaluate_retrieval_calculates_hit_mrr_rejection_and_latency():
         },
         {
             "id": "miss",
+            "category": "exercise",
+            "split": "holdout",
+            "difficulty": "hard",
+            "query_type": "paraphrase",
             "query": "q2",
             "answerable": True,
             "expected_sources": ["gold.txt"],
@@ -43,6 +56,10 @@ def test_evaluate_retrieval_calculates_hit_mrr_rejection_and_latency():
         },
         {
             "id": "reject",
+            "category": "boundary",
+            "split": "holdout",
+            "difficulty": "hard",
+            "query_type": "out_of_scope",
             "query": "q3",
             "answerable": False,
             "expected_sources": [],
@@ -64,8 +81,31 @@ def test_evaluate_retrieval_calculates_hit_mrr_rejection_and_latency():
 
     assert result["recall_at_k"] == 0.5
     assert result["mrr"] == 0.25
-    assert result["unanswerable_rejection_rate"] == 1.0
+    assert result["unanswerable_empty_result_rate"] == 1.0
     assert result["cases"][0]["relevant_rank"] == 2
+    assert result["breakdowns"]["split"]["tuning"]["recall_at_k"] == 1.0
+    assert result["breakdowns"]["split"]["holdout"]["recall_at_k"] == 0.0
+    assert (
+        result["breakdowns"]["query_type"]["out_of_scope"]["recall_at_k"]
+        is None
+    )
+
+
+def test_select_rows_by_split_keeps_holdout_separate():
+    rows = [
+        {"id": "tune", "split": "tuning"},
+        {"id": "final", "split": "holdout"},
+    ]
+
+    assert [row["id"] for row in select_rows_by_split(rows, "all")] == [
+        "tune",
+        "final",
+    ]
+    assert [row["id"] for row in select_rows_by_split(rows, "holdout")] == [
+        "final"
+    ]
+    with pytest.raises(ValueError, match="Unsupported split"):
+        select_rows_by_split(rows, "future")
 
 
 def test_comparison_delta_uses_hybrid_minus_dense():
