@@ -6,6 +6,7 @@ from app.tools.retriever import (
     MemoryRetriever,
     _build_chunk_entries,
     _chinese_sentence_split,
+    _resolve_parent_results,
 )
 
 
@@ -221,3 +222,114 @@ class TestMemoryRetriever:
         assert second.data["removed"] >= 1
         assert retriever.document_count == 1
         assert retriever._documents == ["深蹲" * 10]
+
+
+class TestParentChildChunking:
+    """Parent-child (small-to-big) chunking contract."""
+
+    def test_child_chunks_are_smaller_than_max(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 训练原则\n\n"
+            "## 深蹲\n"
+            "深蹲时保持核心稳定。膝盖沿脚尖方向移动。\n\n"
+            "## 硬拉\n"
+            "硬拉需要腰背挺直，杠铃沿小腿附近垂直移动。"
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 30
+            cfg.retriever_child_chunk_overlap_chars = 5
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v2"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        # Each child chunk must stay within the child limit.
+        assert all(
+            len(e["content"]) <= 30 for e in entries
+        ), f"child chunks exceed limit: {[len(e['content']) for e in entries]}"
+        # Multiple children expected when text is longer than child_chunk_chars.
+        assert len(entries) >= 2
+
+    def test_children_from_same_parent_share_parent_section_id(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 训练\n\n"
+            "## 第一个主题\n"
+            "这里是一些内容，句子数量足够多，会被切分为多个子 chunk。"
+            "继续增加内容，使得切分后的子 chunk 数量超过一个。"
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 20
+            cfg.retriever_child_chunk_overlap_chars = 2
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v2"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        pids = [e.get("parent_section_id") for e in entries]
+        # All child chunks under the same section share one parent id.
+        assert len(set(pids)) == 1, f"expected 1 parent, got {set(pids)}"
+        # Each entry carries the full parent_content.
+        for e in entries:
+            # parent_content is the full section, longer than any single child
+            assert len(e["parent_content"]) > len(e["content"])
+
+    def test_disabled_parent_child_falls_back_to_legacy(self):
+        from unittest.mock import patch
+
+        text = "# 动作\n\n## 深蹲\n保持核心稳定。"
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = False
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v2"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        # Legacy: one entry per section, no parent fields.
+        assert len(entries) == 1
+        assert "parent_section_id" not in entries[0]
+        assert "parent_content" not in entries[0]
+        assert "保持核心稳定" in entries[0]["content"]
+
+    def test_resolve_parent_results_collapses_siblings(self):
+        """_resolve_parent_results deduplicates and swaps in parent content."""
+        parent_texts = {
+            1: "完整的父文档内容，比单个子 chunk 长得多。包含更多上下文信息。",
+            2: "另一个父文档，包含不同的主题内容。",
+        }
+        children = [
+            {"content": "子片段A", "score": 0.9, "parent_section_id": 1,
+             "source": "f.txt", "section_path": "A > B"},
+            {"content": "子片段B", "score": 0.7, "parent_section_id": 1,
+             "source": "f.txt", "section_path": "A > B"},
+            {"content": "子片段C", "score": 0.5, "parent_section_id": 2,
+             "source": "f.txt", "section_path": "C"},
+        ]
+        resolved = _resolve_parent_results(children, parent_texts)
+
+        # Two unique parents → two results.
+        assert len(resolved) == 2
+        assert resolved[0]["content"] == parent_texts[1]
+        assert resolved[0]["child_content"] == "子片段A"
+        assert resolved[0]["score"] == 0.9  # keeps first-seen score
+        assert resolved[0]["parent_collapsed"] == 1  # sibling count
+        assert resolved[1]["content"] == parent_texts[2]
+
+    def test_resolve_parent_skips_when_parent_not_found(self):
+        """Children without a matching parent_texts entry pass through."""
+        children = [
+            {"content": "独立内容", "score": 0.8, "parent_section_id": 999,
+             "source": "f.txt", "section_path": "X"},
+        ]
+        resolved = _resolve_parent_results(children, {})
+        assert len(resolved) == 1
+        assert resolved[0]["content"] == "独立内容"
+        assert "child_content" not in resolved[0]

@@ -252,6 +252,15 @@ class Config:
     retriever_timeout_seconds: float = field(
         default_factory=lambda: _get_float_env("RETRIEVER_TIMEOUT_SECONDS", 3.0)
     )
+    retriever_parent_child_enabled: bool = field(
+        default_factory=lambda: _get_bool_env("RETRIEVER_PARENT_CHILD_ENABLED", True)
+    )
+    retriever_child_chunk_chars: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_CHILD_CHUNK_CHARS", 300)
+    )
+    retriever_child_chunk_overlap_chars: int = field(
+        default_factory=lambda: _get_int_env("RETRIEVER_CHILD_CHUNK_OVERLAP_CHARS", 50)
+    )
 
     # Tavily Search
     tavily_api_key: str = field(default_factory=lambda: os.getenv("TAVILY_API_KEY", ""))
@@ -350,6 +359,16 @@ class Config:
             raise ValueError("RETRIEVER_TIMEOUT_SECONDS must be positive")
         if self.retriever_candidate_k > 100:
             raise ValueError("RETRIEVER_CANDIDATE_K must be at most 100")
+        if self.retriever_parent_child_enabled:
+            if self.retriever_child_chunk_chars <= 0:
+                raise ValueError("RETRIEVER_CHILD_CHUNK_CHARS must be positive")
+            if self.retriever_child_chunk_overlap_chars < 0:
+                raise ValueError("RETRIEVER_CHILD_CHUNK_OVERLAP_CHARS must not be negative")
+            if self.retriever_child_chunk_overlap_chars >= self.retriever_child_chunk_chars:
+                raise ValueError(
+                    "RETRIEVER_CHILD_CHUNK_OVERLAP_CHARS must be less than "
+                    "RETRIEVER_CHILD_CHUNK_CHARS"
+                )
         if not 0.0 <= self.router_embedding_min_confidence <= 1.0:
             raise ValueError("ROUTER_EMBEDDING_MIN_CONFIDENCE must be between 0 and 1")
         if not 0.0 <= self.router_embedding_min_margin <= 1.0:

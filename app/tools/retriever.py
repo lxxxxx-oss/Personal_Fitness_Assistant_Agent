@@ -100,6 +100,8 @@ class MemoryRetriever:
         self._chunk_ids: List[int] = []
         self._source_latest_ids: Dict[str, List[int]] = {}
         self._embeddings: Optional[np.ndarray] = None
+        self._parent_texts: Dict[int, str] = {}
+        self._parent_section_ids: List[int] = []
 
     def _ensure_encoder(self):
         """延迟加载 Sentence-Transformer 编码器."""
@@ -141,13 +143,17 @@ class MemoryRetriever:
                 overlap = len(query_words & doc_words)
                 if overlap > 0:
                     score = min(overlap / max(len(query_words), 1), 1.0)
-                    results.append({
+                    item = {
                         "content": self._documents[idx],
                         "score": score,
                         "index": self._chunk_ids[idx],
                         "source": self._sources[idx],
                         "section_path": self._section_paths[idx],
-                    })
+                    }
+                    if idx < len(self._parent_section_ids):
+                        pid = self._parent_section_ids[idx]
+                        item["parent_section_id"] = pid
+                    results.append(item)
 
         # 方法2: 子串匹配 + 字重叠（适用于中文等无空格语言）
         # 当查询是纯中文（无空格）或方法1无结果时有效
@@ -172,16 +178,24 @@ class MemoryRetriever:
                         r for r in results if r["index"] == self._chunk_ids[idx]
                     ]
                     if not existing:
-                        results.append({
+                        item = {
                             "content": self._documents[idx],
                             "score": substring_score,
                             "index": self._chunk_ids[idx],
                             "source": self._sources[idx],
                             "section_path": self._section_paths[idx],
-                        })
+                        }
+                        if idx < len(self._parent_section_ids):
+                            item["parent_section_id"] = (
+                                self._parent_section_ids[idx]
+                            )
+                        results.append(item)
 
         results.sort(key=lambda r: r["score"], reverse=True)
-        return results[:top_k]
+        results = results[:top_k]
+        if self._parent_texts:
+            results = _resolve_parent_results(results, self._parent_texts)
+        return results
 
     @property
     def document_count(self) -> int:
@@ -203,8 +217,20 @@ class MemoryRetriever:
         self._sources = [self._sources[index] for index in keep_indices]
         self._section_paths = [self._section_paths[index] for index in keep_indices]
         self._chunk_ids = [self._chunk_ids[index] for index in keep_indices]
+        if self._parent_section_ids:
+            self._parent_section_ids = [
+                self._parent_section_ids[index] for index in keep_indices
+            ]
         if self._embeddings is not None:
             self._embeddings = self._embeddings[keep_indices]
+        # Rebuild parent_texts to drop entries that no longer have children.
+        if self._parent_texts:
+            remaining_pids = set(self._parent_section_ids)
+            self._parent_texts = {
+                pid: text
+                for pid, text in self._parent_texts.items()
+                if pid in remaining_pids
+            }
         return removed
 
     def add_documents(
@@ -238,10 +264,18 @@ class MemoryRetriever:
             ]
             stale_removed += self._remove_chunk_ids(stale_ids)
             self._source_latest_ids[source] = list(new_ids)
+        parent_section_ids = [
+            entry.get("parent_section_id", 0) for entry in entries
+        ]
         self._documents.extend(chunks)
         self._sources.extend(chunk_sources)
         self._section_paths.extend(section_paths)
         self._chunk_ids.extend(incoming_ids)
+        self._parent_section_ids.extend(parent_section_ids)
+        for entry in entries:
+            if "parent_section_id" in entry and "parent_content" in entry:
+                pid = int(entry["parent_section_id"])
+                self._parent_texts.setdefault(pid, str(entry["parent_content"]))
         if self._encoder is not None:
             new_embeddings = self._encoder.encode(
                 embedding_texts,
@@ -346,13 +380,20 @@ class MemoryRetriever:
             if normalized in seen:
                 continue
             seen.add(normalized)
-            results.append({
+            item = {
                 "content": content,
                 "score": float(scores[int(idx)]),
                 "index": int(self._chunk_ids[int(idx)]),
                 "source": self._sources[int(idx)],
                 "section_path": self._section_paths[int(idx)],
-            })
+            }
+            if int(idx) < len(self._parent_section_ids):
+                pid = self._parent_section_ids[int(idx)]
+                if pid:
+                    item["parent_section_id"] = pid
+            results.append(item)
+        if self._parent_texts:
+            results = _resolve_parent_results(results, self._parent_texts)
         return ToolResult.ok(
             data=results,
             mode="embedding",
@@ -368,6 +409,8 @@ class MemoryRetriever:
         self._chunk_ids = []
         self._source_latest_ids = {}
         self._embeddings = None
+        self._parent_texts = {}
+        self._parent_section_ids = []
         return ToolResult.ok(data={"cleared": True}, backend="memory")
 
 
@@ -536,6 +579,60 @@ def _content_hash(content: str) -> str:
     return hashlib.blake2b(content.encode("utf-8"), digest_size=16).hexdigest()
 
 
+def _parent_section_id(source: str, section_path: str, version: str) -> int:
+    """Stable parent section identifier so children from the same section share one key.
+
+    Two child chunks that originate from the same (source, section_path) in the
+    same knowledge version always produce the same parent id.  This is the join
+    key used by ``_resolve_parent_results`` to collapse child hits into a single
+    parent-sized result per section.
+    """
+    identity = "\x1f".join([version, source, section_path])
+    digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 63) - 1)
+
+
+def _resolve_parent_results(
+    child_results: List[Dict[str, Any]],
+    parent_texts: Dict[int, str],
+) -> List[Dict[str, Any]]:
+    """Collapse child-chunk hits into deduplicated parent-sized results.
+
+    For each child hit we look up ``parent_section_id`` and replace
+    ``content`` with the full parent section text.  Hits that share the
+    same parent are collapsed: the first-seen (highest-ranked) hit keeps
+    its score and metadata; later siblings provide a ``parent_collapsed``
+    marker so consumers can inspect the raw child provenance.
+
+    When a parent id is missing from ``parent_texts`` (backward-compat
+    with pre-parent-child databases), the child's own content is kept.
+    """
+    if not child_results:
+        return child_results
+    seen_parents: Dict[int, int] = {}
+    resolved: List[Dict[str, Any]] = []
+    for item in child_results:
+        pid = item.get("parent_section_id")
+        if pid is None or pid not in parent_texts:
+            resolved.append(item)
+            continue
+        if pid in seen_parents:
+            resolved[seen_parents[pid]]["parent_collapsed"] = (
+                resolved[seen_parents[pid]].get("parent_collapsed", 0) + 1
+            )
+            continue
+        seen_parents[pid] = len(resolved)
+        # Keep the child's section_path and score, but replace content with parent.
+        resolved.append(
+            {
+                **item,
+                "content": parent_texts[pid],
+                "child_content": item.get("content", ""),
+            }
+        )
+    return resolved
+
+
 def _stable_chunk_id(
     content: str,
     source: str = "",
@@ -565,54 +662,121 @@ def _build_chunk_entries(
     docs: Sequence[str],
     sources: Optional[Sequence[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Chunk documents and attach versioned identity metadata."""
+    """Chunk documents and attach versioned identity metadata.
+
+    When ``config.retriever_parent_child_enabled`` is True the pipeline
+    operates in parent-child mode:
+
+    * Each Markdown section (heading-delimited block) is a **parent**.
+    * Parent text is further split into smaller **child** chunks with
+      ``config.retriever_child_chunk_chars`` / ``overlap_chars``.
+    * Child chunks carry ``parent_section_id`` and ``parent_content`` so
+      retrieval can match at fine granularity and return the full parent.
+
+    When the flag is disabled the call is backward-compatible with the
+    previous single-level 500-char sentence-packing strategy.
+    """
     normalized_sources = list(sources or [])
     entries: List[Dict[str, Any]] = []
     version = str(config.retriever_knowledge_version or "v2")
+    parent_child = config.retriever_parent_child_enabled
+
     for doc_index, doc in enumerate(docs):
         source = (
             str(normalized_sources[doc_index])[:1024]
             if doc_index < len(normalized_sources)
             else ""
         )
-        chunks = [
-            chunk
-            for chunk in _structured_text_split(
-                doc,
-                max_chunk_chars=config.retriever_chunk_chars,
-                overlap_chars=config.retriever_chunk_overlap_chars,
-            )
-            if chunk["content"].strip()
-        ]
-        for chunk_index, chunk in enumerate(chunks):
-            content = str(chunk["content"])
-            section_path = str(chunk["section_path"])
-            embedding_text = (
-                f"{section_path}\n{content}" if section_path else content
-            )
-            entries.append(
-                {
-                    "id": _stable_chunk_id(
-                        embedding_text,
-                        source=source,
-                        chunk_index=chunk_index,
-                        version=version,
-                    ),
-                    "content": content,
-                    "embedding_text": embedding_text,
-                    "source": source,
-                    "section_path": section_path,
-                    "chunk_index": chunk_index,
-                    "content_hash": _content_hash(content),
-                    "version": version,
-                }
-            )
+        structured = _structured_text_split(
+            doc,
+            max_chunk_chars=config.retriever_chunk_chars,
+            overlap_chars=config.retriever_chunk_overlap_chars,
+        )
+        if not structured:
+            continue
+
+        for section in structured:
+            section_content = str(section["content"]).strip()
+            section_path = str(section["section_path"])
+            if not section_content:
+                continue
+
+            # Build a stable parent identity keyed on source + section_path.
+            # When both are empty (e.g. ad-hoc test docs indexed with no source
+            # or headings), fall back to the content hash so each section gets
+            # a distinct parent rather than all collapsing into one.
+            if section_path or source:
+                parent_key = f"{source}\x1f{section_path}"
+            else:
+                parent_key = _content_hash(section_content)
+            pid = _parent_section_id("", parent_key, version)
+
+            if parent_child:
+                # Small child chunks for fine-grained embedding / BM25 matching.
+                child_chunks = _chinese_sentence_split(
+                    section_content,
+                    max_chunk_chars=config.retriever_child_chunk_chars,
+                    overlap_chars=config.retriever_child_chunk_overlap_chars,
+                )
+                for child_index, child_content in enumerate(child_chunks):
+                    child_text = str(child_content).strip()
+                    if not child_text:
+                        continue
+                    embedding_text = (
+                        f"{section_path}\n{child_text}"
+                        if section_path
+                        else child_text
+                    )
+                    entries.append(
+                        {
+                            "id": _stable_chunk_id(
+                                embedding_text,
+                                source=source,
+                                chunk_index=child_index,
+                                version=version,
+                            ),
+                            "content": child_text,
+                            "embedding_text": embedding_text,
+                            "source": source,
+                            "section_path": section_path,
+                            "chunk_index": child_index,
+                            "content_hash": _content_hash(child_text),
+                            "version": version,
+                            "parent_section_id": pid,
+                            "parent_content": section_content,
+                        }
+                    )
+            else:
+                # Legacy single-level: section content is the chunk.
+                embedding_text = (
+                    f"{section_path}\n{section_content}"
+                    if section_path
+                    else section_content
+                )
+                entries.append(
+                    {
+                        "id": _stable_chunk_id(
+                            embedding_text,
+                            source=source,
+                            chunk_index=0,
+                            version=version,
+                        ),
+                        "content": section_content,
+                        "embedding_text": embedding_text,
+                        "source": source,
+                        "section_path": section_path,
+                        "chunk_index": 0,
+                        "content_hash": _content_hash(section_content),
+                        "version": version,
+                    }
+                )
     return entries
 
 
 def _manifest_from_entries(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Return a compact ingestion manifest safe to expose in ToolResult."""
     sources: Dict[str, Dict[str, Any]] = {}
+    parent_ids: set = set()
     for entry in entries:
         source = str(entry.get("source") or "")
         bucket = sources.setdefault(
@@ -630,12 +794,17 @@ def _manifest_from_entries(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         bucket["chunk_ids"].append(int(entry["id"]))
         bucket["content_hashes"].append(str(entry["content_hash"]))
         bucket["section_paths"].append(str(entry.get("section_path") or ""))
-    return {
+        if "parent_section_id" in entry:
+            parent_ids.add(int(entry["parent_section_id"]))
+    manifest = {
         "version": str(config.retriever_knowledge_version or "v2"),
         "source_count": len(sources),
         "chunk_count": len(entries),
         "sources": list(sources.values()),
     }
+    if parent_ids:
+        manifest["parent_section_count"] = len(parent_ids)
+    return manifest
 
 
 def _vector_store_error_code(exc: Exception) -> str:
@@ -693,6 +862,7 @@ class BM25Retriever:
         self._source_latest_ids: Dict[str, List[int]] = {}
         self._ordered_ids: List[int] = []
         self._bm25 = None
+        self._parent_texts: Dict[int, str] = {}
 
     @property
     def document_count(self) -> int:
@@ -765,6 +935,11 @@ class BM25Retriever:
             )
             for entry in entries:
                 self._entries[int(entry["id"])] = dict(entry)
+                if "parent_section_id" in entry and "parent_content" in entry:
+                    self._parent_texts.setdefault(
+                        int(entry["parent_section_id"]),
+                        str(entry["parent_content"]),
+                    )
             self._rebuild_index()
             return ToolResult.ok(
                 data={
@@ -818,17 +993,20 @@ class BM25Retriever:
                 if score <= 0:
                     continue
                 entry = self._entries[self._ordered_ids[position]]
-                results.append(
-                    {
-                        "content": entry["content"],
-                        "score": score,
-                        "index": int(entry["id"]),
-                        "source": entry["source"],
-                        "section_path": entry["section_path"],
-                    }
-                )
+                item = {
+                    "content": entry["content"],
+                    "score": score,
+                    "index": int(entry["id"]),
+                    "source": entry["source"],
+                    "section_path": entry["section_path"],
+                }
+                if "parent_section_id" in entry:
+                    item["parent_section_id"] = int(entry["parent_section_id"])
+                results.append(item)
                 if len(results) >= top_k:
                     break
+            if self._parent_texts:
+                results = _resolve_parent_results(results, self._parent_texts)
             return ToolResult.ok(
                 data=results,
                 mode="bm25",
@@ -849,6 +1027,7 @@ class BM25Retriever:
         self._source_latest_ids = {}
         self._ordered_ids = []
         self._bm25 = None
+        self._parent_texts = {}
         return ToolResult.ok(data={"cleared": True}, backend="bm25")
 
 
@@ -978,6 +1157,16 @@ class HybridRetriever:
         dense_items = [] if dense_mode == "keyword" else list(dense_result.data or [])
         lexical_items = list(lexical_result.data or [])
         ranked = self._fuse(dense_items, lexical_items)
+        # Parent-child resolution after RRF so both routes contribute to
+        # the fused rank before children of the same parent are collapsed.
+        parent_texts: Dict[int, str] = {}
+        for retriever in (self.dense, self.lexical):
+            pt = getattr(retriever, "_parent_texts", None)
+            if pt:
+                parent_texts.update(pt)
+        parent_texts.update(getattr(self, "_parent_texts", {}))
+        if parent_texts:
+            ranked = _resolve_parent_results(ranked, parent_texts)
         mode = "hybrid" if dense_items else "bm25"
         return ToolResult.ok(
             data=ranked[:top_k],
@@ -1069,6 +1258,7 @@ class SQLiteFaissRetriever:
         self._dimension: Optional[int] = None
         self._records_by_id: Dict[int, Dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self._parent_texts: Dict[int, str] = {}
 
     @staticmethod
     def _load_faiss():
@@ -1137,12 +1327,37 @@ class SQLiteFaissRetriever:
                 content_hash TEXT NOT NULL,
                 knowledge_version TEXT NOT NULL,
                 embedding BLOB NOT NULL,
-                embedding_dim INTEGER NOT NULL
+                embedding_dim INTEGER NOT NULL,
+                parent_section_id INTEGER NOT NULL DEFAULT 0,
+                parent_content TEXT NOT NULL DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_source
                 ON knowledge_chunks(source);
             """
         )
+        # Migrate older databases that lack parent-child columns.
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO vector_store_meta(key, value)
+            VALUES ('schema_parent_child', 'v2')
+            """
+        )
+        existing = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(knowledge_chunks)"
+            ).fetchall()
+        }
+        if "parent_section_id" not in existing:
+            connection.execute(
+                "ALTER TABLE knowledge_chunks "
+                "ADD COLUMN parent_section_id INTEGER NOT NULL DEFAULT 0"
+            )
+        if "parent_content" not in existing:
+            connection.execute(
+                "ALTER TABLE knowledge_chunks "
+                "ADD COLUMN parent_content TEXT NOT NULL DEFAULT ''"
+            )
         connection.commit()
         self._connection = connection
         return connection
@@ -1189,7 +1404,7 @@ class SQLiteFaissRetriever:
         rows = connection.execute(
             """
             SELECT id, content, source, section_path, chunk_index,
-                   embedding, embedding_dim
+                   embedding, embedding_dim, parent_section_id, parent_content
             FROM knowledge_chunks
             ORDER BY id
             """
@@ -1223,6 +1438,8 @@ class SQLiteFaissRetriever:
                 "source": str(row["source"]),
                 "section_path": str(row["section_path"]),
                 "chunk_index": int(row["chunk_index"]),
+                "parent_section_id": int(row["parent_section_id"] or 0),
+                "parent_content": str(row["parent_content"] or ""),
             }
         matrix = self._normalize(np.vstack(vectors))
         index = faiss.IndexIDMap2(faiss.IndexFlatIP(dimension))
@@ -1230,6 +1447,13 @@ class SQLiteFaissRetriever:
         self._index = index
         self._dimension = dimension
         self._index_ready = True
+        # Rebuild parent_texts from records for search-time resolution.
+        self._parent_texts = {}
+        for record in self._records_by_id.values():
+            pid = record.get("parent_section_id", 0)
+            pcontent = record.get("parent_content", "")
+            if pid and pcontent:
+                self._parent_texts.setdefault(pid, pcontent)
 
     def _ensure_index_locked(self) -> None:
         if not self._index_ready:
@@ -1322,8 +1546,9 @@ class SQLiteFaissRetriever:
                         """
                         INSERT OR REPLACE INTO knowledge_chunks(
                             id, content, source, section_path, chunk_index,
-                            content_hash, knowledge_version, embedding, embedding_dim
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            content_hash, knowledge_version, embedding, embedding_dim,
+                            parent_section_id, parent_content
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
@@ -1336,6 +1561,8 @@ class SQLiteFaissRetriever:
                                 str(entry["version"]),
                                 embeddings[index].tobytes(),
                                 dimension,
+                                int(entry.get("parent_section_id", 0)),
+                                str(entry.get("parent_content", "")),
                             )
                             for index, entry in enumerate(entries)
                         ],
@@ -1444,18 +1671,22 @@ class SQLiteFaissRetriever:
                     if not record or record["content"] in seen:
                         continue
                     seen.add(record["content"])
-                    results.append(
-                        {
-                            "content": record["content"],
-                            "score": float(score),
-                            "index": int(chunk_id),
-                            "source": record["source"],
-                            "section_path": record["section_path"],
-                            "chunk_index": record["chunk_index"],
-                        }
-                    )
+                    item = {
+                        "content": record["content"],
+                        "score": float(score),
+                        "index": int(chunk_id),
+                        "source": record["source"],
+                        "section_path": record["section_path"],
+                        "chunk_index": record["chunk_index"],
+                    }
+                    pid = record.get("parent_section_id", 0)
+                    if pid:
+                        item["parent_section_id"] = pid
+                    results.append(item)
                     if len(results) >= top_k:
                         break
+            if self._parent_texts:
+                results = _resolve_parent_results(results, self._parent_texts)
             return ToolResult.ok(
                 data=results,
                 backend=self.backend_name,
@@ -1500,6 +1731,7 @@ class SQLiteFaissRetriever:
                 self._index_ready = True
                 self._dimension = None
                 self._records_by_id = {}
+                self._parent_texts = {}
             return ToolResult.ok(
                 data={"cleared": True},
                 backend=self.backend_name,

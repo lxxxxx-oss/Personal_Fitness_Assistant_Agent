@@ -155,6 +155,7 @@ def test_store_records_chunks_metadata_and_float32_embeddings_in_sqlite(tmp_path
         "embedding_model": "test-encoder-v1",
         "embedding_dimension": "4",
         "index_type": "IndexFlatIP",
+        "schema_parent_child": "v2",
     }
 
 
