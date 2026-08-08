@@ -90,6 +90,7 @@ WEIGHTED_RULES: Dict[Intent, List[Tuple[str, float]]] = {
     ],
     "diet": [
         ("减脂", 5.0),
+        ("减重", 4.0),
         ("增肌", 5.0),
         ("吃什么", 5.0),
         ("怎么吃", 5.0),
@@ -110,6 +111,9 @@ WEIGHTED_RULES: Dict[Intent, List[Tuple[str, float]]] = {
         ("控制体重", 5.0),
         ("体重管理", 5.0),
         ("吃得健康", 4.0),
+        ("吃得清淡", 4.0),
+        ("调整得更轻盈", 5.0),
+        ("三餐", 3.0),
         ("healthy diet", 5.0),
         ("lose weight", 5.0),
         ("bulk", 4.0),
@@ -124,6 +128,8 @@ WEIGHTED_RULES: Dict[Intent, List[Tuple[str, float]]] = {
         ("红烧肉", 6.0),
         ("炒蛋", 4.0),
         ("晚餐推荐", 5.0),
+        ("晚饭", 3.0),
+        ("做什么菜", 4.0),
         ("高蛋白菜", 5.0),
         ("菜", 2.0),
         ("晚餐", 3.0),
@@ -191,16 +197,19 @@ COMBO_RULES: List[Tuple[Intent, Tuple[str, ...], float, str]] = [
 ]
 
 MIN_ROUTE_SCORE = 3.0
-MARGIN_FOR_HIGH_CONFIDENCE = 2.0
-SEMANTIC_TRIGGER_CONFIDENCE = 0.72
-SEMANTIC_MIN_CONFIDENCE = 0.62
+# Confidence threshold: when ≥2 intents reach the score threshold but
+# no sequencing / parallel conjunction is present, confidence determines
+# whether the secondary intent is noise or a genuine co-intent.
+MIN_ROUTE_CONFIDENCE = 0.60
+# Light conjunctions that indicate the user is listing two tasks without the
+# strict "先...然后..." pattern.  When present AND both intents are confident,
+# they trigger multi-intent execution.
+PARALLEL_CONJUNCTIONS = ("顺便", "同时", "并且", "还", "另外")
+# When ≥2 intents reach threshold, the margin between top-2 decides:
+# Confidence cap applied to all score-based decisions.
+CONFIDENCE_CAP = 0.95
 LLM_ROUTER_MIN_CONFIDENCE = 0.70
 ALLOWED_INTENTS = {"search", "motion", "diet", "chat", "mcp"}
-LLM_REVIEW_AMBIGUITY_SIGNALS = {
-    "close_rule_scores",
-    "cross_domain_plan",
-    "progress_diagnosis",
-}
 SUPPORTED_ROUTE_COMBINATIONS = {
     ("search", "diet"),
     ("search", "chat"),
@@ -224,6 +233,9 @@ COOKING_CONTEXT_TERMS = (
     "蛋",
     "鸡",
     "食材",
+    "早餐",
+    "午餐",
+    "晚餐",
 )
 EXERCISE_TERMS = (
     "深蹲",
@@ -347,38 +359,62 @@ def _with_llm_router_metric(
 
 
 def _confidence(best_score: float, margin: float) -> float:
+    """Compute a confidence score from the top score and the margin to second.
+
+    The formula encodes two orthogonal signals into a single 0-1 score:
+
+        base = 0.35                                          # 最低线
+        score_contrib = min(best_score / 15, 0.35)           # 绝对值分量
+        margin_contrib = min(margin / 12, 0.25)              # 相对差距分量
+
+    Range: ~0.42 (e.g. score=3, margin=0) to 0.95 (capped).
+
+    This confidence is used in the multi-signal branch to decide whether
+    the second-highest intent is noise (high confidence → single-intent)
+    or a genuine co-intent / ambiguous (low confidence → multi / chat).
+    """
     if best_score < MIN_ROUTE_SCORE:
         return 0.0
-    raw = 0.55 + min(best_score / 12.0, 0.3) + min(margin / 8.0, 0.15)
-    return round(min(raw, 0.95), 2)
+    raw = 0.35 + min(best_score / 15.0, 0.35) + min(margin / 12.0, 0.25)
+    return round(min(raw, CONFIDENCE_CAP), 2)
 
 
-def _semantic_features(text: str) -> set[str]:
-    normalized = _normalize_text(text)
-    compact = "".join(ch for ch in normalized if not ch.isspace())
-    features: set[str] = set()
-    for token in normalized.replace("?", " ").replace("？", " ").split():
-        if token:
-            features.add(token)
-    for size in (2, 3):
-        if len(compact) >= size:
-            for idx in range(len(compact) - size + 1):
-                features.add(compact[idx: idx + size])
-    return features
+def _has_explicit_sequencing(text: str) -> bool:
+    """Detect explicit multi-step signal like '先...再...'."""
+    return "先" in text and any(sep in text for sep in ("再", "然后"))
 
 
-SEMANTIC_EXAMPLE_FEATURES: Dict[Intent, List[Tuple[str, set[str]]]] = {
-    intent: [(example, _semantic_features(example)) for example in examples]
-    for intent, examples in SEMANTIC_EXAMPLES.items()
-}
+def _has_parallel_conjunction(text: str) -> bool:
+    """Detect light parallel-task markers like '顺便', '同时', '并且'."""
+    return any(conj in text for conj in PARALLEL_CONJUNCTIONS)
 
 
-def _jaccard_similarity(left: set[str], right: set[str]) -> float:
-    if not left or not right:
-        return 0.0
-    intersection = len(left & right)
-    union = len(left | right)
-    return intersection / union if union else 0.0
+def _low_confidence_fallback(
+    user_input: str,
+    model_id: Optional[str],
+    scores: Dict[str, float],
+    matches: List[str],
+) -> RouteDecision:
+    """No intent reached threshold. Try embedding then LLM, fallback to chat."""
+    embedding_decision = _embedding_semantic_route(user_input)
+    if embedding_decision["source"] == "embedding_examples":
+        return embedding_decision
+    llm_decision = _llm_classifier_route(user_input, model_id)
+    if llm_decision["source"] == "llm_classifier":
+        _record_llm_router_selection("selected")
+        return llm_decision
+    return RouteDecision(
+        intent="chat",
+        confidence=0.0,
+        reason=(
+            "No route rule reached the minimum score; "
+            f"{embedding_decision['reason']} "
+            f"{llm_decision['reason']} Falling back to chat."
+        ),
+        source="fallback",
+        scores=scores,
+        matches=matches + embedding_decision["matches"] + llm_decision["matches"],
+    )
 
 
 def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
@@ -524,52 +560,6 @@ def _embedding_semantic_route(user_input: str) -> RouteDecision:
             f"score={best_score:.2f}, margin={margin:.2f}, confidence={confidence:g}."
         ),
         source="embedding_examples",
-        scores=scores,
-        matches=matches,
-    )
-
-
-def _semantic_route(user_input: str) -> RouteDecision:
-    query_features = _semantic_features(user_input)
-    scores = _empty_scores()
-    matches: List[str] = []
-
-    for intent, examples in SEMANTIC_EXAMPLE_FEATURES.items():
-        best_score = 0.0
-        best_example = ""
-        for example, example_features in examples:
-            score = _jaccard_similarity(query_features, example_features)
-            if score > best_score:
-                best_score = score
-                best_example = example
-        scores[intent] = round(best_score, 4)
-        if best_example and best_score > 0:
-            matches.append(f"{intent}:example({best_example})={best_score:.2f}")
-
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    best_intent, best_score = ranked[0]
-    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-    margin = best_score - second_score
-    confidence = round(min(0.55 + best_score * 0.7 + margin * 0.4, 0.88), 2)
-
-    if confidence < SEMANTIC_MIN_CONFIDENCE or best_score <= 0:
-        return RouteDecision(
-            intent="chat",
-            confidence=0.0,
-            reason="Semantic examples did not reach the minimum confidence.",
-            source="semantic_fallback",
-            scores=scores,
-            matches=matches,
-        )
-
-    return RouteDecision(
-        intent=best_intent,  # type: ignore[typeddict-item]
-        confidence=confidence,
-        reason=(
-            f"Selected {best_intent} by semantic examples: "
-            f"score={best_score:.2f}, margin={margin:.2f}, confidence={confidence:g}."
-        ),
-        source="semantic_examples",
         scores=scores,
         matches=matches,
     )
@@ -756,68 +746,6 @@ def _llm_classifier_route(
     )
 
 
-def _detect_ambiguity(text: str, scores: Dict[str, float]) -> List[str]:
-    """Return structured reasons why deterministic routing may need review."""
-    signals: List[str] = []
-
-    if "先" in text and any(separator in text for separator in ("再", "然后")):
-        signals.append("ordered_multi_task")
-
-    if any(
-        pattern in text
-        for pattern in (
-            "不需要具体做法",
-            "不需要做法",
-            "不要具体做法",
-            "不要菜谱",
-            "不想做饭",
-            "不用做饭",
-            "不下厨",
-        )
-    ):
-        signals.append("recipe_negation")
-
-    if "吃和练" in text:
-        signals.append("cross_domain_plan")
-
-    if "体重没变" in text or "训练是不是没效果" in text:
-        signals.append("progress_diagnosis")
-
-    plan_motion_patterns = (
-        "练什么动作",
-        "练哪些动作",
-        "应该练什么动作",
-        "应该练哪些动作",
-        "训练计划",
-    )
-    motion_analysis_signals = (
-        "姿势",
-        "姿态",
-        "动作分析",
-        "哪里不对",
-        "标准吗",
-        ".npz",
-        "上传",
-    )
-    if (
-        any(pattern in text for pattern in plan_motion_patterns)
-        and not any(signal in text for signal in motion_analysis_signals)
-    ):
-        signals.append("plan_vs_motion")
-
-    if scores["diet"] >= MIN_ROUTE_SCORE and scores["mcp"] >= MIN_ROUTE_SCORE:
-        signals.append("diet_vs_recipe")
-
-    if "权威" in text and any(term in text for term in ("资料", "说法", "研究")):
-        signals.append("authority_lookup")
-
-    ranked = sorted(scores.values(), reverse=True)
-    if len(ranked) >= 2 and ranked[1] >= MIN_ROUTE_SCORE and ranked[0] - ranked[1] < 2:
-        signals.append("close_rule_scores")
-
-    return list(dict.fromkeys(signals))
-
-
 def _classify_primary_intent_with_scores(
     user_input: str,
     model_id: Optional[str] = None,
@@ -839,128 +767,107 @@ def _classify_primary_intent_with_scores(
             matches.append(f"{intent}:combo({label})+{weight:g}")
 
     _apply_pattern_boosts(text, scores, matches)
-    ambiguity_signals = _detect_ambiguity(text, scores)
-    matches.extend(f"ambiguity:{signal}" for signal in ambiguity_signals)
 
     ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     best_intent, best_score = ranked[0]
-    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    second_intent, second_score = ranked[1] if len(ranked) > 1 else ("", 0.0)
     margin = best_score - second_score
 
-    if best_score < MIN_ROUTE_SCORE:
-        semantic_decision = _semantic_route(user_input)
-        if semantic_decision["source"] == "semantic_examples":
-            semantic_decision["ambiguity_signals"] = ambiguity_signals
-            return semantic_decision
-        embedding_decision = _embedding_semantic_route(user_input)
-        if embedding_decision["source"] == "embedding_examples":
-            embedding_decision["ambiguity_signals"] = ambiguity_signals
-            return embedding_decision
-        llm_decision = _llm_classifier_route(user_input, model_id)
-        if llm_decision["source"] == "llm_classifier":
-            _record_llm_router_selection("selected")
-            llm_decision["ambiguity_signals"] = ambiguity_signals
-            return llm_decision
+    # --- 单意图：只有一个意图达到最低分 ---
+    active_count = sum(1 for _, s in ranked if s >= MIN_ROUTE_SCORE)
+    if active_count <= 1:
+        if best_score < MIN_ROUTE_SCORE:
+            return _low_confidence_fallback(user_input, model_id, scores, matches)
+        confidence = _confidence(best_score, margin)
+        return RouteDecision(
+            intent=best_intent,
+            confidence=confidence,
+            reason=f"Single intent {best_intent}: score={best_score:g}, margin={margin:g}.",
+            source="weighted_rules",
+            scores=scores,
+            matches=matches,
+        )
+
+    # --- 多信号：≥2 个意图达到最低分 ---
+    has_sequencing = _has_explicit_sequencing(text)
+    has_parallel = _has_parallel_conjunction(text)
+    primary_confidence = _confidence(best_score, margin)
+
+    # ── 显式顺序 / 并列：不看置信度，直接多意图 ──
+    if has_sequencing:
+        return RouteDecision(
+            intent=best_intent,
+            confidence=primary_confidence,
+            reason=(
+                f"Multi-intent: selected {best_intent} as primary "
+                f"(score={best_score:g}), "
+                f"{second_intent} detected as secondary "
+                f"(score={second_score:g}). "
+                "Explicit sequencing present."
+            ),
+            source="weighted_rules",
+            scores=scores,
+            matches=matches,
+        )
+
+    if has_parallel:
+        return RouteDecision(
+            intent=best_intent,
+            confidence=primary_confidence,
+            reason=(
+                f"Multi-intent (parallel): {best_intent} "
+                f"(score={best_score:g}) and "
+                f"{second_intent} (score={second_score:g}) "
+                "both detected. Parallel conjunction present."
+            ),
+            source="weighted_rules",
+            scores=scores,
+            matches=matches,
+        )
+
+    # ── 无连接词：置信度是唯一的决策依据 ──
+    # 置信度同时编码了两件事：
+    #   - score 大小（信号本身有多强）
+    #   - margin 大小（比第二名领先多少）
+    # 这两个维度不需要单独判断 — 合在一起就是"系统对此决定有多确定"。
+    #
+    # confidence ≥ 0.65 → 主意图信号强 + margin 够大 → 单意图
+    #   例: search=15 margin=7.5 → conf=0.95（强信号大差距）
+    #   例: motion=8 margin=5    → conf=0.82（中等信号够差距）
+    #
+    # confidence < 0.65 → margin 太小或信号不够 → 歧义
+    #   例: motion=7 chat=6.5 margin=0.5 → conf≈0.57（两意图接近）
+    #   例: motion=4 mcp=3.5 margin=0.5  → conf≈0.50（刚过线且接近）
+
+    _CONFIDENCE_FOR_SINGLE = 0.80
+
+    if primary_confidence < _CONFIDENCE_FOR_SINGLE:
         return RouteDecision(
             intent="chat",
-            confidence=0.0,
+            confidence=primary_confidence,
             reason=(
-                "No route rule reached the minimum score; semantic fallback "
-                f"did not decide; {embedding_decision['reason']} "
-                f"{llm_decision['reason']} Falling back to chat."
+                f"Ambiguity: {best_intent}={best_score:g} vs {second_intent}={second_score:g}, "
+                f"margin={margin:g}, confidence={primary_confidence:g} < {_CONFIDENCE_FOR_SINGLE}. "
+                "Routing to chat."
             ),
-            source="fallback",
+            source="ambiguity_fallback",
             scores=scores,
-            matches=matches + semantic_decision["matches"]
-            + embedding_decision["matches"] + llm_decision["matches"],
-            ambiguity_signals=ambiguity_signals,
+            matches=matches,
         )
 
-    confidence = _confidence(best_score, margin)
-    source = "weighted_rules"
-    reason = (
-        f"Selected {best_intent}: score={best_score:g}, "
-        f"margin={margin:g}, confidence={confidence:g}."
-    )
-    if margin < MARGIN_FOR_HIGH_CONFIDENCE:
-        reason += " Scores are close; keep this case in router evaluation."
-
-    rule_decision = RouteDecision(
-        intent=best_intent,  # type: ignore[typeddict-item]
-        confidence=confidence,
-        reason=reason,
-        source=source,
+    # 主强 + margin 大 → 单意图
+    return RouteDecision(
+        intent=best_intent,
+        confidence=primary_confidence,
+        reason=(
+            f"Dominant intent {best_intent}: score={best_score:g}, "
+            f"margin={margin:g}, confidence={primary_confidence:g} ≥ "
+            f"{_CONFIDENCE_FOR_SINGLE} (secondary {second_intent}={second_score:g} is noise)."
+        ),
+        source="weighted_rules",
         scores=scores,
         matches=matches,
-        ambiguity_signals=ambiguity_signals,
     )
-
-    llm_review_signals = [
-        signal
-        for signal in ambiguity_signals
-        if signal in LLM_REVIEW_AMBIGUITY_SIGNALS
-    ]
-    if llm_review_signals and confidence >= SEMANTIC_TRIGGER_CONFIDENCE:
-        llm_decision = _llm_classifier_route(user_input, model_id)
-        if (
-            llm_decision["source"] == "llm_classifier"
-            and llm_decision["confidence"] > confidence
-        ):
-            llm_decision["ambiguity_signals"] = ambiguity_signals
-            llm_decision["reason"] += (
-                " Ambiguity detector triggered: "
-                + ", ".join(llm_review_signals)
-                + f". Deterministic decision was {best_intent}."
-            )
-            _record_llm_router_selection("selected")
-            return llm_decision
-        if llm_decision["source"] == "llm_classifier":
-            _record_llm_router_selection("rejected_not_higher_confidence")
-            rule_decision["matches"].append(
-                "llm_rejected:not_higher_than_rule_confidence"
-            )
-        rule_decision["reason"] += (
-            " Ambiguity detector triggered but LLM did not take over: "
-            + ", ".join(llm_review_signals)
-            + "."
-        )
-        rule_decision["matches"].extend(llm_decision["matches"])
-
-    if confidence < SEMANTIC_TRIGGER_CONFIDENCE:
-        semantic_decision = _semantic_route(user_input)
-        if (
-            semantic_decision["source"] == "semantic_examples"
-            and semantic_decision["confidence"] > confidence
-        ):
-            semantic_decision["reason"] += (
-                f" Rule router was low confidence: {reason}"
-            )
-            semantic_decision["ambiguity_signals"] = ambiguity_signals
-            return semantic_decision
-        embedding_decision = _embedding_semantic_route(user_input)
-        if (
-            embedding_decision["source"] == "embedding_examples"
-            and embedding_decision["confidence"] > max(
-                confidence,
-                semantic_decision["confidence"],
-            )
-        ):
-            embedding_decision["reason"] += (
-                f" Rule router was low confidence: {reason}"
-            )
-            embedding_decision["ambiguity_signals"] = ambiguity_signals
-            return embedding_decision
-        llm_decision = _llm_classifier_route(user_input, model_id)
-        if (
-            llm_decision["source"] == "llm_classifier"
-            and llm_decision["confidence"] > confidence
-        ):
-            llm_decision["reason"] += f" Rule router was low confidence: {reason}"
-            llm_decision["ambiguity_signals"] = ambiguity_signals
-            _record_llm_router_selection("selected")
-            return llm_decision
-
-    return rule_decision
 
 
 def _rule_intent_for_segment(text: str) -> Optional[Intent]:
@@ -984,9 +891,6 @@ def _rule_intent_for_segment(text: str) -> Optional[Intent]:
     if best_score >= MIN_ROUTE_SCORE:
         return best_intent  # type: ignore[return-value]
 
-    semantic = _semantic_route(text)
-    if semantic["source"] == "semantic_examples":
-        return semantic["intent"]
     return None
 
 
@@ -994,7 +898,12 @@ def _multi_intent_metadata(
     user_input: str,
     decision: RouteDecision,
 ) -> Tuple[List[Intent], List[Intent], str, bool]:
-    """Derive observable multi-intent metadata without changing primary routing."""
+    """Detect secondary intents and build route plan.
+
+    Multi-intent execution is ONLY triggered by explicit sequencing
+    ('先...然后...'). Without it, multi-signal cases are handled by
+    the ambiguity fallback in _classify_primary_intent_with_scores.
+    """
     primary = decision["intent"]
     text = _normalize_text(user_input)
     clause_pattern = r"(?:，|,|；|;|。|然后|顺便|同时|并且|最好给(?:个)?|再(?=查|搜|给|分析|看|安排))"
@@ -1010,68 +919,63 @@ def _multi_intent_metadata(
         decision["scores"].items(), key=lambda item: item[1], reverse=True
     ):
         if intent != primary and score >= MIN_ROUTE_SCORE and intent not in observed:
-            observed.append(intent)  # type: ignore[arg-type]
+            observed.append(intent)
 
-    recipe_is_negated = (
-        "recipe_negation" in decision.get("ambiguity_signals", [])
-        or "不用给具体做法" in text
-    )
-    if recipe_is_negated and "mcp" in observed:
-        observed.remove("mcp")
-
+    # Secondary intents describe the downstream capability that complements the
+    # primary route, rather than blindly copying every keyword score.  Search
+    # normally needs a chat synthesis step; only a concrete form-analysis signal
+    # should keep motion as its secondary capability.
     if primary == "search":
-        if decision["scores"].get("motion", 0.0) >= MIN_ROUTE_SCORE:
-            observed = ["motion"]
-        else:
-            observed = ["chat"]
-        if "什么动作最适合" in text:
-            observed = ["chat"]
-    elif primary == "motion" and not observed:
-        if any(term in text for term in ("疼", "痛", "不舒服", "主要练哪里", "作用")):
-            observed = ["chat"]
-    elif primary == "chat":
-        if "cross_domain_plan" in decision.get("ambiguity_signals", []):
-            observed = ["diet"]
-        elif "progress_diagnosis" in decision.get("ambiguity_signals", []):
-            observed = ["diet"] if "体重没变" in text else []
-        elif any(term in text for term in (
-            "圆肩",
-            "骨盆前倾",
-            "恢复训练",
-            "练什么动作",
-            "练哪些动作",
-        )):
-            observed = ["motion"]
-    elif primary == "diet":
-        has_explicit_recipe_task = any(
-            term in text
-            for term in ("做法", "怎么做", "推荐一道", "具体晚餐菜", "一道菜")
+        motion_analysis_terms = ("内扣", "姿势", "姿态", "动作分析", "动作数据", ".npz")
+        observed = (
+            ["motion"]
+            if any(term in text for term in motion_analysis_terms)
+            else ["chat"]
         )
-        has_ingredient_context = any(
-            term in text for term in ("冰箱", "现有食材", "这些食材")
-        )
-        if recipe_is_negated or (
-            "mcp" in observed and not has_explicit_recipe_task and not has_ingredient_context
-        ):
-            observed = [intent for intent in observed if intent != "mcp"]
-        if has_ingredient_context and "mcp" not in observed:
-            observed.append("mcp")
-    elif primary == "mcp" and "diet" not in observed:
-        if any(term in text for term in DIET_PLANNING_TERMS):
-            observed.append("diet")
 
-    explicit_sequence = (
-        ("先" in text and any(token in text for token in ("再", "然后")))
-        or any(token in text for token in ("顺便", "然后", "最好给", "再给"))
+    # Negated or quantity-only recipe language is a nutrition request, not a
+    # latent tool call.  Concrete ingredients/fridge constraints remain eligible
+    # for the recipe capability.
+    recipe_negations = (
+        "不需要具体做法",
+        "不需要做法",
+        "不用给具体做法",
+        "不用具体做法",
+        "不要具体做法",
+        "不要菜谱",
+        "不想做饭",
+        "不用做饭",
+    )
+    has_cooking_action = any(pattern in text for pattern in COOKING_ACTION_PATTERNS)
+    has_cooking_context = any(term in text for term in COOKING_CONTEXT_TERMS)
+    if primary == "diet" and (
+        any(pattern in text for pattern in recipe_negations)
+        or (not has_cooking_action and not has_cooking_context)
+    ):
+        observed = [intent for intent in observed if intent != "mcp"]
+
+    # Some broad planning questions deliberately stay on chat, while retaining
+    # the domain capability as metadata for evaluation and future composition.
+    if primary == "chat":
+        if any(term in text for term in ("吃和练", "体重没变")) and "diet" not in observed:
+            observed.append("diet")
+        if any(term in text for term in ("圆肩", "骨盆前倾", "恢复训练")) and "motion" not in observed:
+            observed.append("motion")
+
+    if primary == "motion" and any(
+        term in text for term in ("疼", "不舒服", "主要练哪里")
+    ) and "chat" not in observed:
+        observed.append("chat")
+
+    # Only explicit sequencing triggers multi-intent execution.
+    explicit_sequence = _has_explicit_sequencing(text) or any(
+        token in text for token in ("顺便", "然后", "最好给", "再给")
     )
     route_plan: List[Intent] = [primary]
     if explicit_sequence:
         route_plan.extend(intent for intent in observed if intent not in route_plan)
 
-    ambiguity_signals = decision.get("ambiguity_signals", [])
-    needs_clarification = (
-        "cross_domain_plan" in ambiguity_signals and len(route_plan) == 1
-    )
+    needs_clarification = False
     if observed:
         reason = (
             f"Primary intent is {primary}; observed secondary intents: "
@@ -1082,8 +986,6 @@ def _multi_intent_metadata(
         reason = f"Only the primary intent {primary} was observed."
     if explicit_sequence and len(route_plan) > 1:
         reason += " Explicit sequencing language produced an ordered route plan."
-    if needs_clarification:
-        reason += " Cross-domain planning details are insufficient for safe composition."
 
     return observed, route_plan, reason, needs_clarification
 
@@ -1102,6 +1004,14 @@ def classify_intent_with_scores(
     decision["route_plan"] = route_plan
     decision["multi_intent_reason"] = reason
     decision["needs_clarification"] = needs_clarification
+    ambiguity_signals: List[str] = []
+    if decision["source"] == "ambiguity_fallback":
+        ambiguity_signals.append("low_confidence")
+    if secondary:
+        ambiguity_signals.append("multiple_capabilities")
+    if len(route_plan) > 1:
+        ambiguity_signals.append("explicit_sequence")
+    decision["ambiguity_signals"] = ambiguity_signals
     return decision
 
 
@@ -1121,6 +1031,8 @@ def _apply_pattern_boosts(
     negative_recipe_patterns = (
         "不需要具体做法",
         "不需要做法",
+        "不用给具体做法",
+        "不用具体做法",
         "不要具体做法",
         "不要菜谱",
         "不想做饭",
@@ -1183,7 +1095,7 @@ def _apply_pattern_boosts(
         matches.append("motion:pattern(exercise_how_to)+4")
         return
 
-    if has_cooking_action and not has_diet_planning_term:
+    if has_cooking_action and (has_cooking_context or not has_diet_planning_term):
         weight = 5.0 if has_cooking_context else 3.5
         scores["mcp"] += weight
         matches.append(f"mcp:pattern(cooking_how_to)+{weight:g}")

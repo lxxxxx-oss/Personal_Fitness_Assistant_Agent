@@ -3,34 +3,34 @@
 ## Current Task
 
 - Status: idle
-- Goal: 扩展 RAG 评测集、收紧生成证据约束，并完成 tuning 对照验证。
-- Updated: 2026-08-01
+- Goal: 完成混合意图路由重构收尾并上传 GitHub。
+- Updated: 2026-08-08
 
 ## Completed
 
-- 黄金集扩展为 80 条：60 条可回答、20 条无答案；55 条 tuning、25 条 holdout，并补齐 split、难度、领域和问法类型元数据。
-- `eval_retrieval.py` 与 `eval_rag.py` 支持分区、分层报告、分阶段执行、断点续跑和配置指纹；RAGAS 仍是主评测，Recall@K/MRR 只作检索诊断。
-- Chat 升级为 `grounded-v3`：只依据检索证据，保留否定和适用条件，不混合人群/剂量阶段，证据不足即停止，关键结论使用 `[RefN]`；普通和流式路径统一为 `max_tokens=512`、`temperature=0`、`top_p=1`。
-- 42 条可回答 tuning 已完成前后两轮真实生成、本地 RAGAS 评分和重点失败样例人工复核；项目事实文档与面试材料已同步。
-- 未运行 18 条可回答 holdout，避免调参期间污染最终验收；未改动未跟踪的 `docs/interview/`。
+- Router 默认链路统一为加权规则、组合模式与置信度降级，移除重复的字符 n-gram/词面样例层。
+- 保留默认关闭的 embedding 与本地 Qwen 无规则兜底；复合任务继续由白名单约束。
+- 补齐主意图、次意图、执行计划和歧义信号，并修复饮食、动作及复合表达的误判。
+- 同步当前事实文档、学习材料、简历防守口径和项目证据。
+- `.claude/settings.local.json` 已加入忽略规则，不进入仓库；`docs/learning/agent.json` 仍保持忽略。
 
 ## Key Results
 
-- 60 条可回答样例：Dense/Hybrid Recall@5 均为 `0.967`，MRR 为 `0.844/0.895`。
-- 42 条 tuning RAGAS：`1.000/0.725/0.788 -> 1.000/0.897/0.798`；忠实度中位数 `0.800 -> 1.000`，忠实度低于 `0.5` 的样例 `8 -> 3`。
-- 人工审计仍发现 Top-1 排序/证据覆盖问题、小模型残余越界和本地 8B 量化裁判假阴性，因此当前数字是调参证据，不是生产或 holdout 泛化结论。
+- Router normal：`66/66`。
+- Router challenge：主意图 `36/36`，次意图精确匹配 `34/36`（`94.4%`），route plan `36/36`。
+- Router semantic rewrite：`10/10`。
 
 ## Verification
 
-- 全量测试：`326 passed, 1 skipped, 2 warnings`。
-- `git diff --check` 通过；文档旧口径搜索通过。
-- grounded-v3 生成约 `6m19s`，评分约 `14m08s`，进度文件为 `tmp/rag_eval_hybrid_tuning_grounded_v3_20260801.json`。
+- 路由专项测试：`41 passed`。
+- 全量测试：`331 passed, 1 skipped, 3 warnings`。
+- `git diff --check` 通过；当前文档已清理与新路由实现冲突的旧口径。
 
 ## Next Steps
 
-1. 当前配置冻结后，只运行一次 18 条可回答 holdout，作为最终泛化验收。
-2. 若 holdout 暴露排序问题，优先单独评估 reranker；不要继续向 prompt 堆样例特判。
+1. 后续根据真实失败表达补充评测样本，不为堆功能默认启用模型路由。
+2. 若启用 embedding 或 Qwen fallback，先做同一评测集上的准确率、延迟和稳定性 A/B 对比。
 
 ## Resume Prompt
 
-继续 RAG 验收：先确认当前配置已冻结，再仅运行一次 18 条可回答 holdout，比较 RAGAS 与人工抽检结果。不要改动未跟踪的 `docs/interview/`。
+继续优化个人健身 Agent：先读本文件和 `docs/project/technical/router/路由优化状态.md`，再根据真实失败样本决定下一项改动；保持代码、项目事实和学习口径同步。
