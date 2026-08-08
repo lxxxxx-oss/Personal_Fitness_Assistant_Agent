@@ -204,18 +204,16 @@ MIN_ROUTE_CONFIDENCE = 0.60
 # Light conjunctions that indicate the user is listing two tasks without the
 # strict "先...然后..." pattern.  When present AND both intents are confident,
 # they trigger multi-intent execution.
-PARALLEL_CONJUNCTIONS = ("顺便", "同时", "并且", "还", "另外")
+PARALLEL_CONJUNCTIONS = ("顺便", "同时", "并且", "另外")
 # When ≥2 intents reach threshold, the margin between top-2 decides:
 # Confidence cap applied to all score-based decisions.
 CONFIDENCE_CAP = 0.95
 LLM_ROUTER_MIN_CONFIDENCE = 0.70
 ALLOWED_INTENTS = {"search", "motion", "diet", "chat", "mcp"}
-SUPPORTED_ROUTE_COMBINATIONS = {
-    ("search", "diet"),
-    ("search", "chat"),
-    ("motion", "chat"),
-    ("motion", "diet"),
-}
+# Multi-intent plans are open to every legal subgraph combination.  The step
+# budget keeps one request bounded without coupling the router to a brittle
+# pair whitelist.
+MAX_ROUTE_STEPS = 3
 COOKING_ACTION_PATTERNS = ("怎么做", "如何做", "咋做", "做法", "步骤", "教程")
 COOKING_CONTEXT_TERMS = (
     "炒",
@@ -898,34 +896,67 @@ def _multi_intent_metadata(
     user_input: str,
     decision: RouteDecision,
 ) -> Tuple[List[Intent], List[Intent], str, bool]:
-    """Detect secondary intents and build route plan.
-
-    Multi-intent execution is ONLY triggered by explicit sequencing
-    ('先...然后...'). Without it, multi-signal cases are handled by
-    the ambiguity fallback in _classify_primary_intent_with_scores.
-    """
-    primary = decision["intent"]
+    """Detect reliable co-intents and preserve their expression order."""
+    scored_primary = decision["intent"]
     text = _normalize_text(user_input)
-    clause_pattern = r"(?:，|,|；|;|。|然后|顺便|同时|并且|最好给(?:个)?|再(?=查|搜|给|分析|看|安排))"
-    clauses = [part.strip() for part in re.split(clause_pattern, text) if part.strip()]
+    clause_source = text
+    if _has_explicit_sequencing(text):
+        # Text before "先" usually describes the overall goal; the actual task
+        # order starts after it (for example, "想学硬拉，先讲原理再看动作").
+        clause_source = text[text.find("先") + 1 :]
+    clause_pattern = (
+        r"(?:，|,|；|;|。|然后|顺便|同时|并且|另外|最好给(?:个)?|"
+        r"再(?=查|搜|给|分析|看|安排|推荐|解释))"
+    )
+    clauses = [
+        part.strip()
+        for part in re.split(clause_pattern, clause_source)
+        if part.strip()
+    ]
 
-    observed: List[Intent] = []
+    ordered_clause_intents: List[Intent] = []
     for clause in clauses:
         intent = _rule_intent_for_segment(clause)
-        if intent and intent != primary and intent not in observed:
-            observed.append(intent)
+        if intent and intent not in ordered_clause_intents:
+            ordered_clause_intents.append(intent)
 
+    scored_intents: List[Intent] = []
     for intent, score in sorted(
         decision["scores"].items(), key=lambda item: item[1], reverse=True
     ):
-        if intent != primary and score >= MIN_ROUTE_SCORE and intent not in observed:
-            observed.append(intent)
+        if score >= MIN_ROUTE_SCORE:
+            scored_intents.append(intent)  # type: ignore[arg-type]
+
+    reliable_multi_signal = (
+        _has_explicit_sequencing(text)
+        or _has_parallel_conjunction(text)
+        or "然后" in text
+        or "最好给" in text
+        or "再给" in text
+    )
+    route_plan: List[Intent] = [scored_primary]
+    if reliable_multi_signal:
+        ordered_candidates = list(ordered_clause_intents)
+        if len(ordered_candidates) < 2:
+            ordered_candidates = [scored_primary]
+            ordered_candidates.extend(
+                intent for intent in scored_intents if intent not in ordered_candidates
+            )
+        if len(ordered_candidates) >= 2:
+            route_plan = ordered_candidates
+
+    primary = route_plan[0]
+    observed: List[Intent] = [intent for intent in route_plan[1:] if intent != primary]
+    if len(route_plan) == 1:
+        for intent in ordered_clause_intents + scored_intents:
+            if intent != primary and intent not in observed:
+                observed.append(intent)
 
     # Secondary intents describe the downstream capability that complements the
     # primary route, rather than blindly copying every keyword score.  Search
     # normally needs a chat synthesis step; only a concrete form-analysis signal
     # should keep motion as its secondary capability.
-    if primary == "search":
+    if primary == "search" and len(route_plan) == 1:
         motion_analysis_terms = ("内扣", "姿势", "姿态", "动作分析", "动作数据", ".npz")
         observed = (
             ["motion"]
@@ -967,14 +998,6 @@ def _multi_intent_metadata(
     ) and "chat" not in observed:
         observed.append("chat")
 
-    # Only explicit sequencing triggers multi-intent execution.
-    explicit_sequence = _has_explicit_sequencing(text) or any(
-        token in text for token in ("顺便", "然后", "最好给", "再给")
-    )
-    route_plan: List[Intent] = [primary]
-    if explicit_sequence:
-        route_plan.extend(intent for intent in observed if intent not in route_plan)
-
     needs_clarification = False
     if observed:
         reason = (
@@ -984,8 +1007,8 @@ def _multi_intent_metadata(
         )
     else:
         reason = f"Only the primary intent {primary} was observed."
-    if explicit_sequence and len(route_plan) > 1:
-        reason += " Explicit sequencing language produced an ordered route plan."
+    if reliable_multi_signal and len(route_plan) > 1:
+        reason += " Reliable multi-intent language produced an ordered route plan."
 
     return observed, route_plan, reason, needs_clarification
 
@@ -999,7 +1022,13 @@ def classify_intent_with_scores(
     secondary, route_plan, reason, needs_clarification = _multi_intent_metadata(
         user_input, decision
     )
-    decision["primary_intent"] = decision["intent"]
+    detected_primary = route_plan[0]
+    if detected_primary != decision["intent"]:
+        decision["reason"] += (
+            f" User expression order promoted {detected_primary} to the first route step."
+        )
+        decision["intent"] = detected_primary
+    decision["primary_intent"] = detected_primary
     decision["secondary_intents"] = secondary
     decision["route_plan"] = route_plan
     decision["multi_intent_reason"] = reason
@@ -1010,9 +1039,37 @@ def classify_intent_with_scores(
     if secondary:
         ambiguity_signals.append("multiple_capabilities")
     if len(route_plan) > 1:
-        ambiguity_signals.append("explicit_sequence")
+        ambiguity_signals.append("multi_intent_plan")
     decision["ambiguity_signals"] = ambiguity_signals
     return decision
+
+
+def _validate_route_plan(
+    requested_plan: Sequence[str],
+    fallback_intent: Intent,
+) -> Tuple[List[Intent], List[str]]:
+    """Validate a detected plan without restricting legal intent combinations."""
+    execution_plan: List[Intent] = []
+    warnings: List[str] = []
+    for raw_intent in requested_plan:
+        if raw_intent not in ALLOWED_INTENTS:
+            warnings.append(f"route_plan_invalid_intent:{raw_intent}")
+            continue
+        intent: Intent = raw_intent  # type: ignore[assignment]
+        if intent in execution_plan:
+            warnings.append(f"route_plan_duplicate_intent:{intent}")
+            continue
+        execution_plan.append(intent)
+
+    if not execution_plan:
+        execution_plan = [fallback_intent]
+        warnings.append("route_plan_empty:fallback_to_primary")
+
+    if len(execution_plan) > MAX_ROUTE_STEPS:
+        execution_plan = execution_plan[:MAX_ROUTE_STEPS]
+        warnings.append(f"route_plan_truncated:max_steps={MAX_ROUTE_STEPS}")
+
+    return execution_plan, warnings
 
 
 def _apply_pattern_boosts(
@@ -1155,18 +1212,16 @@ def intent_classify_node(state: RouterState) -> RouterState:
     state["_multi_intent_reason"] = decision["multi_intent_reason"]
     state["_needs_clarification"] = decision["needs_clarification"]
     requested_plan = decision["route_plan"]
-    plan_tuple = tuple(requested_plan)
     warnings: List[str] = []
     if decision["needs_clarification"]:
         execution_plan = [decision["primary_intent"]]
         warnings.append("multi_intent_execution_skipped:needs_clarification")
-    elif len(requested_plan) == 1:
-        execution_plan = requested_plan
-    elif plan_tuple in SUPPORTED_ROUTE_COMBINATIONS:
-        execution_plan = requested_plan
     else:
-        execution_plan = [decision["primary_intent"]]
-        warnings.append("multi_intent_execution_skipped:unsupported_route_plan")
+        execution_plan, validation_warnings = _validate_route_plan(
+            requested_plan,
+            decision["primary_intent"],
+        )
+        warnings.extend(validation_warnings)
     state["_route_execution_plan"] = execution_plan
     state["_route_execution_cursor"] = 0
     state["_active_intent"] = execution_plan[0]

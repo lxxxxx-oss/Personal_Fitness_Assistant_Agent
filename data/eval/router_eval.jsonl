@@ -55,7 +55,7 @@
 {"text": "最近有新的HIIT研究吗", "intent": "search", "category": "freshness_search", "note": "freshness signal plus research"}
 {"text": "查一下今年肌酸补剂的研究", "intent": "search", "category": "freshness_search", "note": "time-sensitive supplement research"}
 {"text": "帮我找一下最新的膝盖疼训练建议", "intent": "search", "category": "freshness_search", "note": "explicit lookup should route to search"}
-{"text": "我想减脂，顺便查一下最近间歇性禁食的研究", "intent": "search", "category": "multi_intent_primary", "note": "explicit latest research wins over diet in single-intent router"}
+{"text": "我想减脂，顺便查一下最近间歇性禁食的研究", "intent": "diet", "category": "multi_intent_primary", "note": "reliable parallel tasks preserve expression order: diet first, then search"}
 {"text": "先搜一下最新深蹲技术文章，再帮我判断动作要点", "intent": "search", "category": "multi_intent_primary", "note": "explicit search is primary before motion follow-up"}
 {"text": "我深蹲膝盖疼，查一下可能原因", "intent": "search", "category": "multi_intent_primary", "note": "explicit lookup wins over motion review"}
 {"text": "我想减脂，能推荐一道晚餐菜吗", "intent": "mcp", "category": "multi_intent_primary", "note": "specific dish recommendation wins over broad diet goal"}

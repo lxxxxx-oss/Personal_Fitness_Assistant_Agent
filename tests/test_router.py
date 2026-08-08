@@ -184,27 +184,45 @@ class TestIntentClassification:
         # needs_clarification is False after ambiguity refactoring —
         # the router already routes to chat directly.
 
-    def test_only_supported_route_plan_is_executed(self):
-        supported: RouterState = {
+    def test_every_valid_route_plan_combination_is_executed(self):
+        motion_diet: RouterState = {
             "user_input": "先分析 sample.npz，然后给我饮食建议",
             "user_id": "test",
             "memory": [],
         }
-        unsupported: RouterState = {
+        diet_recipe: RouterState = {
             "user_input": "先给我减脂原则，然后推荐一道具体晚餐菜",
             "user_id": "test",
             "memory": [],
         }
 
-        supported_result = intent_classify_node(supported)
-        unsupported_result = intent_classify_node(unsupported)
+        motion_diet_result = intent_classify_node(motion_diet)
+        diet_recipe_result = intent_classify_node(diet_recipe)
 
-        assert supported_result["_route_execution_plan"] == ["motion", "diet"]
-        assert unsupported_result["_route_plan"] == ["diet", "mcp"]
-        assert unsupported_result["_route_execution_plan"] == ["diet"]
-        assert "unsupported_route_plan" in unsupported_result[
-            "_route_execution_warnings"
-        ][0]
+        assert motion_diet_result["_route_execution_plan"] == ["motion", "diet"]
+        assert diet_recipe_result["_route_plan"] == ["diet", "mcp"]
+        assert diet_recipe_result["_route_execution_plan"] == ["diet", "mcp"]
+        assert diet_recipe_result["_route_execution_warnings"] == []
+
+    def test_multi_intent_plan_preserves_user_expression_order(self):
+        decision = classify_intent_with_scores(
+            "我想减脂，顺便查一下最近间歇性禁食的研究"
+        )
+
+        assert decision["primary_intent"] == "diet"
+        assert decision["secondary_intents"][0] == "search"
+        assert decision["route_plan"] == ["diet", "search"]
+
+    def test_route_plan_validation_checks_legality_duplicates_and_step_budget(self):
+        execution_plan, warnings = router_module._validate_route_plan(
+            ["motion", "motion", "unknown", "diet", "search", "chat"],
+            "motion",
+        )
+
+        assert execution_plan == ["motion", "diet", "search"]
+        assert "route_plan_duplicate_intent:motion" in warnings
+        assert "route_plan_invalid_intent:unknown" in warnings
+        assert "route_plan_truncated:max_steps=3" in warnings
 
     def test_collect_route_result_advances_and_preserves_records(self):
         state: RouterState = {
@@ -435,7 +453,7 @@ class TestRouterGraph:
         assert "result" in result
         assert result["intent"] == "chat"
 
-    def test_supported_combination_executes_two_subgraphs(self, monkeypatch):
+    def test_any_legal_combination_executes_all_subgraphs(self, monkeypatch):
         from langgraph.graph import END, StateGraph
         import app.tools.retriever as retriever_module
 
@@ -465,22 +483,22 @@ class TestRouterGraph:
 
         graph = build_router_graph()
         result = graph.invoke({
-            "user_input": "先分析 sample.npz，然后给我饮食建议",
+            "user_input": "先给我减脂原则，然后推荐一道具体晚餐菜",
             "user_id": "test",
             "memory": [],
             "result": "",
             "error": None,
         })
 
-        assert result["intent"] == "motion"
-        assert result["_route_execution_plan"] == ["motion", "diet"]
+        assert result["intent"] == "diet"
+        assert result["_route_execution_plan"] == ["diet", "mcp"]
         assert [item["intent"] for item in result["_route_results"]] == [
-            "motion",
             "diet",
+            "mcp",
         ]
         assert result["_structured_state"]["tool_results_summary"] == [
-            {"intent": "motion", "summary": "motion preview"},
             {"intent": "diet", "summary": "diet preview"},
+            {"intent": "mcp", "summary": "mcp preview"},
         ]
         assert result["result"] == "Mock LLM response"
 
