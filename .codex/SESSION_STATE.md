@@ -3,34 +3,34 @@
 ## Current Task
 
 - Status: idle
-- Goal: 完成混合意图路由重构收尾并上传 GitHub。
+- Goal: 已完成当前代码与项目文档、学习文档的一致性核对。
 - Updated: 2026-08-08
 
 ## Completed
 
-- Router 默认链路统一为加权规则、组合模式与置信度降级，移除重复的字符 n-gram/词面样例层。
-- 保留默认关闭的 embedding 与本地 Qwen 无规则兜底；复合任务继续由白名单约束。
-- 补齐主意图、次意图、执行计划和歧义信号，并修复饮食、动作及复合表达的误判。
-- 同步当前事实文档、学习材料、简历防守口径和项目证据。
-- `.claude/settings.local.json` 已加入忽略规则，不进入仓库；`docs/learning/agent.json` 仍保持忽略。
+- 核对模型选择、路由、记忆、API、RAG、动作分析和 MCP/工具链的当前实现。
+- 将 RAG 事实统一为：SQLite + FAISS 持久化，子块执行 Dense/BM25 多路召回与 RRF，随后回填父块、折叠同父结果并选取最终上下文。
+- 新增 `docs/project/technical/rag/检索实现与评测状态.md`，同步项目总览、运行排错、证据、手动验收及学习/简历口径。
+- 将现有 Recall@5、MRR 和 RAGAS 结果明确标为父子分块合入前的旧链路基线，避免归因给当前版本。
 
-## Key Results
+## Current Boundaries
 
-- Router normal：`66/66`。
-- Router challenge：主意图 `36/36`，次意图精确匹配 `34/36`（`94.4%`），route plan `36/36`。
-- Router semantic rewrite：`10/10`。
+- 当前父块 ID 按版本、来源和章节路径生成；同一超长章节切出多个父块时存在 ID 复用风险。
+- 同父结果折叠发生在最终截断前，结果不足 Top-K 时暂未回填。
+- 尚未实现 LLM 语义分块或 Cross-Encoder 重排。
+- 当前父子分块版本尚未重建正式索引并完成同口径检索/RAGAS 复测。
 
 ## Verification
 
-- 路由专项测试：`41 passed`。
+- RAG 专项测试：`47 passed`。
 - 全量测试：`331 passed, 1 skipped, 3 warnings`。
-- `git diff --check` 通过；当前文档已清理与新路由实现冲突的旧口径。
+- Markdown 相对链接检查和 `git diff --check` 均通过。
 
 ## Next Steps
 
-1. 后续根据真实失败表达补充评测样本，不为堆功能默认启用模型路由。
-2. 若启用 embedding 或 Qwen fallback，先做同一评测集上的准确率、延迟和稳定性 A/B 对比。
+1. 在具备本地模型的电脑重建父子分块索引，并运行检索评测与 RAGAS tuning/holdout。
+2. 如继续改代码，优先修复父块 ID 唯一性和同父折叠后的 Top-K 回填，再同步测试与文档。
 
 ## Resume Prompt
 
-继续优化个人健身 Agent：先读本文件和 `docs/project/technical/router/路由优化状态.md`，再根据真实失败样本决定下一项改动；保持代码、项目事实和学习口径同步。
+继续维护个人健身 Agent：先读本文件和 `docs/project/technical/rag/检索实现与评测状态.md`；下一步优先修复父块 ID 与 Top-K 回填，或在模型电脑重建索引并完成当前父子分块版本评测。

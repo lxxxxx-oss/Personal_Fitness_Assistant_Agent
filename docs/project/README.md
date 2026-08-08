@@ -22,7 +22,7 @@
 
 | 分区 | 负责内容 | 何时更新 |
 |---|---|---|
-| [technical](./technical/README.md) | 路由、动作分析、工具注册等深入设计与接入状态 | 对应模块设计或实现变化时 |
+| [technical](./technical/README.md) | 路由、RAG、动作分析、工具注册等深入设计与接入状态 | 对应模块设计或实现变化时 |
 | [optimization](./optimization/README.md) | 记忆、上下文压缩和工程演进 | 记忆或上下文机制变化时 |
 | [miniprogram](./miniprogram/README.md) | 微信小程序实现、端侧设计与验收边界 | 小程序代码或联调状态变化时 |
 | [superpowers](./superpowers/README.md) | 项目早期规格与实施计划归档 | 原则上只保留，不作为当前事实修改 |

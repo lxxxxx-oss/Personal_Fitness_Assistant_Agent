@@ -8,7 +8,7 @@
 |---|---|---|---|
 | 混合意图路由 | [简历技术点总表：路由](./03_简历技术点总表.md#3-langgraphstategraph-与-router) | [多意图路由设计](../project/technical/router/多意图路由设计.md)、[技术深挖与白板](./06_技术深挖与白板.md) | 规则基线、困难集和语义改写集可回归；embedding 样例匹配已接入但默认关闭 |
 | 3D 动作相似度分析 | [简历技术点总表：Motion](./03_简历技术点总表.md#6-动作分析姿态序列与-fastdtw) | [动作媒体链路设计](../project/technical/motion/动作媒体链路设计.md)、[动作分析首选演进方案](../project/technical/motion/动作分析优化路线.md#6-学习模型演进的首选方案尚未实现) | 图片/视频链路、时序对齐、关节/角度解释和质量门控已实现；`MediaPipe 33 + ST-GCN++ + Fitness-AQA + FastDTW/角度规则` 是下一阶段首选方案，尚未实现，不能说成现有能力 |
-| SQLite + FAISS 混合 RAG | [简历技术点总表：RAG](./03_简历技术点总表.md#4-rag向量表示与-sqlite--faiss) | [简历描述与防守边界：RAG](./09_简历项目描述与防守边界.md#3-sqlite--faiss-混合-rag)、[项目证据](../project/项目证据.md) | 12 份经人工筛选并记录来源的结构化领域资料、SQLite 持久化、FAISS 索引恢复和 80 条分层黄金集已完成；60 条可回答样例的 Dense/Hybrid 检索诊断已记录，`grounded-v3` 使 42 条可回答 tuning 的 RAGAS 结果由 `1.000/0.725/0.788` 变为 `1.000/0.897/0.798`，18 条可回答 holdout 待参数冻结后运行 |
+| SQLite + FAISS 混合 RAG | [简历技术点总表：RAG](./03_简历技术点总表.md#4-rag向量表示与-sqlite--faiss) | [简历描述与防守边界：RAG](./09_简历项目描述与防守边界.md#3-sqlite--faiss-混合-rag)、[当前检索实现与评测状态](../project/technical/rag/检索实现与评测状态.md)、[项目证据](../project/项目证据.md) | 当前代码已实现结构感知父子分块、子块 Dense + BM25 召回、RRF、父块回填与同父折叠；12 份来源可追溯资料和 80 条分层黄金集已具备。现有 60 条检索诊断与 42 条 tuning RAGAS 前后对照均属于父子分块前基线，当前版本仍需重建正式索引并按同一口径重测，18 条可回答 holdout 尚未运行 |
 | 分层记忆与上下文压缩 | [简历技术点总表：Memory](./03_简历技术点总表.md#8-memory-与上下文工程) | [记忆与上下文专项追问](./10_记忆与上下文专项追问.md)、[记忆系统设计](../project/optimization/记忆系统设计.md)、[上下文压缩设计](../project/optimization/上下文压缩设计.md) | SQLite 完整会话、任务感知关键词召回、滑动窗口、跨请求结构化证据摘要、模型派生预算和推理前 tokenizer 硬校验已实现；语义 FAISS 召回已接入但默认关闭，精确区段配额与模型语义摘要属于生产化方向 |
 
 ## 使用方法
