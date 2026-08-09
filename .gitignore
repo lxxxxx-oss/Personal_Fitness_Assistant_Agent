@@ -10,6 +10,7 @@ tmp/
 data/models/
 *.task
 docs/learning/agent.json
+docs/interview/agent.json
 .claude/settings.local.json
 volumes/
 *.db

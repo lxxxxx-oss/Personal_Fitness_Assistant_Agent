@@ -3,50 +3,41 @@
 ## Current Task
 
 - Status: idle
-- Goal: 已完成父子分块 RAGAS 与开放式多意图路由相关文档收尾及全量验证，准备提交并推送 GitHub。
-- Updated: 2026-08-08
+- Goal: 为简历四项项目亮点分别建立可应对连续追问的专项面试文档。
+- Updated: 2026-08-09
 
 ## Progress
 
-- RAG/检索专项测试通过：63 passed，1 个第三方弃用警告。
-- 当前内存索引：12 个知识文件、87 个父级检索单元。
-- 全量检索评测：Dense Recall@5/MRR=0.9667/0.8436；Hybrid=0.9667/0.8931。
-- Hybrid 分拆：tuning=0.9524/0.8710；holdout=1.0000/0.9444。
-- Qwen3-0.6B 生成与 Qwen3-8B GGUF 裁判闭环通过。
-- 父子分块版 tuning 已完成 42/42：RAGAS=1.000/0.902/0.786，生成约 6 分 41 秒、评分约 14 分 56 秒。
-- 父子分块版 holdout 已完成 18/18：RAGAS=1.000/0.815/0.762，生成约 2 分 58 秒、评分约 7 分 21 秒。
+- 已在 `docs/interview/` 生成混合意图路由、混合检索 RAG、分层记忆与上下文压缩、3D 动作相似度分析四份专项问答。
+- 每份文档均包含技术首次出现说明、完整链路、完整问答、连续追问、防守边界、白板讲解和参考资料。
+- 外部资料用于校准 Agent 岗位常见追问方式；项目答案以当前代码、测试和事实文档为准。
 
 ## Touched Files
 
+- `docs/interview/01_混合意图路由专项面试问答.md`
+- `docs/interview/02_混合检索RAG专项面试问答.md`
+- `docs/interview/03_分层记忆与上下文压缩专项面试问答.md`
+- `docs/interview/04_3D动作相似度分析专项面试问答.md`
+- `.gitignore`
 - `.codex/SESSION_STATE.md`
-- 新评测输出：`tmp/rag_retrieval_parent_child_20260808.json`
-- 新烟测进度：`tmp/rag_eval_parent_child_smoke_20260808.json`
-- tuning 进度：`tmp/rag_eval_parent_child_tuning_20260808.json`
-- holdout 进度：`tmp/rag_eval_parent_child_holdout_20260808.json`
-- 已同步 `docs/project/` 的项目证据、运行排错、项目总览和 RAG 技术状态。
-- 已同步 `docs/learning/` 的项目讲解、简历技术点、问答、白板、速记和模拟面试等口径。
-- 工作区原有 Router 改动及未跟踪 `docs/interview/` 均不触碰。
 
 ## Key Decisions
 
-- 本轮新评测使用独立进度/输出文件，不覆盖 2026-08-01 的旧单层基线。
-- 固定 Hybrid 参数：Top-5、candidate-k=20、RRF k=60、Dense threshold=0.0。
-- 先完成单例生成/评分闭环，再跑 42 条 tuning 和 18 条 holdout。
+- 四份材料统一采用“是什么—解决什么问题—项目如何使用—替代方案—为何选择”的首次概念解释模板。
+- 严格区分当前已实现、已验证指标、已知边界和生产化升级方向。
+- `docs/interview/agent.json` 是个人简历源文件，仅补充忽略规则，不读取、不修改。
 
 ## Verification
 
-- `pytest`：63 passed。
-- 检索评测：80 条（60 可回答、20 不可回答），Hybrid 相比 Dense 的 MRR +0.0494。
-- tuning RAGAS：42 条全部评分成功，context_relevance=1.000、faithfulness=0.902、answer_relevance=0.786。
-- holdout RAGAS：18 条全部评分成功，context_relevance=1.000、faithfulness=0.815、answer_relevance=0.762。
-- Markdown 本地链接检查通过；`git diff --check` 无补丁格式错误。
-- 上传前全量回归：`333 passed, 1 skipped, 2 warnings`，用时 `22.47s`。
+- 四份文档共 91 组编号问答，文件均存在且 UTF-8 可读。
+- 四份文档的本地 Markdown 链接检查通过，无行尾空白。
+- 已确认 `docs/interview/agent.json` 被 `.gitignore` 排除。
+- 本轮只改文档和忽略规则，未修改代码，未运行代码测试。
 
 ## Next Steps
 
-1. 当前阶段无必做代码工作；后续若继续 RAG 优化，优先人工复核 holdout 低分样例。
-2. `docs/interview/` 保持本地未跟踪，不纳入本次 GitHub 提交。
+- 可任选一个亮点，按对应文档进行模拟面试和连续追问训练。
 
 ## Resume Prompt
 
-当前代码与文档已验证；若继续优化，以 2026-08-08 父子分块复测及开放式多意图路由作为当前事实口径。
+读取 `docs/interview/` 中用户指定的专项问答，以真实 Agent 岗面试官身份逐层追问，并在用户回答后指出事实错误、表达风险和更优口径。
