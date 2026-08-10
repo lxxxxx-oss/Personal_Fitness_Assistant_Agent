@@ -4,6 +4,7 @@ import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from app.config import config
+from app.graph.safety_policy import SAFETY_POLICY_VERSION, compose_safe_prompt
 from app.graph.state import RouterState, record_execution
 from app.memory.token_budget import estimate_tokens
 
@@ -16,6 +17,7 @@ class PromptBuilder:
 
     @staticmethod
     def attach(state: RouterState, prompt: str, *, kind: str, sections: Sequence[str]) -> str:
+        prompt = compose_safe_prompt(prompt, kind=kind)
         original_chars = len(prompt)
         original_tokens = estimate_tokens(prompt)
         compacted = False
@@ -25,6 +27,13 @@ class PromptBuilder:
         ):
             prompt = PromptBuilder.compact_prompt(state, prompt)
             compacted = True
+            compact_diagnostics = state.get("_structured_state", {}).get(
+                "compact_diagnostics", {}
+            )
+            dropped_units = sum(
+                int(item.get("dropped_units", 0))
+                for item in compact_diagnostics.get("dropped_sections", [])
+            )
             record_execution(
                 state,
                 "compact",
@@ -33,12 +42,18 @@ class PromptBuilder:
                 detail=(
                     "prompt compacted from "
                     f"{original_chars}/{original_tokens} chars/tokens to "
-                    f"{len(prompt)}/{estimate_tokens(prompt)}"
+                    f"{len(prompt)}/{estimate_tokens(prompt)}; "
+                    f"target_met={compact_diagnostics.get('target_met')}; "
+                    f"dropped_units={dropped_units}"
                 ),
             )
         state["_prompt"] = prompt
+        compact_diagnostics = state.get("_structured_state", {}).get(
+            "compact_diagnostics"
+        )
         state["_prompt_meta"] = {
             "kind": kind,
+            "safety_policy_version": SAFETY_POLICY_VERSION,
             "chars": len(prompt),
             "original_chars": original_chars,
             "tokens": estimate_tokens(prompt),
@@ -48,102 +63,399 @@ class PromptBuilder:
             "max_prompt_tokens": config.context_max_prompt_tokens,
             "compact_trigger_tokens": config.context_compact_trigger_tokens,
             "compact_triggered": compacted,
-            "sections": list(sections),
+            "compact_diagnostics": compact_diagnostics if compacted else None,
+            "sections": ["global_safety", "domain_safety", *list(sections)],
         }
         return prompt
 
     @staticmethod
     def compact_prompt(state: RouterState, prompt: str) -> str:
-        max_chars = max(1200, config.context_max_prompt_chars)
-        max_tokens = max(1200, config.context_max_prompt_tokens)
+        """Pack a prompt to its compact target without slicing required content.
+
+        Role/rule sections, the current user question, and confirmed safety
+        memories are pinned. Core context queues then take turns contributing
+        one logical entry; ordinary and soft context only use the remaining
+        room. An entry is either kept in full or dropped in full, so a RAG
+        chunk, memory item, or conversation turn is not silently cut in half.
+        """
+        max_chars = max(1200, int(config.context_max_prompt_chars))
+        max_tokens = max(1200, int(config.context_max_prompt_tokens))
+        target_chars = max(
+            1,
+            min(int(config.context_compact_trigger_chars), max_chars),
+        )
+        target_tokens = max(
+            1,
+            min(int(config.context_compact_trigger_tokens), max_tokens),
+        )
         summary = PromptBuilder.structured_compact_summary(state)
-        sections = [
+        parsed_sections = PromptBuilder._parse_prompt_sections(prompt)
+        if not parsed_sections:
+            return prompt
+
+        user_indexes = [
+            index
+            for index, section in enumerate(parsed_sections)
+            if PromptBuilder._section_role(section["title"]) == "user"
+        ]
+        user_index = user_indexes[-1] if user_indexes else len(parsed_sections) - 1
+        required_indexes = {
+            index
+            for index, section in enumerate(parsed_sections)
+            if PromptBuilder._section_role(section["title"]) == "required"
+        }
+        required_indexes.add(user_index)
+
+        selected_units: Dict[int, List[int]] = {
+            index: [] for index in range(len(parsed_sections))
+        }
+        summary_selected = False
+        pinned_safety_units: List[Dict[str, Any]] = []
+        for index, section in enumerate(parsed_sections):
+            if index in required_indexes:
+                continue
+            for unit_index, unit in enumerate(section["units"]):
+                if PromptBuilder._is_safety_memory_unit(section["title"], unit):
+                    selected_units[index].append(unit_index)
+                    pinned_safety_units.append(
+                        {
+                            "section": section["title"] or f"section_{index}",
+                            "unit_index": unit_index,
+                        }
+                    )
+
+        def render() -> str:
+            parts: List[str] = []
+            for index, section in enumerate(parsed_sections):
+                if index == user_index and summary_selected:
+                    parts.append("## 对话压缩摘要\n" + summary)
+                if index in required_indexes:
+                    parts.append(section["text"])
+                    continue
+                unit_indexes = sorted(selected_units[index])
+                if not unit_indexes:
+                    continue
+                units = section["units"]
+                body = "\n\n".join(units[unit_index] for unit_index in unit_indexes)
+                if section["heading"]:
+                    parts.append(section["heading"] + ("\n" + body if body else ""))
+                elif body:
+                    parts.append(body)
+            return "\n\n".join(part.strip() for part in parts if part.strip())
+
+        compacted = render()
+        mandatory_chars = len(compacted)
+        mandatory_tokens = estimate_tokens(compacted)
+        mandatory_fits_target = (
+            mandatory_chars <= target_chars and mandatory_tokens <= target_tokens
+        )
+
+        candidates: List[Dict[str, Any]] = [
+            {
+                "kind": "summary",
+                # The compact summary is denser than raw recent dialogue, so
+                # it is considered after direct evidence/profile data but
+                # before conversational history.
+                "priority": 72,
+                "section_index": user_index,
+                "unit_index": -1,
+                "order": 0,
+                "sequence": 0,
+                "queue": "compact_summary",
+            }
+        ]
+        sequence = 1
+        for index, section in enumerate(parsed_sections):
+            if index in required_indexes:
+                continue
+            priority = PromptBuilder._section_priority(section["title"])
+            unit_count = len(section["units"])
+            recent_first = PromptBuilder._section_role(section["title"]) == "conversation"
+            for unit_index in range(unit_count):
+                if unit_index in selected_units[index]:
+                    continue
+                candidates.append(
+                    {
+                        "kind": "section",
+                        "priority": priority,
+                        "section_index": index,
+                        "unit_index": unit_index,
+                        "order": unit_count - unit_index if recent_first else unit_index,
+                        "sequence": sequence,
+                        "queue": PromptBuilder._section_queue(section["title"]),
+                    }
+                )
+                sequence += 1
+
+        queue_map: Dict[str, Dict[str, Any]] = {}
+        for candidate in candidates:
+            queue = queue_map.setdefault(
+                candidate["queue"],
+                {
+                    "name": candidate["queue"],
+                    "priority": candidate["priority"],
+                    "candidates": [],
+                    "attempted": 0,
+                    "kept": 0,
+                    "rejected": 0,
+                },
+            )
+            queue["priority"] = max(queue["priority"], candidate["priority"])
+            queue["candidates"].append(candidate)
+        for queue in queue_map.values():
+            queue["candidates"].sort(
+                key=lambda item: (item["order"], item["sequence"])
+            )
+
+        core_queues = sorted(
+            (queue for queue in queue_map.values() if queue["priority"] >= 60),
+            key=lambda queue: -queue["priority"],
+        )
+        fill_queues = sorted(
+            (queue for queue in queue_map.values() if queue["priority"] < 60),
+            key=lambda queue: -queue["priority"],
+        )
+
+        def try_candidate(candidate: Mapping[str, Any], queue: Dict[str, Any]) -> bool:
+            nonlocal compacted, summary_selected
+            queue["attempted"] += 1
+            if candidate["kind"] == "summary":
+                summary_selected = True
+            else:
+                selected_units[candidate["section_index"]].append(
+                    candidate["unit_index"]
+                )
+            trial = render()
+            if len(trial) <= target_chars and estimate_tokens(trial) <= target_tokens:
+                compacted = trial
+                queue["kept"] += 1
+                return True
+            if candidate["kind"] == "summary":
+                summary_selected = False
+            else:
+                selected_units[candidate["section_index"]].remove(
+                    candidate["unit_index"]
+                )
+            queue["rejected"] += 1
+            return False
+
+        packing_rounds = 0
+        if mandatory_fits_target:
+            while any(queue["candidates"] for queue in core_queues):
+                packing_rounds += 1
+                added_this_round = False
+                for queue in core_queues:
+                    if not queue["candidates"]:
+                        continue
+                    candidate = queue["candidates"].pop(0)
+                    if try_candidate(candidate, queue):
+                        added_this_round = True
+                if not added_this_round:
+                    break
+
+            # Generic context and unconfirmed soft memories cannot crowd out
+            # any core queue. They only fill whatever space remains.
+            for queue in fill_queues:
+                while queue["candidates"]:
+                    try_candidate(queue["candidates"].pop(0), queue)
+
+        compacted = render()
+        final_chars = len(compacted)
+        final_tokens = estimate_tokens(compacted)
+        target_met = final_chars <= target_chars and final_tokens <= target_tokens
+        hard_char_budget_met = final_chars <= max_chars
+        hard_token_budget_met = final_tokens <= max_tokens
+        hard_budget_met = hard_char_budget_met and hard_token_budget_met
+
+        section_usage: List[Dict[str, Any]] = []
+        dropped_sections: List[Dict[str, Any]] = []
+        for index, section in enumerate(parsed_sections):
+            if index in required_indexes:
+                kept_count = len(section["units"])
+                dropped_count = 0
+                rendered = section["text"]
+            else:
+                kept_count = len(selected_units[index])
+                dropped_count = len(section["units"]) - kept_count
+                if kept_count:
+                    kept_body = "\n\n".join(
+                        section["units"][unit_index]
+                        for unit_index in sorted(selected_units[index])
+                    )
+                    rendered = section["heading"] + "\n" + kept_body
+                else:
+                    rendered = ""
+            usage = {
+                "section": section["title"] or f"section_{index}",
+                "required": index in required_indexes,
+                "kept_units": kept_count,
+                "dropped_units": dropped_count,
+                "chars": len(rendered),
+                "tokens": estimate_tokens(rendered),
+            }
+            section_usage.append(usage)
+            if dropped_count:
+                dropped_sections.append(
+                    {
+                        "section": usage["section"],
+                        "dropped_units": dropped_count,
+                    }
+                )
+
+        if target_met:
+            reason = "round_robin_pack_completed"
+        elif hard_budget_met:
+            reason = "pinned_content_exceeds_compact_target"
+        else:
+            reason = "pinned_content_exceeds_hard_budget"
+        structured = state.setdefault("_structured_state", {})
+        structured["compact_summary"] = summary
+        structured["compact_triggered"] = True
+        structured["compact_diagnostics"] = {
+            "strategy": "priority_round_robin_v3",
+            "target_chars": target_chars,
+            "target_tokens": target_tokens,
+            "max_chars": max_chars,
+            "max_tokens": max_tokens,
+            "result_chars": final_chars,
+            "result_tokens": final_tokens,
+            "target_met": target_met,
+            "hard_budget_met": hard_budget_met,
+            "hard_char_budget_met": hard_char_budget_met,
+            "hard_token_budget_met": hard_token_budget_met,
+            "user_question_complete": True,
+            "pinned_safety_units": len(pinned_safety_units),
+            "packing_rounds": packing_rounds,
+            "summary_injected": summary_selected,
+            "reason": reason,
+            "queue_usage": [
+                {
+                    "queue": queue["name"],
+                    "priority": queue["priority"],
+                    "attempted": queue["attempted"],
+                    "kept": queue["kept"],
+                    "rejected": queue["rejected"],
+                    "unattempted": len(queue["candidates"]),
+                }
+                for queue in sorted(
+                    queue_map.values(), key=lambda item: -item["priority"]
+                )
+            ],
+            "dropped_sections": dropped_sections,
+            "section_usage": section_usage,
+        }
+        return compacted
+
+    @staticmethod
+    def _parse_prompt_sections(prompt: str) -> List[Dict[str, Any]]:
+        raw_sections = [
             section.strip()
             for section in re.split(r"(?=^#{1,3}\s+)", prompt, flags=re.MULTILINE)
             if section.strip()
         ]
-        user_sections = [
-            section
-            for section in sections
-            if re.search(r"^#{1,3}\s+.*(?:用户问题|用户输入|当前问题)", section)
-        ]
-        user_section = user_sections[-1] if user_sections else sections[-1]
-        remaining = [section for section in sections if section is not user_section]
-
-        head = PromptBuilder._clip_section(
-            "\n\n".join(remaining[:2]),
-            max_chars * 30 // 100,
-            token_limit=max_tokens * 30 // 100,
-        )
-        summary_block = "## 对话压缩摘要\n" + PromptBuilder._clip_section(
-            summary,
-            max_chars * 20 // 100,
-            token_limit=max_tokens * 20 // 100,
-        )
-        middle = PromptBuilder._clip_section(
-            "\n\n".join(remaining[2:]),
-            max_chars * 15 // 100,
-            token_limit=max_tokens * 15 // 100,
-        )
-        prefix = "\n\n".join(part for part in (head, summary_block, middle) if part)
-        user_budget = max(200, max_chars - len(prefix) - 2)
-        user_token_budget = max(128, max_tokens - estimate_tokens(prefix) - 16)
-        user = PromptBuilder._clip_section(
-            user_section,
-            user_budget,
-            keep_tail=True,
-            token_limit=user_token_budget,
-        )
-        compacted = "\n\n".join(part for part in (prefix, user) if part)
-        if len(compacted) > max_chars:
-            compacted = compacted[-max_chars:]
-        structured = state.setdefault("_structured_state", {})
-        structured["compact_summary"] = summary
-        structured["compact_triggered"] = True
-        return compacted
+        parsed: List[Dict[str, Any]] = []
+        for text in raw_sections:
+            first_line, separator, body = text.partition("\n")
+            heading = first_line.strip() if re.match(r"^#{1,3}\s+", first_line) else ""
+            title = re.sub(r"^#{1,3}\s+", "", heading).strip()
+            section_body = body.strip() if heading and separator else text.strip()
+            parsed.append(
+                {
+                    "text": text,
+                    "heading": heading,
+                    "title": title,
+                    "units": PromptBuilder._atomic_section_units(title, section_body),
+                }
+            )
+        return parsed
 
     @staticmethod
-    def _clip_section(
-        text: str,
-        limit: int,
-        *,
-        keep_tail: bool = False,
-        token_limit: Optional[int] = None,
-    ) -> str:
-        """Clip one logical prompt section by both characters and estimated tokens."""
-        text = text.strip()
-        limit = max(0, int(limit))
+    def _section_role(title: str) -> str:
+        if re.search(r"用户问题|用户输入|当前问题", title):
+            return "user"
+        if re.search(r"角色|规则|安全|任务|格式要求|输出要求", title):
+            return "required"
+        if re.search(r"对话历史|近期对话", title):
+            return "conversation"
+        return "optional"
 
-        def clip_chars(char_limit: int) -> str:
-            if char_limit <= 0:
-                return ""
-            if len(text) <= char_limit:
-                return text
-            if char_limit < 40:
-                return text[-char_limit:] if keep_tail else text[:char_limit]
-            marker = "\n...[section compacted]...\n"
-            first_line, separator, body = text.partition("\n")
-            if not separator or len(first_line) + len(marker) >= char_limit:
-                return text[-char_limit:] if keep_tail else text[:char_limit]
-            body_budget = char_limit - len(first_line) - len(marker)
-            body_part = body[-body_budget:] if keep_tail else body[:body_budget]
-            return first_line + marker + body_part.strip()
+    @staticmethod
+    def _section_priority(title: str) -> int:
+        if re.search(r"参考资料|知识参考|搜索结果|工具返回|工具结果", title):
+            return 90
+        if re.search(r"用户画像|长期记忆", title):
+            return 78
+        if re.search(r"对话历史|近期对话", title):
+            return 68
+        if re.search(r"当前会话摘要|会话摘要", title):
+            return 60
+        if re.search(r"待验证|候选|软记忆", title):
+            return 20
+        return 45
 
-        candidate = clip_chars(limit)
-        if token_limit is None or estimate_tokens(candidate) <= token_limit:
-            return candidate
+    @staticmethod
+    def _section_queue(title: str) -> str:
+        if re.search(r"参考资料|知识参考|搜索结果|工具返回|工具结果", title):
+            return "evidence"
+        if re.search(r"用户画像|长期记忆", title):
+            return "confirmed_memory"
+        if re.search(r"对话历史|近期对话", title):
+            return "recent_conversation"
+        if re.search(r"当前会话摘要|会话摘要", title):
+            return "conversation_summary"
+        if re.search(r"待验证|候选|软记忆", title):
+            return "soft_memory"
+        return "ordinary_context"
 
-        low, high = 0, min(limit, len(text))
-        best = ""
-        while low <= high:
-            middle = (low + high) // 2
-            clipped = clip_chars(middle)
-            if estimate_tokens(clipped) <= token_limit:
-                best = clipped
-                low = middle + 1
-            else:
-                high = middle - 1
-        return best
+    @staticmethod
+    def _is_safety_memory_unit(title: str, unit: str) -> bool:
+        return bool(
+            re.search(r"用户画像|长期记忆", title)
+            and re.match(r"^\s*-\s*\[安全/", unit)
+        )
+
+    @staticmethod
+    def _atomic_section_units(title: str, body: str) -> List[str]:
+        """Split optional context at semantic boundaries, never raw offsets."""
+        body = body.strip()
+        if not body:
+            return []
+        if PromptBuilder._section_role(title) == "conversation":
+            lines = [line.strip() for line in body.splitlines() if line.strip()]
+            turns: List[str] = []
+            index = 0
+            while index < len(lines):
+                current = lines[index]
+                if (
+                    re.match(r"^(?:user|用户)\s*:", current, flags=re.IGNORECASE)
+                    and index + 1 < len(lines)
+                    and re.match(
+                        r"^(?:assistant|助手)\s*:",
+                        lines[index + 1],
+                        flags=re.IGNORECASE,
+                    )
+                ):
+                    turns.append(current + "\n" + lines[index + 1])
+                    index += 2
+                else:
+                    turns.append(current)
+                    index += 1
+            return turns
+
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body) if part.strip()]
+        if len(paragraphs) > 1:
+            return paragraphs
+
+        marker_parts = [
+            part.strip()
+            for part in re.split(
+                r"(?=^\s*(?:[-*]\s+|\d+[.)]\s+|\[\d+\]\s+|\[(?:Ref|来源)\d+\]))",
+                body,
+                flags=re.MULTILINE,
+            )
+            if part.strip()
+        ]
+        return marker_parts or [body]
 
     @staticmethod
     def structured_compact_summary(state: RouterState) -> str:
@@ -191,9 +503,26 @@ class PromptBuilder:
     ) -> str:
         if not memories:
             return "无长期记忆"
+        safety_memories = [
+            item for item in memories if PromptBuilder._is_safety_memory(item)
+        ]
+        ordinary_memories = [
+            item for item in memories if not PromptBuilder._is_safety_memory(item)
+        ]
         lines: List[str] = []
         used = 0
-        for item in memories:
+        for item in safety_memories:
+            line = (
+                f"- [安全/{item.get('kind', 'note')}] "
+                f"{item.get('content', '')} "
+                f"(importance={item.get('importance', 0)}, score={item.get('score', 'n/a')})"
+            )
+            # Confirmed safety constraints are never removed by the soft
+            # character preview budget. The final prompt hard-budget check is
+            # responsible for rejecting a request that cannot contain them.
+            lines.append(line)
+            used += len(line)
+        for item in ordinary_memories:
             line = (
                 f"- [{item.get('kind', 'note')}] "
                 f"{item.get('content', '')} "
@@ -205,6 +534,41 @@ class PromptBuilder:
             lines.append(line)
             used += len(line)
         return "\n".join(lines)
+
+    @staticmethod
+    def _is_safety_memory(memory: Mapping[str, Any]) -> bool:
+        content = str(memory.get("content", "")).lower()
+        direct_markers = (
+            "过敏",
+            "忌口",
+            "禁忌",
+            "不耐受",
+            "旧伤",
+            "受伤",
+            "疼",
+            "痛",
+            "不适",
+            "疾病",
+            "高血压",
+            "糖尿病",
+            "手术",
+            "康复",
+            "怀孕",
+            "药物",
+            "allergy",
+            "allergic",
+            "injury",
+            "intolerance",
+            "medical",
+        )
+        if any(marker in content for marker in direct_markers):
+            return True
+        if str(memory.get("kind", "")) != "constraint":
+            return False
+        return any(
+            marker in content
+            for marker in ("不能", "不要", "禁止", "避免", "限制", "不吃")
+        )
 
     @staticmethod
     def soft_memory_block(
@@ -243,7 +607,7 @@ class PromptBuilder:
 
     @staticmethod
     def search_query_rewrite(user_input: str) -> str:
-        return f"""# 任务
+        prompt = f"""# 任务
 将用户问题改写为 1-2 个简洁的搜索关键词（用空格分隔），用于搜索引擎检索健身相关信息。
 
 # 规则
@@ -260,6 +624,7 @@ class PromptBuilder:
 
 用户问题: {user_input}
 输出:"""
+        return compose_safe_prompt(prompt, kind="search.query")
 
     @staticmethod
     def chat_answer(
@@ -330,7 +695,7 @@ class PromptBuilder:
 
     @staticmethod
     def diet_profile_extraction(user_input: str) -> str:
-        return f"""# 任务
+        prompt = f"""# 任务
 从用户输入中提取个人身体参数和健身目标。缺失的字段标为"未知"。
 
 # 提取字段
@@ -352,6 +717,7 @@ class PromptBuilder:
 
 用户输入: {user_input}
 输出:"""
+        return compose_safe_prompt(prompt, kind="diet.profile")
 
     @staticmethod
     def diet_recommendation(
@@ -464,7 +830,7 @@ class PromptBuilder:
         tools_desc = "\n".join(
             [f"- {tool['name']}: {tool.get('description', '')}" for tool in tools]
         )
-        return f"""# 角色
+        prompt = f"""# 角色
 你是一个厨房助手，帮助用户查询菜谱和食材。
 
 # 任务
@@ -497,6 +863,7 @@ class PromptBuilder:
 {user_input}
 
 输出 JSON:"""
+        return compose_safe_prompt(prompt, kind="mcp.plan")
 
     @staticmethod
     def mcp_format_result(

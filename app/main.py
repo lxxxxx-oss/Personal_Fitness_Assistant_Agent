@@ -46,6 +46,11 @@ from app.api.schemas import (
 )
 from app.config import config
 from app.graph.router import build_router_graph
+from app.graph.safety_policy import (
+    SAFETY_POLICY_VERSION,
+    StreamingSafetyGuard,
+    validate_public_output,
+)
 from app.graph.state import RouterState, record_execution
 
 if TYPE_CHECKING:
@@ -66,6 +71,7 @@ app.add_middleware(
 
 _router_graph = None
 _sessions: Dict[str, "SlidingWindowMemory"] = {}
+_temporary_task_states: Dict[str, Dict[str, Any]] = {}
 _conversation_store = None
 _memory_store = None
 _DEPENDENCY_LOCK = threading.Lock()
@@ -99,12 +105,20 @@ async def _stream_llm_to_websocket(
     websocket: WebSocket,
     llm: Any,
     prompt: str,
+    *,
+    result_state: RouterState,
 ) -> str:
-    """Forward non-blocking LLM tokens to one WebSocket connection."""
+    """Forward sentence-checked LLM chunks to one WebSocket connection."""
     reply_parts: List[str] = []
+    guard = StreamingSafetyGuard(kind=_public_output_kind(result_state))
     async for token in _iterate_llm_tokens(llm, prompt):
-        reply_parts.append(token)
-        await websocket.send_json({"type": "token", "text": token})
+        for chunk in guard.feed(token):
+            reply_parts.append(chunk)
+            await websocket.send_json({"type": "token", "text": chunk})
+    for chunk in guard.flush():
+        reply_parts.append(chunk)
+        await websocket.send_json({"type": "token", "text": chunk})
+    _record_stream_safety(result_state, guard)
     return "".join(reply_parts)
 
 
@@ -198,6 +212,61 @@ def _result_metadata(
     if llm_item not in execution:
         execution.append(llm_item)
     return sources, warnings, execution
+
+
+def _public_output_kind(result_state: RouterState) -> str:
+    """Resolve the domain policy used for the request's public answer."""
+    prompt_meta = result_state.get("_prompt_meta", {})
+    if isinstance(prompt_meta, dict) and prompt_meta.get("kind"):
+        return str(prompt_meta["kind"])
+    return {
+        "chat": "chat.answer",
+        "search": "search.synthesis",
+        "diet": "diet.recommendation",
+        "motion": "motion.answer",
+        "mcp": "mcp.format_result",
+    }.get(result_state.get("intent", "chat"), "chat.answer")
+
+
+def _record_stream_safety(
+    result_state: RouterState,
+    guard: StreamingSafetyGuard,
+) -> None:
+    """Persist public-safe stream validation diagnostics in graph metadata."""
+    if guard.violations:
+        warnings = result_state.setdefault("_route_execution_warnings", [])
+        warnings.extend(
+            f"output_safety:{violation}"
+            for violation in guard.violations
+            if f"output_safety:{violation}" not in warnings
+        )
+    record_execution(
+        result_state,
+        "output_safety",
+        SAFETY_POLICY_VERSION,
+        degraded=guard.blocked,
+        detail=("violations=" + ",".join(guard.violations)) if guard.violations else "passed",
+    )
+
+
+def _validate_direct_output(result_state: RouterState, text: str) -> str:
+    """Apply the same public-output boundary to non-LLM stream fallbacks."""
+    checked = validate_public_output(text, kind=_public_output_kind(result_state))
+    if checked.violations:
+        warnings = result_state.setdefault("_route_execution_warnings", [])
+        warnings.extend(
+            f"output_safety:{violation}"
+            for violation in checked.violations
+            if f"output_safety:{violation}" not in warnings
+        )
+    record_execution(
+        result_state,
+        "output_safety",
+        SAFETY_POLICY_VERSION,
+        degraded=not checked.safe,
+        detail=("violations=" + ",".join(checked.violations)) if checked.violations else "passed",
+    )
+    return checked.text
 
 
 def _get_router_graph():
@@ -417,6 +486,7 @@ def _prepare_chat_sync(
     from app.memory.sliding_window import SlidingWindowMemory
 
     resolved_model_id = resolve_model_id(model_id)
+    task_state: Dict[str, Any] = {}
     if temporary:
         resolved_id = (
             conversation_id
@@ -429,9 +499,11 @@ def _prepare_chat_sync(
                 key,
                 SlidingWindowMemory(max_turns=config.memory_max_turns),
             )
+            task_state = dict(_temporary_task_states.get(key, {}))
     else:
         resolved_id = _resolve_conversation_id(user_id, conversation_id)
         memory = _get_or_restore_memory(user_id, resolved_id)
+        task_state = _get_conversation_store().get_task_state(resolved_id, user_id)
     state: RouterState = {
         "user_input": message,
         "user_id": user_id,
@@ -450,6 +522,9 @@ def _prepare_chat_sync(
     }
     if streaming:
         state["_streaming"] = True
+    pending_clarification = task_state.get("route_clarification")
+    if isinstance(pending_clarification, dict):
+        state["_pending_route_clarification"] = pending_clarification
     if not temporary:
         _attach_conversation_summary(state, user_id, resolved_id)
     return PreparedChat(
@@ -483,12 +558,79 @@ async def _prepare_chat(
     )
 
 
-async def _persist_prepared_chat(prepared: PreparedChat, reply: str) -> Dict[str, Any]:
+def _sync_route_clarification_state(
+    prepared: PreparedChat,
+    result_state: RouterState,
+) -> None:
+    """Persist or clear the one pending route clarification for this chat."""
+    key = _session_key(prepared.user_id, prepared.conversation_id)
+    if prepared.temporary:
+        with _SESSION_LOCK:
+            task_state = dict(_temporary_task_states.get(key, {}))
+    else:
+        task_state = _get_conversation_store().get_task_state(
+            prepared.conversation_id,
+            prepared.user_id,
+        )
+
+    if result_state.get("_needs_clarification"):
+        candidates = [
+            str(intent)
+            for intent in result_state.get("_clarification_candidates", [])
+            if intent
+        ][:2]
+        pending = prepared.state.get("_pending_route_clarification", {})
+        original_input = (
+            str(pending.get("original_input", "")).strip()
+            if isinstance(pending, dict)
+            else ""
+        )
+        task_state["route_clarification"] = {
+            "original_input": original_input or prepared.message,
+            "candidates": candidates,
+            "question": str(result_state.get("_clarification_question", "")),
+            "scores": dict(result_state.get("_route_scores", {})),
+        }
+    elif (
+        "_pending_route_clarification" in prepared.state
+        or result_state.get("_clarification_resolved")
+        or result_state.get("_clarification_cancelled")
+    ):
+        task_state.pop("route_clarification", None)
+    else:
+        return
+
+    if prepared.temporary:
+        with _SESSION_LOCK:
+            if task_state:
+                _temporary_task_states[key] = task_state
+            else:
+                _temporary_task_states.pop(key, None)
+    elif task_state:
+        _get_conversation_store().save_task_state(
+            prepared.conversation_id,
+            prepared.user_id,
+            task_state,
+        )
+    else:
+        _get_conversation_store().clear_task_state(
+            prepared.conversation_id,
+            prepared.user_id,
+        )
+
+
+async def _persist_prepared_chat(
+    prepared: PreparedChat,
+    reply: str,
+    result_state: Optional[RouterState] = None,
+) -> Dict[str, Any]:
     """Persist one successful complete turn outside the event loop."""
     if prepared.temporary:
         prepared.memory.add_turn(prepared.message, reply)
+        if result_state is not None:
+            _sync_route_clarification_state(prepared, result_state)
         return {"updated": False, "reason": "temporary_chat"}
-    return await asyncio.to_thread(
+    summary_result = await asyncio.to_thread(
         _persist_conversation_turn,
         prepared.memory,
         prepared.conversation_id,
@@ -496,6 +638,13 @@ async def _persist_prepared_chat(prepared: PreparedChat, reply: str) -> Dict[str
         prepared.message,
         reply,
     )
+    if result_state is not None:
+        await asyncio.to_thread(
+            _sync_route_clarification_state,
+            prepared,
+            result_state,
+        )
+    return summary_result
 
 
 def _create_llm_for_result(result_state: RouterState):
@@ -769,7 +918,7 @@ async def chat(request: ChatRequest):
         if not isinstance(reply, str) or not reply.strip():
             raise RuntimeError("chat graph completed without reply text")
         intent = result_state.get("intent", "chat")
-        summary_result = await _persist_prepared_chat(prepared, reply)
+        summary_result = await _persist_prepared_chat(prepared, reply, result_state)
         if summary_result.get("updated"):
             record_execution(
                 result_state,
@@ -950,6 +1099,7 @@ async def delete_conversation(user_id: str, conversation_id: str):
     key = _session_key(user_id, conversation_id)
     with _SESSION_LOCK:
         memory = _sessions.pop(key, None)
+        _temporary_task_states.pop(key, None)
         if memory is not None:
             memory.clear()
     return ClearResponse(
@@ -973,6 +1123,7 @@ async def clear_history(user_id: str):
             if key.startswith(f"{user_id}:") or key == user_id:
                 _sessions[key].clear()
                 _sessions.pop(key, None)
+                _temporary_task_states.pop(key, None)
     return ClearResponse(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -1386,23 +1537,32 @@ async def chat_stream(request: ChatRequest):
             })
 
             if not prompt:
-                fallback = result_state.get(
-                    "result",
-                    "Sorry, I couldn't process that.",
+                fallback = _validate_direct_output(
+                    result_state,
+                    result_state.get(
+                        "result",
+                        "Sorry, I couldn't process that.",
+                    ),
                 )
                 yield _sse_event("token", {"text": fallback})
-                await _persist_prepared_chat(prepared, fallback)
+                await _persist_prepared_chat(prepared, fallback, result_state)
                 yield _sse_event("done", {})
                 return
 
             full_reply = ""
             llm = _create_llm_for_result(result_state)
+            guard = StreamingSafetyGuard(kind=_public_output_kind(result_state))
             async for token in _iterate_llm_tokens(llm, prompt):
-                full_reply += token
-                yield _sse_event("token", {"text": token})
+                for chunk in guard.feed(token):
+                    full_reply += chunk
+                    yield _sse_event("token", {"text": chunk})
+            for chunk in guard.flush():
+                full_reply += chunk
+                yield _sse_event("token", {"text": chunk})
+            _record_stream_safety(result_state, guard)
             if not full_reply.strip():
                 raise RuntimeError("LLM stream completed without reply text")
-            await _persist_prepared_chat(prepared, full_reply)
+            await _persist_prepared_chat(prepared, full_reply, result_state)
             yield _sse_event("done", {})
         except asyncio.CancelledError:
             raise
@@ -1504,10 +1664,13 @@ async def chat_websocket(websocket: WebSocket):
 
         if not prompt:
             # No prompt — graph couldn't prepare context, send result directly
-            fallback = result_state.get("result", "Sorry, I couldn't process that.")
+            fallback = _validate_direct_output(
+                result_state,
+                result_state.get("result", "Sorry, I couldn't process that."),
+            )
             await websocket.send_json({"type": "token", "text": fallback})
             await websocket.send_json({"type": "done"})
-            await _persist_prepared_chat(prepared, fallback)
+            await _persist_prepared_chat(prepared, fallback, result_state)
             await websocket.close()
             return
 
@@ -1515,12 +1678,17 @@ async def chat_websocket(websocket: WebSocket):
         # Bridge sync generation through an async queue so each token is sent
         # as soon as it is produced without blocking the event loop.
         llm = _create_llm_for_result(result_state)
-        full_reply = await _stream_llm_to_websocket(websocket, llm, prompt)
+        full_reply = await _stream_llm_to_websocket(
+            websocket,
+            llm,
+            prompt,
+            result_state=result_state,
+        )
         if not full_reply.strip():
             raise RuntimeError("LLM stream completed without reply text")
 
         # Persist before declaring success so "done" has a stable meaning.
-        await _persist_prepared_chat(prepared, full_reply)
+        await _persist_prepared_chat(prepared, full_reply, result_state)
         await websocket.send_json({"type": "done"})
         logger.info(f"WebSocket stream complete: {len(full_reply)} chars, intent={intent}")
 

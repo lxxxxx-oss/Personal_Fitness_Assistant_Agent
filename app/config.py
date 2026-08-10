@@ -220,7 +220,9 @@ class Config:
         default_factory=lambda: _get_int_env("RETRIEVER_CHUNK_OVERLAP_CHARS", 80)
     )
     retriever_knowledge_version: str = field(
-        default_factory=lambda: os.getenv("RETRIEVER_KNOWLEDGE_VERSION", "v2")
+        default_factory=lambda: os.getenv(
+            "RETRIEVER_KNOWLEDGE_VERSION", "v3-hierarchical"
+        )
     )
     embedding_model: str = field(
         default_factory=lambda: os.getenv(
@@ -256,10 +258,10 @@ class Config:
         default_factory=lambda: _get_bool_env("RETRIEVER_PARENT_CHILD_ENABLED", True)
     )
     retriever_child_chunk_chars: int = field(
-        default_factory=lambda: _get_int_env("RETRIEVER_CHILD_CHUNK_CHARS", 300)
+        default_factory=lambda: _get_int_env("RETRIEVER_CHILD_CHUNK_CHARS", 180)
     )
     retriever_child_chunk_overlap_chars: int = field(
-        default_factory=lambda: _get_int_env("RETRIEVER_CHILD_CHUNK_OVERLAP_CHARS", 50)
+        default_factory=lambda: _get_int_env("RETRIEVER_CHILD_CHUNK_OVERLAP_CHARS", 30)
     )
 
     # Tavily Search

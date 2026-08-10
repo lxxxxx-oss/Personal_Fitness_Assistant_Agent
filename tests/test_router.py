@@ -305,6 +305,104 @@ class TestIntentClassification:
         # The new score-distribution logic treats chat as the dominant single intent
         # because no other intent reaches the minimum score threshold.
         assert decision["intent"] == "chat"
+
+    def test_close_candidates_request_targeted_clarification(self):
+        decision = classify_intent_with_scores("想练深蹲吃什么")
+
+        assert decision["source"] == "ambiguity_fallback"
+        assert decision["needs_clarification"] is True
+        assert decision["clarification_candidates"] == ["diet", "motion"]
+        assert "1）饮食建议" in decision["clarification_question"]
+        assert "2）动作分析" in decision["clarification_question"]
+
+    def test_pending_clarification_restores_selected_route_and_original_input(self):
+        state: RouterState = {
+            "user_input": "第二个",
+            "user_id": "test",
+            "memory": [],
+            "_pending_route_clarification": {
+                "original_input": "想练深蹲吃什么",
+                "candidates": ["diet", "motion"],
+                "scores": {"diet": 5.0, "motion": 4.0},
+            },
+        }
+
+        result = intent_classify_node(state)
+
+        assert result["intent"] == "motion"
+        assert result["_route_source"] == "clarification_resolution"
+        assert result["_route_execution_plan"] == ["motion"]
+        assert result["_clarification_resolved"] is True
+        assert "原始问题：想练深蹲吃什么" in result["user_input"]
+        assert "用户澄清：第二个" in result["user_input"]
+
+    def test_pending_clarification_accepts_natural_ordinal_answer(self):
+        state: RouterState = {
+            "user_input": "那就先做第二个吧",
+            "user_id": "test",
+            "memory": [],
+            "_pending_route_clarification": {
+                "original_input": "想练深蹲吃什么",
+                "candidates": ["diet", "motion"],
+            },
+        }
+
+        result = intent_classify_node(state)
+
+        assert result["intent"] == "motion"
+        assert result["_route_source"] == "clarification_resolution"
+
+    def test_pending_clarification_can_restore_both_routes(self):
+        state: RouterState = {
+            "user_input": "两个都要",
+            "user_id": "test",
+            "memory": [],
+            "_pending_route_clarification": {
+                "original_input": "想练深蹲吃什么",
+                "candidates": ["diet", "motion"],
+            },
+        }
+
+        result = intent_classify_node(state)
+
+        assert result["_route_execution_plan"] == ["diet", "motion"]
+        assert result["_needs_clarification"] is False
+
+    def test_unclear_clarification_answer_repeats_choices_without_execution(self):
+        state: RouterState = {
+            "user_input": "这个",
+            "user_id": "test",
+            "memory": [],
+            "_pending_route_clarification": {
+                "original_input": "想练深蹲吃什么",
+                "candidates": ["diet", "motion"],
+            },
+        }
+
+        result = intent_classify_node(state)
+
+        assert result["_route_source"] == "clarification_retry"
+        assert result["_needs_clarification"] is True
+        assert result["_route_execution_plan"] == ["chat"]
+        assert "我还不能确定你的选择" in result["_clarification_question"]
+
+    def test_new_clear_request_cancels_pending_clarification(self):
+        state: RouterState = {
+            "user_input": "查一下最近的减脂研究",
+            "user_id": "test",
+            "memory": [],
+            "_pending_route_clarification": {
+                "original_input": "想练深蹲吃什么",
+                "candidates": ["diet", "motion"],
+            },
+        }
+
+        result = intent_classify_node(state)
+
+        assert result["intent"] == "search"
+        assert result["_clarification_cancelled"] is True
+        assert result["_needs_clarification"] is False
+
     def test_ambiguity_fallback_beats_strong_rule(self):
         """When no single intent dominates clearly, route to chat."""
         decision = classify_intent_with_scores("吃和练怎么安排比较好")
@@ -452,6 +550,29 @@ class TestRouterGraph:
         result = graph.invoke(state)
         assert "result" in result
         assert result["intent"] == "chat"
+
+    def test_ambiguous_request_stops_at_targeted_clarification(self):
+        graph = build_router_graph()
+        state: RouterState = {
+            "user_input": "想练深蹲吃什么",
+            "user_id": "test_001",
+            "intent": "",
+            "memory": [],
+            "result": "",
+            "error": None,
+        }
+
+        result = graph.invoke(state)
+
+        assert result["_needs_clarification"] is True
+        assert result["_clarification_candidates"] == ["diet", "motion"]
+        assert "饮食建议" in result["result"]
+        assert "动作分析" in result["result"]
+        assert "_prompt" not in result
+        assert any(
+            item["mode"] == "clarification_requested"
+            for item in result["_execution"]
+        )
 
     def test_any_legal_combination_executes_all_subgraphs(self, monkeypatch):
         from langgraph.graph import END, StateGraph

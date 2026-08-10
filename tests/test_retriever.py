@@ -281,6 +281,133 @@ class TestParentChildChunking:
             # parent_content is the full section, longer than any single child
             assert len(e["parent_content"]) > len(e["content"])
 
+    def test_h3_leaf_sections_under_same_h2_share_aggregated_parent(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 动作指南\n\n"
+            "## 深蹲\n"
+            "### 动作要领\n保持核心稳定，膝盖沿脚尖方向移动。\n\n"
+            "### 常见错误\n避免膝盖内扣，也不要弓背。"
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 40
+            cfg.retriever_child_chunk_overlap_chars = 5
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v3-hierarchical"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        assert len({entry["parent_section_id"] for entry in entries}) == 1
+        assert {entry["section_path"] for entry in entries} == {
+            "动作指南 > 深蹲 > 动作要领",
+            "动作指南 > 深蹲 > 常见错误",
+        }
+        parent_content = entries[0]["parent_content"]
+        assert "### 动作要领" in parent_content
+        assert "### 常见错误" in parent_content
+
+    def test_different_h2_topics_never_share_parent(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 动作指南\n\n"
+            "## 深蹲\n### 动作要领\n保持核心稳定。\n\n"
+            "## 硬拉\n### 动作要领\n保持腰背中立。"
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 40
+            cfg.retriever_child_chunk_overlap_chars = 5
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v3-hierarchical"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        parent_by_topic = {
+            entry["section_path"].split(" > ")[1]: entry["parent_section_id"]
+            for entry in entries
+        }
+        assert parent_by_topic["深蹲"] != parent_by_topic["硬拉"]
+
+    def test_safety_heading_is_an_independent_parent_boundary(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 动作指南\n\n"
+            "## 深蹲\n"
+            "### 动作要领\n保持核心稳定。\n\n"
+            "### 安全警示\n膝关节锐痛时停止训练并就医。"
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 50
+            cfg.retriever_child_chunk_overlap_chars = 5
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v3-hierarchical"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        parent_by_path = {
+            entry["section_path"]: entry["parent_section_id"] for entry in entries
+        }
+        assert parent_by_path["动作指南 > 深蹲 > 动作要领"] != (
+            parent_by_path["动作指南 > 深蹲 > 安全警示"]
+        )
+
+    def test_standalone_source_section_is_skipped_but_related_topic_remains(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 健身知识\n\n"
+            "## 训练原则\n循序渐进增加训练量。\n\n"
+            "## 来源\nhttps://example.com/reference\n\n"
+            "## 来源与适用范围\n适用于无明显伤病的普通训练者。"
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 80
+            cfg.retriever_child_chunk_overlap_chars = 5
+            cfg.retriever_chunk_chars = 500
+            cfg.retriever_chunk_overlap_chars = 80
+            cfg.retriever_knowledge_version = "v3-hierarchical"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        contents = "\n".join(entry["content"] for entry in entries)
+        paths = {entry["section_path"] for entry in entries}
+        assert "example.com" not in contents
+        assert "健身知识 > 来源与适用范围" in paths
+
+    def test_long_topic_uses_distinct_bounded_parent_blocks(self):
+        from unittest.mock import patch
+
+        text = (
+            "# 动作指南\n\n"
+            "## 深蹲\n"
+            "### 动作要领\n" + "保持核心稳定并控制下蹲速度。" * 12
+        )
+        with patch("app.tools.retriever.config") as cfg:
+            cfg.retriever_parent_child_enabled = True
+            cfg.retriever_child_chunk_chars = 40
+            cfg.retriever_child_chunk_overlap_chars = 5
+            cfg.retriever_chunk_chars = 90
+            cfg.retriever_chunk_overlap_chars = 10
+            cfg.retriever_knowledge_version = "v3-hierarchical"
+
+            entries = _build_chunk_entries([text], ["guide.md"])
+
+        parents = {
+            entry["parent_section_id"]: entry["parent_content"] for entry in entries
+        }
+        assert len(parents) > 1
+        assert len(parents) == len(set(parents))
+        assert all(len(content) <= 90 for content in parents.values())
+
     def test_disabled_parent_child_falls_back_to_legacy(self):
         from unittest.mock import patch
 

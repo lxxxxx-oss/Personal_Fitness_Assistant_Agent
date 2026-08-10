@@ -574,20 +574,225 @@ def _structured_text_split(
     return chunks
 
 
+_INLINE_METADATA_HEADING = re.compile(
+    r"^(?:来源|参考来源|核验日期)\s*[:：]",
+    flags=re.IGNORECASE,
+)
+_REFERENCE_SECTION_HEADING = re.compile(
+    r"^(?:来源|参考来源)\s*$",
+    flags=re.IGNORECASE,
+)
+_HARD_BOUNDARY_TERMS = (
+    "安全",
+    "禁忌",
+    "警示",
+    "风险",
+    "就医",
+    "转介",
+    "注意",
+    "重要提示",
+    "边界",
+)
+
+
+def _parse_hierarchical_sections(text: str) -> List[Dict[str, Any]]:
+    """Parse Markdown into leaf sections without losing heading ancestry.
+
+    Inline source/verification headings are metadata and do not replace the
+    document title. A standalone ``## 来源`` section is skipped together with
+    its body, while headings such as ``来源与适用范围`` remain searchable.
+    """
+    heading_stack: List[tuple[int, str]] = []
+    sections: List[Dict[str, Any]] = []
+    content_lines: List[str] = []
+    skipped_reference_level: Optional[int] = None
+
+    def flush_section() -> None:
+        content = "\n".join(content_lines).strip()
+        if content:
+            sections.append(
+                {
+                    "heading_stack": list(heading_stack),
+                    "section_path": " > ".join(
+                        title for _, title in heading_stack
+                    ),
+                    "content": content,
+                }
+            )
+        content_lines.clear()
+
+    for raw_line in text.replace("\r\n", "\n").split("\n"):
+        line = raw_line.strip()
+        heading_match = re.match(r"^(#{1,6})[ \t]+(.+?)\s*$", line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            title = heading_match.group(2).strip()
+
+            if skipped_reference_level is not None:
+                if level > skipped_reference_level:
+                    continue
+                skipped_reference_level = None
+
+            if _INLINE_METADATA_HEADING.match(title):
+                continue
+
+            flush_section()
+            if _REFERENCE_SECTION_HEADING.match(title):
+                skipped_reference_level = level
+                continue
+
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, title))
+            continue
+
+        if skipped_reference_level is not None:
+            continue
+        content_lines.append(raw_line.rstrip())
+
+    flush_section()
+    return sections
+
+
+def _parent_topic_path(heading_stack: Sequence[tuple[int, str]]) -> str:
+    """Choose the deterministic parent boundary for one leaf section.
+
+    H2 is the normal topic boundary. Deeper safety/risk headings are isolated
+    so warnings are not blended with ordinary advice in the returned context.
+    """
+    if not heading_stack:
+        return ""
+
+    h2_index = next(
+        (index for index, (level, _) in enumerate(heading_stack) if level == 2),
+        None,
+    )
+    boundary_index = h2_index if h2_index is not None else 0
+    search_start = boundary_index + 1
+    for index in range(search_start, len(heading_stack)):
+        level, title = heading_stack[index]
+        if level >= 3 and any(term in title for term in _HARD_BOUNDARY_TERMS):
+            boundary_index = index
+            break
+    return " > ".join(title for _, title in heading_stack[: boundary_index + 1])
+
+
+def _render_parent_unit(
+    heading_stack: Sequence[tuple[int, str]],
+    content: str,
+) -> str:
+    """Keep a leaf heading visible when several leaves share one parent."""
+    if not heading_stack:
+        return content
+    level, title = heading_stack[-1]
+    return f"{'#' * level} {title}\n{content}"
+
+
+def _hierarchical_parent_split(
+    text: str,
+    max_parent_chars: int = 500,
+    overlap_chars: int = 0,
+) -> List[Dict[str, Any]]:
+    """Aggregate leaf sections into H2-scoped parent blocks.
+
+    Retrieval children retain their most specific heading path. Returned
+    parents combine adjacent H3/paragraph units under the same H2, bounded by
+    ``max_parent_chars``. Different H2 topics and safety boundaries never mix.
+    """
+    max_parent_chars = max(1, int(max_parent_chars))
+    leaf_sections = _parse_hierarchical_sections(text)
+    parents: List[Dict[str, Any]] = []
+    active_path: Optional[str] = None
+    active_sections: List[Dict[str, Any]] = []
+
+    def emit_active_group() -> None:
+        nonlocal active_sections
+        if not active_sections:
+            return
+
+        rendered_parts: List[str] = []
+        child_sections: List[Dict[str, str]] = []
+
+        def emit_parent() -> None:
+            if not rendered_parts:
+                return
+            parents.append(
+                {
+                    "content": "\n\n".join(rendered_parts),
+                    "section_path": active_path or "",
+                    "child_sections": list(child_sections),
+                    "parent_block_index": len(parents),
+                }
+            )
+            rendered_parts.clear()
+            child_sections.clear()
+
+        for section in active_sections:
+            raw_content = str(section["content"]).strip()
+            heading_stack = list(section.get("heading_stack") or [])
+            section_path = str(section.get("section_path") or "")
+            if not raw_content:
+                continue
+
+            heading_prefix = ""
+            if heading_stack:
+                level, title = heading_stack[-1]
+                heading_prefix = f"{'#' * level} {title}\n"
+            body_limit = max(1, max_parent_chars - len(heading_prefix))
+            body_parts = _chinese_sentence_split(
+                raw_content,
+                max_chunk_chars=body_limit,
+                overlap_chars=min(overlap_chars, max(0, body_limit - 1)),
+            )
+            for body_part in body_parts:
+                body_part = str(body_part).strip()
+                if not body_part:
+                    continue
+                rendered = _render_parent_unit(heading_stack, body_part)
+                separator_size = 2 if rendered_parts else 0
+                current_size = sum(len(part) for part in rendered_parts)
+                current_size += max(0, len(rendered_parts) - 1) * 2
+                if rendered_parts and (
+                    current_size + separator_size + len(rendered)
+                    > max_parent_chars
+                ):
+                    emit_parent()
+                rendered_parts.append(rendered)
+                child_sections.append(
+                    {"content": body_part, "section_path": section_path}
+                )
+
+        emit_parent()
+        active_sections = []
+
+    for section in leaf_sections:
+        topic_path = _parent_topic_path(section.get("heading_stack") or [])
+        if active_path is not None and topic_path != active_path:
+            emit_active_group()
+        active_path = topic_path
+        active_sections.append(section)
+    emit_active_group()
+    return parents
+
+
 def _content_hash(content: str) -> str:
     """Build a stable content hash for manifest and chunk identity."""
     return hashlib.blake2b(content.encode("utf-8"), digest_size=16).hexdigest()
 
 
-def _parent_section_id(source: str, section_path: str, version: str) -> int:
+def _parent_section_id(
+    source: str,
+    section_path: str,
+    version: str,
+    block_identity: str = "",
+) -> int:
     """Stable parent section identifier so children from the same section share one key.
 
-    Two child chunks that originate from the same (source, section_path) in the
-    same knowledge version always produce the same parent id.  This is the join
-    key used by ``_resolve_parent_results`` to collapse child hits into a single
-    parent-sized result per section.
+    ``block_identity`` distinguishes bounded blocks when one logical H2 topic
+    is longer than the parent limit. This avoids collapsing separate blocks
+    that happen to share the same source and section path.
     """
-    identity = "\x1f".join([version, source, section_path])
+    identity = "\x1f".join([version, source, section_path, block_identity])
     digest = hashlib.blake2b(identity.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, byteorder="big", signed=False) & ((1 << 63) - 1)
 
@@ -667,9 +872,11 @@ def _build_chunk_entries(
     When ``config.retriever_parent_child_enabled`` is True the pipeline
     operates in parent-child mode:
 
-    * Each Markdown section (heading-delimited block) is a **parent**.
-    * Parent text is further split into smaller **child** chunks with
-      ``config.retriever_child_chunk_chars`` / ``overlap_chars``.
+    * H2 topics are **parents**; adjacent H3/paragraph units are aggregated
+      within that topic while safety/risk headings remain isolated.
+    * Leaf content is split into smaller **child** chunks with
+      ``config.retriever_child_chunk_chars`` / ``overlap_chars`` and retains
+      its most specific heading path.
     * Child chunks carry ``parent_section_id`` and ``parent_content`` so
       retrieval can match at fine granularity and return the full parent.
 
@@ -678,7 +885,7 @@ def _build_chunk_entries(
     """
     normalized_sources = list(sources or [])
     entries: List[Dict[str, Any]] = []
-    version = str(config.retriever_knowledge_version or "v2")
+    version = str(config.retriever_knowledge_version or "v3-hierarchical")
     parent_child = config.retriever_parent_child_enabled
 
     for doc_index, doc in enumerate(docs):
@@ -687,65 +894,80 @@ def _build_chunk_entries(
             if doc_index < len(normalized_sources)
             else ""
         )
-        structured = _structured_text_split(
-            doc,
-            max_chunk_chars=config.retriever_chunk_chars,
-            overlap_chars=config.retriever_chunk_overlap_chars,
-        )
+        if parent_child:
+            structured = _hierarchical_parent_split(
+                doc,
+                max_parent_chars=config.retriever_chunk_chars,
+                overlap_chars=config.retriever_chunk_overlap_chars,
+            )
+        else:
+            structured = _structured_text_split(
+                doc,
+                max_chunk_chars=config.retriever_chunk_chars,
+                overlap_chars=config.retriever_chunk_overlap_chars,
+            )
         if not structured:
             continue
 
+        document_child_index = 0
         for section in structured:
             section_content = str(section["content"]).strip()
             section_path = str(section["section_path"])
             if not section_content:
                 continue
 
-            # Build a stable parent identity keyed on source + section_path.
-            # When both are empty (e.g. ad-hoc test docs indexed with no source
-            # or headings), fall back to the content hash so each section gets
-            # a distinct parent rather than all collapsing into one.
-            if section_path or source:
-                parent_key = f"{source}\x1f{section_path}"
-            else:
-                parent_key = _content_hash(section_content)
-            pid = _parent_section_id("", parent_key, version)
-
             if parent_child:
-                # Small child chunks for fine-grained embedding / BM25 matching.
-                child_chunks = _chinese_sentence_split(
-                    section_content,
-                    max_chunk_chars=config.retriever_child_chunk_chars,
-                    overlap_chars=config.retriever_child_chunk_overlap_chars,
+                parent_block_index = int(section.get("parent_block_index", 0))
+                block_identity = (
+                    f"{parent_block_index}:{_content_hash(section_content)}"
                 )
-                for child_index, child_content in enumerate(child_chunks):
-                    child_text = str(child_content).strip()
-                    if not child_text:
-                        continue
-                    embedding_text = (
-                        f"{section_path}\n{child_text}"
-                        if section_path
-                        else child_text
+                pid = _parent_section_id(
+                    source,
+                    section_path,
+                    version,
+                    block_identity,
+                )
+                child_sections = section.get("child_sections") or [
+                    {"content": section_content, "section_path": section_path}
+                ]
+                for child_section in child_sections:
+                    child_section_path = str(
+                        child_section.get("section_path") or section_path
                     )
-                    entries.append(
-                        {
-                            "id": _stable_chunk_id(
-                                embedding_text,
-                                source=source,
-                                chunk_index=child_index,
-                                version=version,
-                            ),
-                            "content": child_text,
-                            "embedding_text": embedding_text,
-                            "source": source,
-                            "section_path": section_path,
-                            "chunk_index": child_index,
-                            "content_hash": _content_hash(child_text),
-                            "version": version,
-                            "parent_section_id": pid,
-                            "parent_content": section_content,
-                        }
+                    child_chunks = _chinese_sentence_split(
+                        str(child_section.get("content") or ""),
+                        max_chunk_chars=config.retriever_child_chunk_chars,
+                        overlap_chars=config.retriever_child_chunk_overlap_chars,
                     )
+                    for child_content in child_chunks:
+                        child_text = str(child_content).strip()
+                        if not child_text:
+                            continue
+                        embedding_text = (
+                            f"{child_section_path}\n{child_text}"
+                            if child_section_path
+                            else child_text
+                        )
+                        entries.append(
+                            {
+                                "id": _stable_chunk_id(
+                                    embedding_text,
+                                    source=source,
+                                    chunk_index=document_child_index,
+                                    version=version,
+                                ),
+                                "content": child_text,
+                                "embedding_text": embedding_text,
+                                "source": source,
+                                "section_path": child_section_path,
+                                "chunk_index": document_child_index,
+                                "content_hash": _content_hash(child_text),
+                                "version": version,
+                                "parent_section_id": pid,
+                                "parent_content": section_content,
+                            }
+                        )
+                        document_child_index += 1
             else:
                 # Legacy single-level: section content is the chunk.
                 embedding_text = (
@@ -797,7 +1019,9 @@ def _manifest_from_entries(entries: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if "parent_section_id" in entry:
             parent_ids.add(int(entry["parent_section_id"]))
     manifest = {
-        "version": str(config.retriever_knowledge_version or "v2"),
+        "version": str(
+            config.retriever_knowledge_version or "v3-hierarchical"
+        ),
         "source_count": len(sources),
         "chunk_count": len(entries),
         "sources": list(sources.values()),

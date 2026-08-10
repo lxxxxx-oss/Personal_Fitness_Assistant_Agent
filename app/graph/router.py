@@ -9,7 +9,13 @@ from typing import Any, Dict, List, Literal, NotRequired, Optional, Sequence, Tu
 
 from langgraph.graph import END, StateGraph
 
-from app.graph.state import RouterState
+from app.graph.prompt_builder import PromptBuilder
+from app.graph.safety_policy import (
+    SAFETY_POLICY_VERSION,
+    compose_safe_prompt,
+    validate_public_output,
+)
+from app.graph.state import RouterState, record_execution
 from app.graph.structured_state import add_decision, ensure_structured_state, set_task
 from app.graph.subgraphs.chat import build_chat_subgraph
 from app.graph.subgraphs.diet import build_diet_subgraph
@@ -37,6 +43,8 @@ class RouteDecision(TypedDict):
     route_plan: NotRequired[List[Intent]]
     multi_intent_reason: NotRequired[str]
     needs_clarification: NotRequired[bool]
+    clarification_candidates: NotRequired[List[Intent]]
+    clarification_question: NotRequired[str]
 
 
 _LLM_ROUTER_METRICS_LOCK = threading.Lock()
@@ -214,6 +222,21 @@ ALLOWED_INTENTS = {"search", "motion", "diet", "chat", "mcp"}
 # budget keeps one request bounded without coupling the router to a brittle
 # pair whitelist.
 MAX_ROUTE_STEPS = 3
+
+INTENT_CLARIFICATION_COPY: Dict[Intent, Tuple[str, str]] = {
+    "search": ("资料检索", "查找最新或权威资料"),
+    "motion": ("动作分析", "分析具体动作、姿势或动作数据"),
+    "diet": ("饮食建议", "制定饮食、营养或摄入方案"),
+    "chat": ("训练问答", "解释训练原理或给出训练建议"),
+    "mcp": ("菜谱工具", "提供具体菜品做法和烹饪步骤"),
+}
+INTENT_CLARIFICATION_ALIASES: Dict[Intent, Tuple[str, ...]] = {
+    "search": ("资料检索", "检索", "搜索", "查资料", "查最新", "权威资料"),
+    "motion": ("动作分析", "动作", "姿势", "姿态", "纠正动作"),
+    "diet": ("饮食建议", "饮食", "营养", "吃什么", "三餐", "摄入"),
+    "chat": ("训练问答", "训练建议", "原理", "解释"),
+    "mcp": ("菜谱工具", "菜谱", "做法", "烹饪", "做菜"),
+}
 COOKING_ACTION_PATTERNS = ("怎么做", "如何做", "咋做", "做法", "步骤", "教程")
 COOKING_CONTEXT_TERMS = (
     "炒",
@@ -565,7 +588,7 @@ def _embedding_semantic_route(user_input: str) -> RouteDecision:
 
 def _build_llm_router_prompt(user_input: str) -> str:
     """Build the strict JSON prompt for a future LLM classifier fallback."""
-    return f"""待分类用户输入：<<<{user_input}>>>
+    prompt = f"""待分类用户输入：<<<{user_input}>>>
 
 你是健身助手的意图路由分类器。只判断上面的输入，不回答问题。
 
@@ -586,6 +609,7 @@ def _build_llm_router_prompt(user_input: str) -> str:
 
 现在只输出 JSON。/no_think
 """
+    return compose_safe_prompt(prompt, kind="router.classifier")
 
 
 def _call_llm_router(prompt: str, model_id: Optional[str] = None) -> Optional[str]:
@@ -829,11 +853,11 @@ def _classify_primary_intent_with_scores(
     #   - margin 大小（比第二名领先多少）
     # 这两个维度不需要单独判断 — 合在一起就是"系统对此决定有多确定"。
     #
-    # confidence ≥ 0.65 → 主意图信号强 + margin 够大 → 单意图
+    # confidence ≥ 0.80 → 主意图信号强 + margin 够大 → 单意图
     #   例: search=15 margin=7.5 → conf=0.95（强信号大差距）
     #   例: motion=8 margin=5    → conf=0.82（中等信号够差距）
     #
-    # confidence < 0.65 → margin 太小或信号不够 → 歧义
+    # confidence < 0.80 → margin 太小或信号不够 → 歧义
     #   例: motion=7 chat=6.5 margin=0.5 → conf≈0.57（两意图接近）
     #   例: motion=4 mcp=3.5 margin=0.5  → conf≈0.50（刚过线且接近）
 
@@ -846,7 +870,7 @@ def _classify_primary_intent_with_scores(
             reason=(
                 f"Ambiguity: {best_intent}={best_score:g} vs {second_intent}={second_score:g}, "
                 f"margin={margin:g}, confidence={primary_confidence:g} < {_CONFIDENCE_FOR_SINGLE}. "
-                "Routing to chat."
+                "Requesting clarification before execution."
             ),
             source="ambiguity_fallback",
             scores=scores,
@@ -1019,6 +1043,40 @@ def classify_intent_with_scores(
 ) -> RouteDecision:
     """Classify primary intent and attach Phase 4 multi-intent observations."""
     decision = _classify_primary_intent_with_scores(user_input, model_id)
+    if decision["source"] == "ambiguity_fallback":
+        ranked_candidates = [
+            intent
+            for intent, score in sorted(
+                decision["scores"].items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if score >= MIN_ROUTE_SCORE
+        ][:2]
+        candidates: List[Intent] = [
+            intent  # type: ignore[misc]
+            for intent in ranked_candidates
+            if intent in ALLOWED_INTENTS
+        ]
+        if len(candidates) >= 2:
+            question = _build_clarification_question(candidates)
+            decision["primary_intent"] = "chat"
+            decision["secondary_intents"] = candidates
+            decision["route_plan"] = ["chat"]
+            decision["multi_intent_reason"] = (
+                "Two candidate intents passed the score gate, but neither had "
+                "enough evidence to execute safely without clarification."
+            )
+            decision["needs_clarification"] = True
+            decision["clarification_candidates"] = candidates
+            decision["clarification_question"] = question
+            decision["ambiguity_signals"] = [
+                "low_confidence",
+                "multiple_capabilities",
+                "clarification_required",
+            ]
+            return decision
+
     secondary, route_plan, reason, needs_clarification = _multi_intent_metadata(
         user_input, decision
     )
@@ -1042,6 +1100,120 @@ def classify_intent_with_scores(
         ambiguity_signals.append("multi_intent_plan")
     decision["ambiguity_signals"] = ambiguity_signals
     return decision
+
+
+def _build_clarification_question(candidates: Sequence[Intent]) -> str:
+    """Build a deterministic question that names the competing capabilities."""
+    choices = []
+    for index, intent in enumerate(candidates[:2], start=1):
+        label, description = INTENT_CLARIFICATION_COPY[intent]
+        choices.append(f"{index}）{label}：{description}")
+    return (
+        "我理解到两种可能："
+        + "；".join(choices)
+        + "。你更希望我先处理哪一种？可以回复“1/前者”或“2/后者”；"
+        "如果两项都需要，请回复“两个都要”。"
+    )
+
+
+def _valid_pending_candidates(pending: Dict[str, Any]) -> List[Intent]:
+    candidates: List[Intent] = []
+    raw_candidates = pending.get("candidates", [])
+    if not isinstance(raw_candidates, list):
+        return candidates
+    for raw_intent in raw_candidates[:2]:
+        if raw_intent in ALLOWED_INTENTS and raw_intent not in candidates:
+            candidates.append(raw_intent)  # type: ignore[arg-type]
+    return candidates
+
+
+def _clarification_selection(
+    user_input: str,
+    candidates: Sequence[Intent],
+) -> Optional[List[Intent]]:
+    """Resolve ordinal, capability-name, or 'both' clarification answers."""
+    normalized = re.sub(r"[\s，,。.!！?？、]", "", user_input).lower()
+    if not normalized:
+        return None
+    if any(term in normalized for term in ("两个都要", "两项都要", "都需要", "都要", "一起做", "一起")):
+        return list(candidates)
+    ordinal_aliases = (
+        (("1",), ("第一个", "第一项", "前者")),
+        (("2",), ("第二个", "第二项", "后者")),
+    )
+    ordinal_matches = []
+    for index, (exact_aliases, phrase_aliases) in enumerate(ordinal_aliases):
+        if index >= len(candidates):
+            continue
+        if normalized in exact_aliases or any(
+            alias in normalized for alias in phrase_aliases
+        ):
+            ordinal_matches.append(candidates[index])
+    if len(ordinal_matches) == 1:
+        return ordinal_matches
+    matched = [
+        intent
+        for intent in candidates
+        if any(alias in normalized for alias in INTENT_CLARIFICATION_ALIASES[intent])
+    ]
+    return matched if len(matched) == 1 else None
+
+
+def _clarification_decision(
+    pending: Dict[str, Any],
+    selected: Sequence[Intent],
+) -> RouteDecision:
+    scores = _empty_scores()
+    stored_scores = pending.get("scores")
+    if isinstance(stored_scores, dict):
+        for intent in ALLOWED_INTENTS:
+            try:
+                scores[intent] = float(stored_scores.get(intent, 0.0))
+            except (TypeError, ValueError):
+                scores[intent] = 0.0
+    plan = list(selected[:MAX_ROUTE_STEPS])
+    primary = plan[0]
+    return RouteDecision(
+        intent=primary,
+        confidence=0.98,
+        reason="User explicitly resolved the pending route clarification.",
+        source="clarification_resolution",
+        scores=scores,
+        matches=[f"clarification_selected:{intent}" for intent in plan],
+        ambiguity_signals=["clarification_resolved"],
+        primary_intent=primary,
+        secondary_intents=list(plan[1:]),
+        route_plan=plan,
+        multi_intent_reason=(
+            "User selected both candidate capabilities."
+            if len(plan) > 1
+            else f"User selected {primary}."
+        ),
+        needs_clarification=False,
+        clarification_candidates=list(plan),
+    )
+
+
+def _retry_clarification_decision(
+    candidates: Sequence[Intent],
+) -> RouteDecision:
+    question = _build_clarification_question(candidates)
+    return RouteDecision(
+        intent="chat",
+        confidence=0.0,
+        reason="The clarification answer did not identify either candidate.",
+        source="clarification_retry",
+        scores=_empty_scores(),
+        matches=["clarification_answer:unresolved"],
+        ambiguity_signals=["clarification_required"],
+        primary_intent="chat",
+        secondary_intents=list(candidates),
+        route_plan=["chat"],
+        multi_intent_reason="Waiting for the user to select a stored candidate.",
+        needs_clarification=True,
+        clarification_candidates=list(candidates),
+        clarification_question="我还不能确定你的选择。" + question,
+    )
 
 
 def _validate_route_plan(
@@ -1195,10 +1367,43 @@ def classify_intent(user_input: str, model_id: Optional[str] = None) -> str:
 
 def intent_classify_node(state: RouterState) -> RouterState:
     """Set intent and route metadata based on weighted rules."""
-    decision = classify_intent_with_scores(
-        state["user_input"],
-        state.get("_model_id"),
-    )
+    current_input = state["user_input"]
+    pending = state.get("_pending_route_clarification")
+    state["_clarification_resolved"] = False
+    state["_clarification_cancelled"] = False
+    decision: RouteDecision
+    if isinstance(pending, dict) and len(_valid_pending_candidates(pending)) >= 2:
+        candidates = _valid_pending_candidates(pending)
+        selected = _clarification_selection(current_input, candidates)
+        if selected:
+            decision = _clarification_decision(pending, selected)
+            original_input = str(pending.get("original_input", "")).strip()
+            if original_input:
+                state["user_input"] = (
+                    f"原始问题：{original_input}\n用户澄清：{current_input}"
+                )
+            state["_clarification_resolved"] = True
+        elif any(term in current_input.strip() for term in ("算了", "不用了", "取消")):
+            decision = classify_intent_with_scores(current_input, state.get("_model_id"))
+            state["_clarification_cancelled"] = True
+        else:
+            fresh_decision = classify_intent_with_scores(
+                current_input,
+                state.get("_model_id"),
+            )
+            if (
+                fresh_decision["source"] not in {"fallback", "ambiguity_fallback"}
+                and not fresh_decision.get("needs_clarification", False)
+            ):
+                decision = fresh_decision
+                state["_clarification_cancelled"] = True
+            else:
+                decision = _retry_clarification_decision(candidates)
+    else:
+        decision = classify_intent_with_scores(
+            current_input,
+            state.get("_model_id"),
+        )
     state["intent"] = decision["intent"]
     state["_route_scores"] = decision["scores"]
     state["_route_confidence"] = decision["confidence"]
@@ -1211,11 +1416,14 @@ def intent_classify_node(state: RouterState) -> RouterState:
     state["_route_plan"] = decision["route_plan"]
     state["_multi_intent_reason"] = decision["multi_intent_reason"]
     state["_needs_clarification"] = decision["needs_clarification"]
+    state["_clarification_candidates"] = decision.get(
+        "clarification_candidates", []
+    )
+    state["_clarification_question"] = decision.get("clarification_question", "")
     requested_plan = decision["route_plan"]
     warnings: List[str] = []
     if decision["needs_clarification"]:
         execution_plan = [decision["primary_intent"]]
-        warnings.append("multi_intent_execution_skipped:needs_clarification")
     else:
         execution_plan, validation_warnings = _validate_route_plan(
             requested_plan,
@@ -1259,10 +1467,41 @@ def intent_classify_node(state: RouterState) -> RouterState:
     return state
 
 
+def clarification_response_node(state: RouterState) -> RouterState:
+    """Return the targeted clarification without spending an LLM call."""
+    question = state.get("_clarification_question", "").strip()
+    if not question:
+        candidates = [
+            intent
+            for intent in state.get("_clarification_candidates", [])
+            if intent in ALLOWED_INTENTS
+        ]
+        question = _build_clarification_question(candidates) if candidates else (
+            "我还不能确定你希望处理哪一类问题，请补充具体目标。"
+        )
+    state["result"] = question
+    state["error"] = None
+    state.pop("_prompt", None)
+    labels = [
+        INTENT_CLARIFICATION_COPY[intent][0]
+        for intent in state.get("_clarification_candidates", [])
+        if intent in INTENT_CLARIFICATION_COPY
+    ]
+    record_execution(
+        state,
+        "intent_router",
+        "clarification_requested",
+        detail="candidates=" + ",".join(labels),
+    )
+    return state
+
+
 def route_to_subgraph(
     state: RouterState,
-) -> Literal["search", "motion", "diet", "chat", "mcp"]:
+) -> Literal["search", "motion", "diet", "chat", "mcp", "clarify"]:
     """Conditional edge: route based on intent."""
+    if state.get("_needs_clarification"):
+        return "clarify"
     return state.get("_active_intent", state["intent"])  # type: ignore
 
 
@@ -1330,6 +1569,8 @@ def synthesize_route_results_node(state: RouterState) -> RouterState:
         state["error"] = record.get("error")
         if record.get("prompt"):
             state["_prompt"] = record["prompt"]
+        if record.get("prompt_meta"):
+            state["_prompt_meta"] = record["prompt_meta"]
         state["_sources"] = record.get("sources", [])  # type: ignore[typeddict-unknown-key]
         return state
 
@@ -1378,7 +1619,12 @@ def synthesize_route_results_node(state: RouterState) -> RouterState:
 {chr(10).join(sections)}
 {warning_text}
 """
-    state["_prompt"] = prompt
+    prompt = PromptBuilder.attach(
+        state,
+        prompt,
+        kind="router.synthesis",
+        sections=["user_question", "subtask_results", "failure_boundaries"],
+    )
     state["_sources"] = sources  # type: ignore[typeddict-unknown-key]
     state["error"] = None
     if state.get("_streaming"):
@@ -1431,16 +1677,46 @@ def _safe_subgraph_node(intent: Intent, subgraph):
 
 
 def finalize_node(state: RouterState) -> RouterState:
-    """Final node: ensure result is valid, log any errors."""
+    """Finalize non-stream output through the shared public safety boundary."""
     if state.get("error"):
         state["result"] = "This request could not be completed. Please try again."
+        return state
+
+    result = state.get("result", "")
+    if not result or state.get("_streaming"):
+        return state
+
+    prompt_meta = state.get("_prompt_meta", {})
+    kind = str(prompt_meta.get("kind") or {
+        "chat": "chat.answer",
+        "search": "search.synthesis",
+        "diet": "diet.recommendation",
+        "motion": "motion.answer",
+        "mcp": "mcp.format_result",
+    }.get(state.get("intent", "chat"), "chat.answer"))
+    checked = validate_public_output(result, kind=kind)
+    state["result"] = checked.text
+    if checked.violations:
+        warnings = state.setdefault("_route_execution_warnings", [])
+        warnings.extend(
+            f"output_safety:{violation}"
+            for violation in checked.violations
+            if f"output_safety:{violation}" not in warnings
+        )
+    record_execution(
+        state,
+        "output_safety",
+        SAFETY_POLICY_VERSION,
+        degraded=not checked.safe,
+        detail=("violations=" + ",".join(checked.violations)) if checked.violations else "passed",
+    )
     return state
 
 
 def build_router_graph():
     """Build the top-level router graph.
 
-    Nodes: intent_classify -> [search/motion/diet/chat/mcp] -> finalize -> END
+    Nodes: intent_classify -> [clarify/search/motion/diet/chat/mcp] -> finalize -> END
     """
     builder = StateGraph(RouterState)
 
@@ -1450,6 +1726,7 @@ def build_router_graph():
     builder.add_node("diet", _safe_subgraph_node("diet", build_diet_subgraph()))
     builder.add_node("chat", _safe_subgraph_node("chat", build_chat_subgraph()))
     builder.add_node("mcp", _safe_subgraph_node("mcp", build_mcp_subgraph()))
+    builder.add_node("clarify", clarification_response_node)
     builder.add_node("collect_route_result", collect_route_result_node)
     builder.add_node("synthesize_route_results", synthesize_route_results_node)
     builder.add_node("finalize", finalize_node)
@@ -1470,8 +1747,11 @@ def build_router_graph():
             "diet": "diet",
             "chat": "chat",
             "mcp": "mcp",
+            "clarify": "clarify",
         },
     )
+
+    builder.add_edge("clarify", "finalize")
 
     for intent in ["search", "motion", "diet", "chat", "mcp"]:
         builder.add_edge(intent, "collect_route_result")

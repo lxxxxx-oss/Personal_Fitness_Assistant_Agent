@@ -7,6 +7,7 @@ import sqlite3
 
 import app.main as main_module
 from app.config import config
+from app.graph.router import intent_classify_node
 from app.memory.conversation_store import ConversationStore
 from app.memory.memory_store import MemoryStore
 
@@ -241,3 +242,65 @@ def test_temporary_chat_keeps_only_process_local_short_term_context(
     assert conversation_store.list_conversations("u1") == []
     assert memory_store.list_memories("u1") == []
     assert memory_store.list_observations("u1", status="all") == []
+
+
+def test_route_clarification_survives_process_memory_reset(tmp_path, monkeypatch):
+    conversation_store = ConversationStore(str(tmp_path / "conversation.db"))
+    memory_store = MemoryStore(str(tmp_path / "memory.db"))
+    monkeypatch.setattr(main_module, "_conversation_store", conversation_store)
+    monkeypatch.setattr(main_module, "_memory_store", memory_store)
+    monkeypatch.setattr(main_module, "_sessions", {})
+    monkeypatch.setattr(main_module, "_temporary_task_states", {})
+    monkeypatch.setattr(config, "conversation_summary_enabled", False)
+    monkeypatch.setattr(config, "memory_v2_enabled", False)
+    monkeypatch.setattr(
+        "app.llm.providers.resolve_model_id",
+        lambda model_id: model_id or "test-model",
+    )
+
+    first = main_module._prepare_chat_sync(
+        "u1",
+        "想练深蹲吃什么",
+        None,
+        None,
+        streaming=False,
+    )
+    result_state = dict(first.state)
+    result_state.update({
+        "_needs_clarification": True,
+        "_clarification_candidates": ["diet", "motion"],
+        "_clarification_question": "饮食建议还是动作分析？",
+        "_route_scores": {"diet": 5.0, "motion": 4.0},
+    })
+    asyncio.run(
+        main_module._persist_prepared_chat(first, "饮食建议还是动作分析？", result_state)
+    )
+
+    monkeypatch.setattr(main_module, "_sessions", {})
+    second = main_module._prepare_chat_sync(
+        "u1",
+        "第二个",
+        first.conversation_id,
+        None,
+        streaming=False,
+    )
+
+    assert second.state["_pending_route_clarification"] == {
+        "original_input": "想练深蹲吃什么",
+        "candidates": ["diet", "motion"],
+        "question": "饮食建议还是动作分析？",
+        "scores": {"diet": 5.0, "motion": 4.0},
+    }
+
+    resolved_state = intent_classify_node(second.state)
+    resolved_state["result"] = "下面分析你的深蹲动作。"
+    asyncio.run(
+        main_module._persist_prepared_chat(
+            second,
+            resolved_state["result"],
+            resolved_state,
+        )
+    )
+
+    assert resolved_state["_clarification_resolved"] is True
+    assert conversation_store.get_task_state(first.conversation_id, "u1") == {}

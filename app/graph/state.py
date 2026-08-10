@@ -56,6 +56,11 @@ class RouterState(TypedDict, total=False):
     _route_plan: List[str]
     _multi_intent_reason: str
     _needs_clarification: bool
+    _clarification_candidates: List[str]
+    _clarification_question: str
+    _pending_route_clarification: Dict[str, Any]
+    _clarification_resolved: bool
+    _clarification_cancelled: bool
     _route_execution_plan: List[str]
     _route_execution_cursor: int
     _active_intent: str

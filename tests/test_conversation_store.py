@@ -108,6 +108,29 @@ def test_add_turn_is_atomic_and_increments_conversation_once(tmp_path):
     ]
 
 
+def test_task_state_is_persistent_scoped_and_clearable(tmp_path):
+    db_path = tmp_path / "memory.db"
+    store = ConversationStore(str(db_path))
+    conversation_id = store.get_or_create_conversation("u1")
+    state = {
+        "route_clarification": {
+            "original_input": "想练深蹲吃什么",
+            "candidates": ["diet", "motion"],
+        }
+    }
+
+    store.save_task_state(conversation_id, "u1", state)
+    restored = ConversationStore(str(db_path)).get_task_state(conversation_id, "u1")
+
+    assert restored == state
+    assert store.get_task_state(conversation_id, "u2") == {}
+    with pytest.raises(ValueError, match="not found"):
+        store.save_task_state(conversation_id, "u2", state)
+
+    store.clear_task_state(conversation_id, "u1")
+    assert store.get_task_state(conversation_id, "u1") == {}
+
+
 def test_compact_summary_advances_boundary_and_replaces_previous(tmp_path):
     db_path = tmp_path / "memory.db"
     store = ConversationStore(str(db_path))

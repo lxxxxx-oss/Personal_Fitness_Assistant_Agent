@@ -6,7 +6,7 @@
 
 - Hybrid Router：加权规则、语义样例、歧义检测和四种白名单多意图组合；本地 Qwen Router 完成 A/B 后因无准确率收益且延迟较高而默认关闭。
 - Knowledge：产品层将 Chat/Diet 统一为 Knowledge 能力域；代码层保留两个兼容执行分支，并共用 RAG、来源约束和上下文组装。
-- RAG：默认先将结构化父级正文切成约 300 字符的检索子块，由 `BAAI/bge-small-zh-v1.5` 完成 Dense 向量检索，并与 BM25 各召回 20 条；RRF 融合后按父级正文回填、折叠同父命中，再向所选 Qwen 或 DeepSeek 模型注入最多 Top-5 证据。生成端采用 `grounded-v3` 证据约束，要求保留否定关系、适用人群与剂量阶段，并用 `[RefN]` 标注依据。SQLite 持久化文本、向量、来源及父子关系，FAISS 在进程内重建余弦索引；当前还保留同源幂等替换和内存降级。项目收录 12 份可索引知识文档，并建立 80 条分层检索/RAGAS 黄金集及可断点续跑的评测入口；现有量化结果属于父子分块合入前基线，新版本仍需按同一黄金集重测。
+- RAG：按 Markdown 层级构造父子索引，以 H2 为常规主题父边界，聚合同主题下的细分章节，再切成约 180 字符的检索子块；安全/风险章节单独成块，纯来源章节不入索引。`BAAI/bge-small-zh-v1.5` Dense 与 BM25 各召回 20 条，RRF 融合后回填父块、折叠同父命中，再向 Qwen 或 DeepSeek 注入最多 Top-5 证据。SQLite 持久化文本、向量、来源及父子关系，FAISS 在进程内重建余弦索引，并保留同源幂等替换和内存降级。项目收录 12 份知识文档和 80 条分层黄金集；2026-08-08 的量化结果属于上一版父子索引，当前 `v3-hierarchical` 已完成结构回归，仍需重建索引并按同一黄金集复测。
 - Motion：标准参考动作分析原型，支持图片/视频转 PoseSequence、同 schema 标准视频构建、髋中心归一化、FastDTW、余弦和 DTW 对齐后的逐关节平均距离，并输出可解释的结构化反馈。
 - Search：Query Understanding、Tavily/mock Search、Answer Synthesis 与来源 URL 透传。
 - Knowledge-Diet：作为 Knowledge 内部 `diet_advice` 链路，LLM 提取结果经过 Pydantic JSON 解析、范围与枚举校验，再进入营养检索和推荐；非法输出安全降级并公开 warning。

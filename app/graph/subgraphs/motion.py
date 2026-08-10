@@ -4,6 +4,8 @@ from typing import Literal
 
 from langgraph.graph import StateGraph, END
 
+from app.graph.prompt_builder import PromptBuilder
+from app.graph.safety_policy import compose_safe_prompt
 from app.graph.state import RouterState, record_execution
 from app.graph.structured_state import add_tool_preview
 
@@ -39,6 +41,7 @@ def think_node(state: RouterState) -> RouterState:
 {state['user_input']}
 
 请用中文输出你的分析计划："""
+    prompt = compose_safe_prompt(prompt, kind="motion.plan")
 
     llm = create_llm(
         state.get("_model_id"),
@@ -230,7 +233,12 @@ def check_node(state: RouterState) -> RouterState:
 
 请给出分析报告："""
 
-    state["_prompt"] = prompt  # type: ignore
+    prompt = PromptBuilder.attach(
+        state,
+        prompt,
+        kind="motion.answer",
+        sections=["motion_evidence", "motion_plan", "user_question"],
+    )
     if state.get("_streaming"):
         state["result"] = ""
         state["_check_pass"] = True  # type: ignore

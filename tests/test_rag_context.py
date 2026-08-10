@@ -193,10 +193,10 @@ def test_recent_conversation_uses_configured_turn_count(monkeypatch):
 def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
     from app.config import config
 
-    monkeypatch.setattr(config, "context_compact_trigger_chars", 500)
-    monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
-    monkeypatch.setattr(config, "context_compact_trigger_tokens", 500)
-    monkeypatch.setattr(config, "context_max_prompt_tokens", 1200)
+    monkeypatch.setattr(config, "context_compact_trigger_chars", 2600)
+    monkeypatch.setattr(config, "context_max_prompt_chars", 3000)
+    monkeypatch.setattr(config, "context_compact_trigger_tokens", 2600)
+    monkeypatch.setattr(config, "context_max_prompt_tokens", 3000)
     state = {
         "user_input": "深蹲怎么做？",
         "memory": [
@@ -218,10 +218,202 @@ def test_prompt_builder_compacts_long_chat_prompt(monkeypatch):
     assert result["_prompt_meta"]["compact_triggered"] is True
     assert result["_prompt_meta"]["original_chars"] > result["_prompt_meta"]["chars"]
     assert result["_prompt_meta"]["original_tokens"] >= result["_prompt_meta"]["tokens"]
-    assert len(result["_prompt"]) <= 1200
-    assert estimate_tokens(result["_prompt"]) <= 1200
+    assert len(result["_prompt"]) <= 2600
+    assert estimate_tokens(result["_prompt"]) <= 2600
     assert "## 对话压缩摘要" in result["_prompt"]
     assert "## 用户问题" in result["_prompt"]
     assert "深蹲怎么做？" in result["_prompt"]
     assert result["_structured_state"]["compact_triggered"] is True
+    diagnostics = result["_prompt_meta"]["compact_diagnostics"]
+    assert diagnostics["strategy"] == "priority_round_robin_v3"
+    assert diagnostics["target_met"] is True
+    assert diagnostics["user_question_complete"] is True
+    assert diagnostics["packing_rounds"] >= 1
+    assert diagnostics["hard_token_budget_met"] is True
+    assert diagnostics["dropped_sections"]
     assert result["_execution"][0]["component"] == "compact"
+
+
+def test_prompt_compaction_keeps_required_sections_and_whole_entries(monkeypatch):
+    from app.config import config
+
+    monkeypatch.setattr(config, "context_compact_trigger_chars", 700)
+    monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+    monkeypatch.setattr(config, "context_compact_trigger_tokens", 700)
+    monkeypatch.setattr(config, "context_max_prompt_tokens", 1200)
+    state = {"_structured_state": {}}
+    first_reference = "[Ref1]\n" + "第一条证据完整内容。" * 8
+    second_reference = "[Ref2]\n" + "第二条证据完整内容。" * 80
+    prompt = f"""# 角色
+安全角色不可删除。
+
+# 回答规则
+只基于证据回答，这条规则不可删除。
+
+## 参考资料
+{first_reference}
+
+{second_reference}
+
+## 待验证的个性化线索
+- 可能喜欢夜间训练，但尚未确认。{("待确认" * 40)}
+
+## 用户问题
+请完整解释深蹲动作，并保留这句问题。
+
+请回答："""
+
+    compacted = PromptBuilder.attach(
+        state,
+        prompt,
+        kind="test.compaction",
+        sections=["safety_rules", "rag_evidence", "soft_memory", "user_question"],
+    )
+
+    assert "安全角色不可删除" in compacted
+    assert "只基于证据回答，这条规则不可删除" in compacted
+    assert "请完整解释深蹲动作，并保留这句问题" in compacted
+    assert first_reference in compacted
+    assert second_reference not in compacted
+    assert "第二条证据完整内" not in compacted
+    assert "可能喜欢夜间训练" not in compacted
+    assert len(compacted) <= 700
+    assert estimate_tokens(compacted) <= 700
+
+    diagnostics = state["_prompt_meta"]["compact_diagnostics"]
+    assert diagnostics["target_met"] is True
+    assert diagnostics["user_question_complete"] is True
+    assert {item["section"] for item in diagnostics["dropped_sections"]} >= {
+        "参考资料",
+        "待验证的个性化线索",
+    }
+
+
+def test_prompt_compaction_does_not_cut_pinned_content_when_target_is_too_small(
+    monkeypatch,
+):
+    from app.config import config
+
+    monkeypatch.setattr(config, "context_compact_trigger_chars", 500)
+    monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+    monkeypatch.setattr(config, "context_compact_trigger_tokens", 500)
+    monkeypatch.setattr(config, "context_max_prompt_tokens", 1200)
+    full_question = "这是一个不能被静默截断的完整用户问题。" * 5
+    state = {"_structured_state": {}}
+    prompt = f"""# 角色
+安全规则必须完整保留。
+
+## 参考资料
+这段可选资料应被舍弃。{("资料" * 100)}
+
+## 用户问题
+{full_question}
+
+请回答："""
+
+    compacted = PromptBuilder.attach(
+        state,
+        prompt,
+        kind="test.pinned-overflow",
+        sections=["safety_rules", "rag_evidence", "user_question"],
+    )
+
+    assert "安全规则必须完整保留" in compacted
+    assert full_question in compacted
+    assert "这段可选资料应被舍弃" not in compacted
+    diagnostics = state["_prompt_meta"]["compact_diagnostics"]
+    assert diagnostics["target_met"] is False
+    assert diagnostics["hard_budget_met"] is True
+    assert diagnostics["reason"] == "pinned_content_exceeds_compact_target"
+    assert diagnostics["user_question_complete"] is True
+
+
+def test_prompt_compaction_pins_confirmed_safety_memory(monkeypatch):
+    from app.config import config
+
+    monkeypatch.setattr(config, "context_compact_trigger_chars", 700)
+    monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+    monkeypatch.setattr(config, "context_compact_trigger_tokens", 700)
+    monkeypatch.setattr(config, "context_max_prompt_tokens", 1200)
+    safety_memory = "- [安全/constraint] 左膝有旧伤，深蹲时避免膝关节疼痛动作。"
+    prompt = f"""# 角色
+你是健身助手，必须遵守安全边界。
+
+## 参考资料
+[Ref1]\n{"普通资料。" * 100}
+
+## 长期记忆
+- [preference] 用户偏好夜间训练。
+{safety_memory}
+
+## 用户问题
+请给我今天的训练建议。
+
+请回答："""
+    state = {"_structured_state": {}}
+
+    compacted = PromptBuilder.attach(
+        state,
+        prompt,
+        kind="test.safety-memory",
+        sections=["safety_rules", "rag_evidence", "long_term_memory", "user_question"],
+    )
+
+    assert safety_memory in compacted
+    assert "请给我今天的训练建议" in compacted
+    assert "普通资料" not in compacted
+    diagnostics = state["_prompt_meta"]["compact_diagnostics"]
+    assert diagnostics["pinned_safety_units"] == 1
+    assert diagnostics["hard_budget_met"] is True
+
+
+def test_prompt_compaction_skips_oversized_item_and_continues_other_queues(
+    monkeypatch,
+):
+    from app.config import config
+
+    monkeypatch.setattr(config, "context_compact_trigger_chars", 850)
+    monkeypatch.setattr(config, "context_max_prompt_chars", 1200)
+    monkeypatch.setattr(config, "context_compact_trigger_tokens", 850)
+    monkeypatch.setattr(config, "context_max_prompt_tokens", 1200)
+    prompt = f"""# 角色
+你是健身助手。
+
+## 参考资料
+[Ref1]\n{"无法装入的超长证据。" * 80}
+
+## 长期记忆
+- [preference] 用户偏好在晚上进行力量训练。
+
+## 对话历史
+user: 我最近开始练深蹲。
+assistant: 可以先从徒手深蹲开始。
+
+## 用户问题
+下一步怎么练？
+
+请回答："""
+    state = {"_structured_state": {}}
+
+    compacted = PromptBuilder.attach(
+        state,
+        prompt,
+        kind="test.round-robin-skip",
+        sections=[
+            "safety_rules",
+            "rag_evidence",
+            "long_term_memory",
+            "recent_conversation",
+            "user_question",
+        ],
+    )
+
+    assert "无法装入的超长证据" not in compacted
+    assert "用户偏好在晚上进行力量训练" in compacted
+    assert "我最近开始练深蹲" in compacted
+    diagnostics = state["_prompt_meta"]["compact_diagnostics"]
+    usage = {item["queue"]: item for item in diagnostics["queue_usage"]}
+    assert usage["evidence"]["rejected"] == 1
+    assert usage["confirmed_memory"]["kept"] == 1
+    assert usage["recent_conversation"]["kept"] == 1
+    assert diagnostics["packing_rounds"] >= 1

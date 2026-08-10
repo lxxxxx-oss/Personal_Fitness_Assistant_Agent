@@ -100,6 +100,27 @@ def test_hybrid_retrieval_defaults_and_environment_values(monkeypatch):
     assert configured.retriever_rrf_k == 50
 
 
+def test_hierarchical_parent_child_chunking_defaults(monkeypatch):
+    for name in (
+        "RETRIEVER_KNOWLEDGE_VERSION",
+        "RETRIEVER_PARENT_CHILD_ENABLED",
+        "RETRIEVER_CHUNK_CHARS",
+        "RETRIEVER_CHUNK_OVERLAP_CHARS",
+        "RETRIEVER_CHILD_CHUNK_CHARS",
+        "RETRIEVER_CHILD_CHUNK_OVERLAP_CHARS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = Config()
+
+    assert config.retriever_knowledge_version == "v3-hierarchical"
+    assert config.retriever_parent_child_enabled is True
+    assert config.retriever_chunk_chars == 500
+    assert config.retriever_chunk_overlap_chars == 80
+    assert config.retriever_child_chunk_chars == 180
+    assert config.retriever_child_chunk_overlap_chars == 30
+
+
 def test_hybrid_retrieval_config_rejects_invalid_values():
     with pytest.raises(ValueError, match="RETRIEVER_STRATEGY"):
         Config(retriever_strategy="weighted")

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 import threading
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 def _utc_now() -> str:
@@ -347,6 +348,94 @@ class ConversationStore:
             "user_message_id": rows[0][0],
             "assistant_message_id": rows[1][0],
         }
+
+    def get_task_state(
+        self,
+        conversation_id: str,
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """Return the latest structured task state for an active conversation."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT t.state
+                FROM task_states AS t
+                JOIN conversations AS c ON c.id = t.conversation_id
+                WHERE t.conversation_id = ?
+                  AND t.user_id = ?
+                  AND c.user_id = ?
+                  AND c.status = 'active'
+                ORDER BY t.updated_at DESC, t.rowid DESC
+                LIMIT 1
+                """,
+                (conversation_id, user_id, user_id),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            state = json.loads(str(row["state"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return state if isinstance(state, dict) else {}
+
+    def save_task_state(
+        self,
+        conversation_id: str,
+        user_id: str,
+        state: Dict[str, Any],
+    ) -> None:
+        """Upsert one JSON task state after verifying conversation ownership."""
+        if not isinstance(state, dict):
+            raise ValueError("task state must be a dictionary")
+        encoded = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            conversation = conn.execute(
+                """
+                SELECT id FROM conversations
+                WHERE id = ? AND user_id = ? AND status = 'active'
+                """,
+                (conversation_id, user_id),
+            ).fetchone()
+            if conversation is None:
+                raise ValueError("active conversation was not found for this user")
+            row = conn.execute(
+                """
+                SELECT id FROM task_states
+                WHERE conversation_id = ? AND user_id = ?
+                ORDER BY updated_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (conversation_id, user_id),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    """
+                    INSERT INTO task_states (
+                        id, conversation_id, user_id, state, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), conversation_id, user_id, encoded, now),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE task_states SET state = ?, updated_at = ? WHERE id = ?
+                    """,
+                    (encoded, now, str(row["id"])),
+                )
+
+    def clear_task_state(self, conversation_id: str, user_id: str) -> None:
+        """Delete task state owned by one conversation and user."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM task_states
+                WHERE conversation_id = ? AND user_id = ?
+                """,
+                (conversation_id, user_id),
+            )
 
     def get_messages(
         self,
