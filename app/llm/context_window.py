@@ -38,6 +38,43 @@ class ContextBudget:
     compact_trigger_tokens: int
 
 
+def derive_conversation_summary_trigger(
+    compact_trigger_tokens: int,
+    *,
+    ratio: float = 0.35,
+    minimum_tokens: int = 900,
+    maximum_tokens: int = 4000,
+    override_tokens: int = 0,
+) -> int:
+    """Derive a stable old-dialogue summary watermark from prompt budget.
+
+    The conversation summary is a lossy, persisted view, so it should not run
+    every time the request-level prompt approaches its compact watermark.  A
+    bounded fraction keeps the default conservative for small models while
+    avoiding needlessly early summaries for larger context windows.  An
+    explicit override remains available for deployments that have calibrated
+    their own threshold.
+    """
+    if compact_trigger_tokens <= 0:
+        raise ValueError("prompt compact trigger must be positive")
+    if not 0.0 < ratio <= 1.0:
+        raise ValueError("CONVERSATION_SUMMARY_TRIGGER_RATIO must be in (0, 1]")
+    if minimum_tokens <= 0 or maximum_tokens <= 0:
+        raise ValueError("conversation summary trigger bounds must be positive")
+    if minimum_tokens > maximum_tokens:
+        raise ValueError(
+            "CONVERSATION_SUMMARY_TRIGGER_MIN_TOKENS must not exceed "
+            "CONVERSATION_SUMMARY_TRIGGER_MAX_TOKENS"
+        )
+    if override_tokens < 0:
+        raise ValueError("CONVERSATION_SUMMARY_TRIGGER_TOKENS must not be negative")
+    if override_tokens:
+        return override_tokens
+
+    automatic = int(compact_trigger_tokens * ratio)
+    return min(max(automatic, minimum_tokens), maximum_tokens)
+
+
 def _valid_context_value(value: Any) -> Optional[int]:
     """Return a usable context length while ignoring tokenizer sentinels."""
     if isinstance(value, bool):

@@ -177,12 +177,16 @@ def maybe_compact_conversation(
             "insufficient_history",
             candidate_chars=candidate_chars,
             candidate_tokens=candidate_tokens,
+            trigger_chars=trigger_chars,
+            trigger_tokens=trigger_tokens,
         )
     if candidate_chars < trigger_chars and candidate_tokens < trigger_tokens:
         return _result(
             "below_threshold",
             candidate_chars=candidate_chars,
             candidate_tokens=candidate_tokens,
+            trigger_chars=trigger_chars,
+            trigger_tokens=trigger_tokens,
         )
 
     active = store.get_active_summary(conversation_id, user_id)
@@ -207,6 +211,8 @@ def maybe_compact_conversation(
         "compacted_message_count": len(candidates),
         "candidate_chars": candidate_chars,
         "candidate_tokens": candidate_tokens,
+        "trigger_chars": trigger_chars,
+        "trigger_tokens": trigger_tokens,
         "last_compacted_message_id": saved["last_compacted_message_id"],
         "remaining_message_count": len(uncompacted) - len(candidates),
         "mode": "deterministic_evidence",
@@ -237,6 +243,8 @@ def _result(
     *,
     candidate_chars: int,
     candidate_tokens: int,
+    trigger_chars: int,
+    trigger_tokens: int,
 ) -> Dict[str, Any]:
     return {
         "triggered": False,
@@ -244,5 +252,7 @@ def _result(
         "reason": reason,
         "candidate_chars": candidate_chars,
         "candidate_tokens": candidate_tokens,
+        "trigger_chars": trigger_chars,
+        "trigger_tokens": trigger_tokens,
         "mode": "deterministic_evidence",
     }

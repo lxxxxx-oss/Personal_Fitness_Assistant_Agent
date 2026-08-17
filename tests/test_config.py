@@ -156,6 +156,34 @@ def test_conversation_summary_config_is_bounded_by_explicit_values(monkeypatch):
     assert config.conversation_summary_max_chars == 900
     assert config.conversation_summary_trigger_tokens == 700
     assert config.conversation_summary_max_tokens == 300
+    assert config.conversation_summary_trigger_source.endswith("override")
+
+
+def test_conversation_summary_threshold_is_derived_from_context_budget(tmp_path):
+    (tmp_path / "config.json").write_text(
+        json.dumps({"max_position_embeddings": 8192}),
+        encoding="utf-8",
+    )
+
+    config = Config(
+        model_path=str(tmp_path),
+        model_max_tokens=1024,
+        context_safety_tokens=256,
+        context_compact_trigger_ratio=0.8,
+        context_compact_trigger_chars=0,
+        context_max_prompt_chars=0,
+        context_compact_trigger_tokens=0,
+        context_max_prompt_tokens=0,
+        conversation_summary_trigger_chars=0,
+        conversation_summary_trigger_tokens=0,
+    )
+
+    assert config.context_compact_trigger_tokens == 5529
+    assert config.conversation_summary_trigger_tokens == 1935
+    assert config.conversation_summary_trigger_chars == 7740
+    assert config.conversation_summary_trigger_source == (
+        "derived from prompt compact budget"
+    )
 
 
 def test_config_rejects_prompt_limits_that_cannot_compact_safely():
@@ -205,6 +233,8 @@ def test_context_budget_is_derived_from_local_model_metadata(tmp_path):
     assert config.context_compact_trigger_tokens == 5529
     assert config.context_max_prompt_chars == 27648
     assert config.context_compact_trigger_chars == 22116
+    assert config.conversation_summary_trigger_tokens == 1935
+    assert config.conversation_summary_trigger_chars == 7740
 
 
 def test_router_embedding_config_is_feature_flagged(monkeypatch):

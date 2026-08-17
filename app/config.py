@@ -2,7 +2,11 @@
 import os
 from dataclasses import dataclass, field
 
-from app.llm.context_window import derive_context_budget, resolve_model_context_window
+from app.llm.context_window import (
+    derive_context_budget,
+    derive_conversation_summary_trigger,
+    resolve_model_context_window,
+)
 
 
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
@@ -183,7 +187,7 @@ class Config:
     conversation_summary_trigger_chars: int = field(
         default_factory=lambda: _get_int_env(
             "CONVERSATION_SUMMARY_TRIGGER_CHARS",
-            3000,
+            0,
         )
     )
     conversation_summary_max_chars: int = field(
@@ -191,9 +195,25 @@ class Config:
     )
     conversation_summary_trigger_tokens: int = field(
         default_factory=lambda: _get_int_env(
-            "CONVERSATION_SUMMARY_TRIGGER_TOKENS", 900
+            "CONVERSATION_SUMMARY_TRIGGER_TOKENS", 0
         )
     )
+    conversation_summary_trigger_ratio: float = field(
+        default_factory=lambda: _get_float_env(
+            "CONVERSATION_SUMMARY_TRIGGER_RATIO", 0.35
+        )
+    )
+    conversation_summary_trigger_min_tokens: int = field(
+        default_factory=lambda: _get_int_env(
+            "CONVERSATION_SUMMARY_TRIGGER_MIN_TOKENS", 900
+        )
+    )
+    conversation_summary_trigger_max_tokens: int = field(
+        default_factory=lambda: _get_int_env(
+            "CONVERSATION_SUMMARY_TRIGGER_MAX_TOKENS", 4000
+        )
+    )
+    conversation_summary_trigger_source: str = field(init=False, default="")
     conversation_summary_max_tokens: int = field(
         default_factory=lambda: _get_int_env("CONVERSATION_SUMMARY_MAX_TOKENS", 360)
     )
@@ -308,6 +328,24 @@ class Config:
         if self.context_compact_trigger_chars == 0:
             self.context_compact_trigger_chars = self.context_compact_trigger_tokens * 4
 
+        summary_trigger_override = self.conversation_summary_trigger_tokens
+        self.conversation_summary_trigger_tokens = derive_conversation_summary_trigger(
+            self.context_compact_trigger_tokens,
+            ratio=self.conversation_summary_trigger_ratio,
+            minimum_tokens=self.conversation_summary_trigger_min_tokens,
+            maximum_tokens=self.conversation_summary_trigger_max_tokens,
+            override_tokens=summary_trigger_override,
+        )
+        self.conversation_summary_trigger_source = (
+            "CONVERSATION_SUMMARY_TRIGGER_TOKENS override"
+            if summary_trigger_override
+            else "derived from prompt compact budget"
+        )
+        if self.conversation_summary_trigger_chars == 0:
+            self.conversation_summary_trigger_chars = (
+                self.conversation_summary_trigger_tokens * 4
+            )
+
         positive_values = {
             "model_max_tokens": self.model_max_tokens,
             "model_context_fallback_tokens": self.model_context_fallback_tokens,
@@ -323,6 +361,12 @@ class Config:
             "conversation_summary_trigger_chars": self.conversation_summary_trigger_chars,
             "conversation_summary_max_chars": self.conversation_summary_max_chars,
             "conversation_summary_trigger_tokens": self.conversation_summary_trigger_tokens,
+            "conversation_summary_trigger_min_tokens": (
+                self.conversation_summary_trigger_min_tokens
+            ),
+            "conversation_summary_trigger_max_tokens": (
+                self.conversation_summary_trigger_max_tokens
+            ),
             "conversation_summary_max_tokens": self.conversation_summary_max_tokens,
             "retriever_top_k": self.retriever_top_k,
             "retriever_candidate_k": self.retriever_candidate_k,

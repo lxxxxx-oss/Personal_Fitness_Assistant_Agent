@@ -6,6 +6,7 @@ import pytest
 
 from app.llm.context_window import (
     derive_context_budget,
+    derive_conversation_summary_trigger,
     detect_context_window,
     resolve_model_context_window,
 )
@@ -96,3 +97,37 @@ def test_manual_compact_trigger_can_only_tighten_automatic_threshold():
 
     assert budget.max_prompt_tokens == 2816
     assert budget.compact_trigger_tokens == 2252
+
+
+@pytest.mark.parametrize(
+    ("compact_trigger", "expected"),
+    [
+        (2252, 900),
+        (5529, 1935),
+        (120_000, 4000),
+    ],
+)
+def test_summary_trigger_scales_with_prompt_budget_and_is_bounded(
+    compact_trigger,
+    expected,
+):
+    assert derive_conversation_summary_trigger(compact_trigger) == expected
+
+
+def test_explicit_summary_trigger_overrides_dynamic_policy():
+    assert (
+        derive_conversation_summary_trigger(
+            5529,
+            override_tokens=700,
+        )
+        == 700
+    )
+
+
+def test_summary_trigger_rejects_inverted_bounds():
+    with pytest.raises(ValueError, match="MIN_TOKENS"):
+        derive_conversation_summary_trigger(
+            5529,
+            minimum_tokens=2000,
+            maximum_tokens=1000,
+        )

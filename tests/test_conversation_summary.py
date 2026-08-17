@@ -80,6 +80,8 @@ def test_compaction_waits_until_old_messages_cross_threshold(tmp_path):
 
     assert result["updated"] is False
     assert result["reason"] == "below_threshold"
+    assert result["trigger_chars"] == 1000
+    assert result["trigger_tokens"] == 900
     assert store.get_active_summary(conversation_id, "u1") is None
 
 
@@ -98,6 +100,8 @@ def test_compaction_keeps_recent_six_turns_and_advances_boundary(tmp_path):
     )
 
     assert result["updated"] is True
+    assert result["trigger_chars"] == 1
+    assert result["trigger_tokens"] == 900
     assert result["compacted_message_count"] == 12
     assert result["remaining_message_count"] == 12
     assert len(store.get_uncompacted_messages(conversation_id, "u1")) == 12
