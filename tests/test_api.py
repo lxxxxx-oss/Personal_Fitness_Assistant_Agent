@@ -408,7 +408,7 @@ class TestChatEndpoint:
 
         assert response.status_code == 200
         assert "streamed" in response.text
-        assert '"sources": []' in response.text
+        assert '"sources":' in response.text
         assert '"warnings": []' in response.text
         assert '"execution":' in response.text
         assert calls == {"generate": 0, "generate_stream": 1}

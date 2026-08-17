@@ -65,6 +65,36 @@ def infer_explicit_memory_kind(content: str) -> str:
     return "note"
 
 
+def infer_implicit_memory_kind(content: str) -> Optional[str]:
+    """Classify only implicit facts that are useful as durable user memory.
+
+    Unlike the explicit ``remember`` path, implicit extraction intentionally has
+    no generic ``note`` fallback. Unknown text is ignored instead of polluting
+    the candidate pool.
+    """
+    if any(word in content for word in ("过敏", "旧伤", "受伤", "疼", "痛", "禁忌", "不能")):
+        return "constraint"
+    if any(word in content for word in ("不喜欢", "喜欢", "偏好", "习惯", "不吃", "少吃", "只吃")):
+        return "preference"
+    if any(word in content for word in ("目标", "减脂", "增肌", "塑形", "提升耐力", "提高耐力")):
+        return "goal"
+    if any(
+        word in content
+        for word in (
+            "身高",
+            "体重",
+            "年龄",
+            "岁",
+            "每周训练",
+            "通常在",
+            "平时在",
+            "一直在",
+        )
+    ):
+        return "fact"
+    return None
+
+
 def infer_privacy_level(content: str) -> str:
     security_markers = (
         "密码",
@@ -116,25 +146,78 @@ def extract_implicit_memory_content(message: str) -> Optional[str]:
     text = message.strip()
     if not text or extract_explicit_memory_content(text):
         return None
-    transient_markers = ("今天", "这次", "临时", "刚刚", "明天", "本次")
-    if any(marker in text for marker in transient_markers):
-        return None
-    stable_markers = (
-        "以后",
-        "今后",
-        "长期",
-        "平时",
-        "一直",
-        "通常",
-        "每周",
-        "我习惯",
-        "我不吃",
-        "我不喜欢",
-        "我喜欢",
-        "我的目标是",
-        "我有",
+    transient_markers = ("今天", "这次", "临时", "刚刚", "明天", "本次", "这顿", "这一餐")
+    question_markers = (
+        "什么", "多少", "怎么", "如何", "是否", "有没有", "为什么",
+        "为何", "哪种", "哪些", "吗", "呢",
     )
-    return text if any(marker in text for marker in stable_markers) else None
+    memory_query_markers = ("你记得", "还记得", "记得我的", "我的偏好是", "我的目标是什")
+    general_subjects = ("成年人", "儿童", "青少年", "老年人", "人们", "大家", "普通人")
+    stable_markers = ("以后", "今后", "长期", "平时", "一直", "通常", "每周")
+    first_person_markers = ("我", "我的", "本人", "自己")
+
+    # Work at clause level so “我膝盖疼，应该怎么训练？” keeps the fact but
+    # drops the one-off request. One keyword can no longer store a whole query.
+    clauses = re.split(r"[，,。！？!?；;\n]+", text)
+    for raw_clause in clauses:
+        clause = raw_clause.strip(" ：:、\t")
+        if not clause:
+            continue
+        clause = re.sub(r"^(?:同时|另外|还有|而且|不过|其实|然后|顺便)[，,、：:\s]*", "", clause)
+        if not clause or any(marker in clause for marker in transient_markers):
+            continue
+        if any(marker in clause for marker in memory_query_markers):
+            continue
+        if any(marker in clause for marker in question_markers):
+            continue
+        if any(subject in clause for subject in general_subjects) and not any(
+            marker in clause for marker in first_person_markers
+        ):
+            continue
+
+        has_first_person = any(clause.startswith(marker) for marker in first_person_markers)
+        has_stability_marker = any(marker in clause for marker in stable_markers)
+        personal_fact_pattern = any(
+            re.search(pattern, clause)
+            for pattern in (
+                r"(?:我|本人|自己).*(?:不喜欢|喜欢|偏好|习惯|不吃|少吃|只吃)",
+                r"(?:我|本人|自己).*(?:过敏|旧伤|受伤|疼|痛|高血压|糖尿病)",
+                r"(?:我|我的).*(?:身高|体重|年龄|\d+\s*岁)",
+                r"(?:我的目标是|我想(?:减脂|增肌|塑形|提升耐力|提高耐力))",
+                r"(?:我|本人|自己).*(?:每周训练|通常在|平时在|一直在)",
+            )
+        )
+        omitted_subject_pattern = has_stability_marker and any(
+            marker in clause
+            for marker in ("不喜欢", "喜欢", "偏好", "习惯", "不吃", "少吃", "只吃", "训练")
+        )
+        if not personal_fact_pattern and not (has_first_person and has_stability_marker) and not omitted_subject_pattern:
+            continue
+
+        canonical = clause
+        canonical = re.sub(r"^(?:我的)", "", canonical)
+        canonical = re.sub(r"^(?:我|本人|自己)", "", canonical)
+        canonical = re.sub(r"^有(?=.+(?:旧伤|受伤|疼|痛|高血压|糖尿病|过敏))", "", canonical)
+        canonical = re.sub(r"^不喜欢吃", "不喜欢", canonical)
+        canonical = canonical.strip(" ：:，,。.")
+        if canonical and infer_implicit_memory_kind(canonical) is not None:
+            return canonical
+    return None
+
+
+def score_implicit_memory_content(message: str, content: str) -> float:
+    """Return an explainable extraction confidence for one implicit fact."""
+    score = 0.56
+    if re.search(r"(?:^|[，,。！？!?；;])(?:同时|另外|还有|而且)?(?:我|我的|本人|自己)", message):
+        score += 0.07
+    if any(marker in message for marker in ("以后", "今后", "长期", "平时", "一直", "通常", "每周")):
+        score += 0.06
+    if any(
+        marker in content
+        for marker in ("不喜欢", "喜欢", "偏好", "习惯", "不吃", "过敏", "旧伤", "疼", "痛", "目标")
+    ):
+        score += 0.05
+    return round(min(0.78, score), 2)
 
 
 def infer_memory_slot(kind: str, content: str) -> Optional[str]:
@@ -730,9 +813,12 @@ class MemoryStore:
         content = extract_implicit_memory_content(message)
         if not content or infer_privacy_level(content) == "security":
             return None
-        kind = infer_explicit_memory_kind(content)
+        kind = infer_implicit_memory_kind(content)
+        if kind is None:
+            return None
         slot = infer_memory_slot(kind, content)
         conflicts = self._find_slot_conflicts(user_id, slot, content) if slot else []
+        extraction_confidence = score_implicit_memory_content(message, content)
         try:
             from app.config import config
 
@@ -752,6 +838,7 @@ class MemoryStore:
                     "memory_slot": slot,
                     "conflicting_memory_ids": [item["id"] for item in conflicts],
                     "extraction_mode": "conservative_rules",
+                    "extraction_confidence": extraction_confidence,
                 },
             )
         return self.create_candidate_memory(
@@ -767,6 +854,7 @@ class MemoryStore:
                 "conflicting_memory_ids": [item["id"] for item in conflicts],
                 "candidate_reason": "implicit_stable_fact",
                 "extraction_mode": "conservative_rules",
+                "extraction_confidence": extraction_confidence,
             },
         )
 
@@ -886,7 +974,13 @@ class MemoryStore:
                 ).fetchone()
                 evidence_count = int(counts["evidence_count"])
                 conversation_count = int(counts["conversation_count"])
-                confidence = min(0.95, 0.68 + 0.14 * (evidence_count - 1))
+                raw_base_confidence = (metadata or {}).get("extraction_confidence", 0.68)
+                try:
+                    base_confidence = float(raw_base_confidence)
+                except (TypeError, ValueError):
+                    base_confidence = 0.68
+                base_confidence = max(0.0, min(0.95, base_confidence))
+                confidence = min(0.95, base_confidence + 0.14 * (evidence_count - 1))
                 conn.execute(
                     """
                     UPDATE memory_observations
@@ -1151,6 +1245,7 @@ class MemoryStore:
                 SELECT * FROM memory_observations
                 WHERE user_id = ? AND status = 'observed' AND risk_level = 'low'
                   AND confidence >= ?
+                  AND evidence_count >= 2 AND conversation_count >= 2
                   AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY confidence DESC, updated_at DESC LIMIT 100
                 """,

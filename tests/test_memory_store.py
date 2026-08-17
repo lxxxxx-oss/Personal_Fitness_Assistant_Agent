@@ -230,6 +230,56 @@ def test_implicit_memory_is_conservative_and_requires_confirmation(tmp_path):
     assert extract_implicit_memory_content("我通常在晚上训练") is not None
 
 
+def test_implicit_memory_extracts_personal_fact_instead_of_whole_query(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+
+    preference = store.remember_user_message(
+        "u1",
+        "同时我不喜欢吃葱花",
+        conversation_id="c1",
+        message_id="m1",
+    )
+    health = store.remember_user_message(
+        "u1",
+        "我膝盖疼，应该怎么训练？",
+        conversation_id="c1",
+        message_id="m2",
+    )
+
+    assert preference is not None
+    assert preference["kind"] == "preference"
+    assert preference["content"] == "不喜欢葱花"
+    assert preference["confidence"] == 0.68
+    assert health is not None
+    assert health["kind"] == "constraint"
+    assert health["content"] == "膝盖疼"
+    assert health["status"] == "review_required"
+
+
+def test_implicit_memory_rejects_memory_queries_and_general_knowledge(tmp_path):
+    store = MemoryStore(str(tmp_path / "memory.db"))
+
+    assert store.remember_user_message(
+        "u1",
+        "我的饮食偏好是什么？或者说有什么是我不吃的",
+        conversation_id="c1",
+        message_id="m1",
+    ) is None
+    assert store.remember_user_message(
+        "u1",
+        "成年人每周应该进行多少有氧运动？请结合知识库说明适用范围和注意事项。",
+        conversation_id="c1",
+        message_id="m2",
+    ) is None
+    assert store.remember_user_message(
+        "u1",
+        "我有一个问题",
+        conversation_id="c1",
+        message_id="m3",
+    ) is None
+    assert store.list_observations("u1", status="all") == []
+
+
 def test_pending_candidates_are_deduplicated(tmp_path):
     store = MemoryStore(str(tmp_path / "memory.db"))
 

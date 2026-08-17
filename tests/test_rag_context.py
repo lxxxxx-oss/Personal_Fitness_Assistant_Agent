@@ -3,12 +3,14 @@ from app.graph.subgraphs.chat import (
     CHAT_GENERATION_MAX_TOKENS,
     CHAT_GENERATION_TEMPERATURE,
     CHAT_GENERATION_TOP_P,
+    build_chat_subgraph,
     generate_node,
 )
 from app.graph.subgraphs.diet import recommend_node
 from app.graph.subgraphs.rag_context import build_rag_context
 from app.graph.prompt_builder import CHAT_ANSWER_PROMPT_VERSION, PromptBuilder
 from app.memory.token_budget import estimate_tokens
+from app.tools.types import ToolResult
 
 
 def test_build_rag_context_numbers_evidence_and_deduplicates_sources():
@@ -287,6 +289,42 @@ def test_prompt_compaction_keeps_required_sections_and_whole_entries(monkeypatch
         "参考资料",
         "待验证的个性化线索",
     }
+
+
+def test_chat_subgraph_preserves_retrieval_between_langgraph_nodes(monkeypatch):
+    """Regression: undeclared transient keys were dropped at node boundaries."""
+    evidence = {
+        "content": (
+            "成年人每周应进行 150 至 300 分钟中等强度有氧活动；"
+            "有慢性疾病或特殊情况时应咨询专业人士。"
+        ),
+        "source": "who_physical_activity.txt",
+        "section_path": "成年人建议",
+    }
+    monkeypatch.setattr(
+        "app.graph.subgraphs.chat.retrieve_knowledge",
+        lambda *_args, **_kwargs: ToolResult(
+            ok=True,
+            data=[evidence],
+            meta={"backend": "sqlite_faiss", "mode": "hybrid"},
+        ),
+    )
+
+    result = build_chat_subgraph().invoke({
+        "user_input": "成年人每周应该进行多少有氧运动？请结合知识库说明。",
+        "user_id": "rag-state-regression",
+        "conversation_id": "rag-state-regression",
+        "intent": "chat",
+        "memory": [],
+        "result": "",
+        "error": None,
+        "_streaming": True,
+    })
+
+    assert result["_retrieved"] == [evidence]
+    assert result["_sources"] == ["who_physical_activity.txt"]
+    assert "150 至 300 分钟" in result["_prompt"]
+    assert "暂无相关参考资料" not in result["_prompt"]
 
 
 def test_prompt_compaction_does_not_cut_pinned_content_when_target_is_too_small(

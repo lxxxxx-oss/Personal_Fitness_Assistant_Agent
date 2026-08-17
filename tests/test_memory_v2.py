@@ -51,6 +51,22 @@ def test_same_message_is_deduplicated_and_cannot_self_promote(tmp_path, monkeypa
     assert store.list_memories("u1") == []
 
 
+def test_single_implicit_observation_is_not_soft_injected(tmp_path, monkeypatch):
+    _enable_memory_v2(monkeypatch)
+    store = MemoryStore(str(tmp_path / "memory.db"))
+
+    observation = store.remember_user_message(
+        "u1",
+        "我通常在晚上训练",
+        conversation_id="c1",
+        message_id="m1",
+    )
+
+    assert observation is not None
+    assert observation["evidence_count"] == 1
+    assert store.search_soft_memories("u1", "晚上怎么安排训练") == []
+
+
 def test_low_risk_fact_promotes_only_after_independent_conversation_evidence(
     tmp_path, monkeypatch
 ):

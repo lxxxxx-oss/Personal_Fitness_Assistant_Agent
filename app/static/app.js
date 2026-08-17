@@ -1264,10 +1264,17 @@
             renderMemoryEmpty("暂无待验证线索。系统只会在有依据时生成线索。");
             return;
         }
+        const kindLabels = {
+            preference: "个人偏好",
+            goal: "健身目标",
+            constraint: "健康与训练约束",
+            fact: "个人信息",
+            note: "备注",
+        };
         elements.memoryDialogBody.replaceChildren(...items.map((item) => {
             const needsReview = item.status === "review_required";
             return createMemoryCard({
-                title: item.kind || "待验证线索",
+                title: kindLabels[item.kind] || "待验证线索",
                 content: item.content,
                 badges: [
                     { text: needsReview ? "需你确认" : "低风险线索", tone: needsReview ? "review" : "observed" },

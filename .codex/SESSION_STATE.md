@@ -3,55 +3,46 @@
 ## Current Task
 
 - Status: idle
-- Goal: 依据模型上下文预算动态计算旧对话摘要触发水位，并统一记忆/上下文压缩的代码、测试和文档口径。
+- Goal: 本轮 RAG 跨节点状态修复、上下文处理与隐式记忆防污染已经完成，准备提交到 GitHub。
 - Updated: 2026-08-17
 
 ## Progress
 
-- 已新增 `derive_conversation_summary_trigger()`：默认按主动 compact Token 线的 35% 派生摘要水位，并限制在 900—4000 Token。
-- 默认字符水位改为摘要 Token 水位的 4 倍；显式正数配置仍可覆盖自动结果。
-- 摘要检查结果会返回实际 Token/字符阈值，便于执行轨迹和排错。
-- 已核对同范围既有口径：Prompt 轮询装箱、安全内容固定保留、超长条目跳过后继续其他队列、摘要失败退回最近窗口均已有代码。
-- SQLite 完整历史保留上限仍按此前决定作为未来优化，本轮未扩展。
-- 代码事实、运行配置、项目证据、学习材料和模拟面试记录已同步。
+- 隐式抽取已改为分句处理，排除问句、记忆查询、通用知识问题和瞬时表达，只允许偏好、目标、约束和稳定个人事实。
+- 候选内容会去除连接词、第一人称等噪声；抽取置信度改为按个人指向、稳定性和事实信号计分。
+- 单条低风险 observation 只在记忆管理页展示；至少 2 条证据且来自 2 个会话后才可能软注入或晋升。
+- UI 已使用中文类型名并解释候选生效条件；事实文档、学习口径和项目证据已同步。
+- 后端已在允许外网访问的环境中重启于 `127.0.0.1:8000`（PID `29956`），健康检查正常；真实 `deepseek-api` 请求返回“连接正常”且 `degraded=false`。此前页面中的 unavailable 是旧进程外网连接被 `WinError 10013` 拒绝，并非密钥或模型配置错误。
 
 ## Touched Files
 
-- `docs/interview/05_三大核心亮点模拟面试实录.md`
-- `app/config.py`
-- `app/llm/context_window.py`
-- `app/memory/conversation_summary.py`
-- `tests/test_config.py`
-- `tests/test_context_window.py`
-- `tests/test_conversation_summary.py`
-- `docs/project/项目总览.md`
-- `docs/project/运行与排错.md`
-- `docs/project/项目证据.md`
-- `docs/project/optimization/上下文压缩设计.md`
+- `app/memory/memory_store.py`
+- `app/static/app.js`
+- `app/static/index.html`
+- `tests/test_memory_store.py`
+- `tests/test_memory_v2.py`
+- `docs/project/optimization/记忆系统设计.md`
 - `docs/learning/03_简历技术点总表.md`
-- `docs/learning/09_简历项目描述与防守边界.md`
-- `docs/learning/10_记忆与上下文专项追问.md`
-- `docs/interview/03_分层记忆与上下文压缩专项面试问答.md`
-- `.codex/SESSION_STATE.md`
+- `docs/project/项目证据.md`
+- 先前未提交的 RAG 修复仍在 `app/graph/state.py`、`tests/test_api.py`、`tests/test_rag_context.py`。
 
 ## Key Decisions
 
-- 摘要属于跨请求持久化维护，阈值在服务启动时由稳定配置派生，不随单次请求模型选择来回抖动。
-- 35%、900 和 4000 是可配置的工程起点，不包装成线上评测得到的最优参数。
-- 本地模型推理前使用真实 tokenizer 硬校验；摘要预检查、Prompt 区段装箱和远程 API 预检查仍使用保守估算。
+- 隐式路径不再使用 `note` 兜底；无法归类的文本宁可不记。
+- 历史错误候选不静默删除，避免误删真实用户数据；由用户在管理页忽略，后续如需可显式清理。
+- 当前仍是可解释规则原型，不包装成通用语义记忆抽取。
 
 ## Verification
 
-- `python -m ruff check ...`：通过。
-- 关联回归：`72 passed, 1 warning`。
-- 全量 `python -m pytest -q`：`369 passed, 1 skipped, 3 warnings`，用时 `100.91s`。
-- 警告来自 Starlette/httpx、LangGraph 和 jieba 依赖弃用提示；跳过项不属于本次功能失败。
+- 记忆专项：`24 passed, 1 warning`。
+- 全量：`373 passed, 1 skipped, 3 warnings`，用时 `49.26s`。
+- `ruff` 与 `compileall` 通过；`/health` 返回 `ok`。
 
 ## Next Steps
 
-- 若继续模拟面试，从第 7 题动态摘要阈值的更新口径之后进入下一题。
-- 未来可用长对话数据集校准 35% 与上下限，并另行设计 SQLite 原始消息保留/归档策略。
+- 浏览器按 `Ctrl+F5` 强制刷新后，用记忆查询、通用知识问题和真实偏好分别复测。
+- 如用户确认，可单独清理数据库中这次测试遗留的错误 observation。
 
 ## Resume Prompt
 
-读取 `AGENTS.md`、本文件和 `docs/interview/05_三大核心亮点模拟面试实录.md`；动态摘要水位已实现并通过全量测试，可继续模拟面试或按用户新任务推进。不要提交 `docs/learning/agent.json`、密钥与运行数据。
+读取 `AGENTS.md`、本文件和 `docs/project/optimization/记忆系统设计.md`；隐式记忆防污染已完成且全量回归通过。不要提交 `docs/learning/agent.json`、密钥与运行数据。

@@ -26,8 +26,9 @@ def record_execution(
 class RouterState(TypedDict, total=False):
     """Router-level global state shared across all subgraphs.
 
-    Uses total=False so subgraphs can attach transient internal keys
-    (like _prompt, _retrieved, _thought, _tools_to_call).
+    ``total=False`` only makes declared fields optional. LangGraph still filters
+    undeclared keys at node boundaries, so every transient value that must be
+    consumed by a later node needs to be listed here explicitly.
     """
 
     user_input: str
@@ -39,6 +40,7 @@ class RouterState(TypedDict, total=False):
     error: Optional[str]
     _prompt: str  # Reserved for streaming endpoints; built by subgraphs.
     _prompt_meta: Dict[str, Any]
+    _sources: List[str]
     _structured_state: Dict[str, Any]
     _long_term_memories: List[Dict[str, Any]]
     _soft_memories: List[Dict[str, Any]]
@@ -74,3 +76,19 @@ class RouterState(TypedDict, total=False):
     _tool_plan: str
     _tool_result: Any
     _mcp_tool_meta: Dict[str, Any]
+    # RAG/diet transient state shared across retrieve -> generate nodes.
+    _retrieved: List[Dict[str, Any]]
+    _retrieval_meta: Dict[str, Any]
+    _user_profile: Dict[str, Any]
+    # Search transient state shared across rewrite -> search -> synthesis.
+    _search_query: str
+    _search_results: List[Dict[str, Any]]
+    _search_meta: Dict[str, Any]
+    # Motion transient state shared across plan -> tool -> review nodes.
+    _thought: str
+    _iteration: int
+    _tools_to_call: List[Dict[str, Any]]
+    _parse_done: bool
+    _user_pose: Any
+    _tool_results: List[Any]
+    _check_pass: bool
