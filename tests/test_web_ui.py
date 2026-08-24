@@ -175,3 +175,43 @@ def test_web_ui_copy_avoids_unescaped_model_html():
     assert "function escapeHtml" in script
     assert "let text = escapeHtml(rawText)" in script
     assert "${escapeHtml(code.trimEnd())}" in script
+
+
+def test_motion_upload_is_forwarded_to_the_chat_router_as_an_artifact():
+    script = client.get("/ui/app.js").text
+
+    assert 'formData.append("user_id", state.userId)' in script
+    assert '!state.temporary && !state.conversationId.startsWith("tmp_")' in script
+    assert 'formData.append("conversation_id", state.conversationId)' in script
+    assert "if (!data.artifact_id)" in script
+    assert "motionArtifactIds: [data.artifact_id]" in script
+    assert "payload.motion_artifact_ids = motionArtifactIds" in script
+    assert script.count("buildRequest(prompt, motionArtifactIds)") == 3
+
+
+def test_motion_upload_keeps_the_file_when_upload_or_chat_needs_retry():
+    script = client.get("/ui/app.js").text
+    upload_flow = script[script.index("async function uploadSelectedMedia()") :]
+
+    assert "if (chatSucceeded)" in upload_flow
+    assert "setAttachment(null)" in upload_flow
+    assert "对话未完成，点击发送可重新上传并重试" in upload_flow
+    assert "上传失败，点击发送重试" in upload_flow
+    assert "finally {\n            setAttachment(null)" not in upload_flow
+
+
+def test_motion_upload_and_stream_fallback_remain_cancellable_and_bounded():
+    script = client.get("/ui/app.js").text
+    upload_flow = script[script.index("async function uploadSelectedMedia()") :]
+    fallback_flow = script[script.index("} else if (canFallback) {") : script.index("        } finally {", script.index("} else if (canFallback) {"))]
+
+    assert "const MOTION_UPLOAD_TIMEOUT_MS = 300_000" in script
+    assert "state.activeController = controller" in upload_flow
+    assert "}, MOTION_UPLOAD_TIMEOUT_MS)" in upload_flow
+    assert "signal: controller.signal" in upload_flow
+    assert "上传分析超时" in upload_flow
+    assert "已停止本次动作素材分析" in upload_flow
+    assert "controller = new AbortController()" in fallback_flow
+    assert "signal: controller.signal" in fallback_flow
+    assert "HTTP 降级请求超时" in fallback_flow
+    assert "HTTP 降级响应为空" in fallback_flow

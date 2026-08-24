@@ -3,6 +3,7 @@
 
     const API_ROOT = window.location.origin;
     const CHAT_TIMEOUT_MS = 90_000;
+    const MOTION_UPLOAD_TIMEOUT_MS = 300_000;
     const TEXTAREA_MIN_HEIGHT = 38;
     const TEXTAREA_MAX_HEIGHT = 150;
     const AUTO_FOLLOW_THRESHOLD_PX = 80;
@@ -454,7 +455,7 @@
         message.actions.appendChild(button);
     }
 
-    function buildRequest(message) {
+    function buildRequest(message, motionArtifactIds = []) {
         const payload = {
             user_id: state.userId,
             message,
@@ -462,6 +463,7 @@
         if (state.conversationId) payload.conversation_id = state.conversationId;
         if (state.modelId) payload.model = state.modelId;
         if (state.temporary) payload.temporary = true;
+        if (motionArtifactIds.length) payload.motion_artifact_ids = motionArtifactIds;
         return payload;
     }
 
@@ -499,9 +501,9 @@
         if (buffer.trim()) processEvent(buffer);
     }
 
-    async function sendMessage(text, { showUser = true } = {}) {
+    async function sendMessage(text, { showUser = true, motionArtifactIds = [] } = {}) {
         const prompt = String(text || "").trim();
-        if (!prompt || state.isBusy) return;
+        if (!prompt || state.isBusy) return false;
 
         if (showUser) createUserMessage(prompt);
         if (elements.conversationTitle.textContent === "新对话") setConversationTitle(prompt);
@@ -514,12 +516,13 @@
         let sawToken = false;
         let streamMetadata = {};
         let timedOut = false;
+        let requestSucceeded = false;
         state.userStopped = false;
-        const controller = new AbortController();
+        let controller = new AbortController();
         state.activeController = controller;
         setBusy(true);
         setServiceStatus("online", "智能体正在工作", "正在判断任务类型");
-        const timeoutId = window.setTimeout(() => {
+        let timeoutId = window.setTimeout(() => {
             timedOut = true;
             controller.abort();
         }, CHAT_TIMEOUT_MS);
@@ -529,7 +532,7 @@
                 const response = await fetch(`${API_ROOT}/chat`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(buildRequest(prompt)),
+                    body: JSON.stringify(buildRequest(prompt, motionArtifactIds)),
                     signal: controller.signal,
                 });
                 const data = await response.json().catch(() => ({}));
@@ -542,13 +545,13 @@
                 renderMessageMetadata(assistantMessage.metadata, data);
                 addCopyAction(assistantMessage);
                 setServiceStatus("online", "服务运行正常", "HTTP 对话可用");
-                return;
+                return true;
             }
 
             const response = await fetch(`${API_ROOT}/chat/stream`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(buildRequest(prompt)),
+                body: JSON.stringify(buildRequest(prompt, motionArtifactIds)),
                 signal: controller.signal,
             });
             if (!response.ok) throw new Error(`流式接口返回 HTTP ${response.status}`);
@@ -595,6 +598,7 @@
             renderMessageMetadata(assistantMessage.metadata, streamMetadata);
             addCopyAction(assistantMessage);
             setServiceStatus("online", "服务运行正常", "流式对话可用");
+            requestSucceeded = true;
         } catch (error) {
             const stopped = state.userStopped;
             if (CHAT_TRANSPORT === "http") {
@@ -609,7 +613,7 @@
                     setMessageError(assistantMessage, `请求未完成：${detail}`);
                     setServiceStatus("offline", "对话服务异常", "请检查后端日志");
                 }
-                return;
+                return false;
             }
 
             const canFallback = !stopped && !sawToken;
@@ -621,24 +625,45 @@
                 showToast("已停止生成");
             } else if (canFallback) {
                 setPendingText(assistantMessage, timedOut ? "流式请求超时，正在切换普通请求" : "流式不可用，正在切换普通请求");
+                window.clearTimeout(timeoutId);
+                timedOut = false;
+                controller = new AbortController();
+                state.activeController = controller;
+                timeoutId = window.setTimeout(() => {
+                    timedOut = true;
+                    controller.abort();
+                }, CHAT_TIMEOUT_MS);
                 try {
                     const fallback = await fetch(`${API_ROOT}/chat`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(buildRequest(prompt)),
+                        body: JSON.stringify(buildRequest(prompt, motionArtifactIds)),
+                        signal: controller.signal,
                     });
                     const data = await fallback.json().catch(() => ({}));
                     if (!fallback.ok) throw new Error(formatApiError(data, fallback.status));
                     setConversationId(data.conversation_id);
                     setMessageIntent(assistantMessage, data.intent);
-                    setAssistantText(assistantMessage, stripModelThinking(data.reply || ""));
+                    const fallbackReply = stripModelThinking(data.reply || "");
+                    if (!fallbackReply.trim()) throw new Error("HTTP 降级响应为空");
+                    setAssistantText(assistantMessage, fallbackReply);
                     renderMessageMetadata(assistantMessage.metadata, data);
                     addCopyAction(assistantMessage);
                     setServiceStatus("online", "服务运行正常", "当前使用非流式回答");
                     showToast("流式连接不可用，已自动完成非流式回答。");
+                    requestSucceeded = true;
                 } catch (fallbackError) {
-                    setMessageError(assistantMessage, `请求未完成：${fallbackError.message}`);
-                    setServiceStatus("offline", "对话服务异常", "请检查后端日志");
+                    if (state.userStopped) {
+                        const stoppedText = "已停止本次请求。";
+                        setAssistantText(assistantMessage, stoppedText);
+                        assistantMessage.rawText = stoppedText;
+                        addCopyAction(assistantMessage);
+                        showToast("已停止请求");
+                    } else {
+                        const detail = timedOut ? "HTTP 降级请求超时" : fallbackError.message;
+                        setMessageError(assistantMessage, `请求未完成：${detail}`);
+                        setServiceStatus("offline", "对话服务异常", "请检查后端日志");
+                    }
                 }
             } else {
                 setMessageError(assistantMessage, `生成中断：${error.message}`);
@@ -654,6 +679,7 @@
             elements.input.focus();
             scrollToBottom();
         }
+        return requestSucceeded;
     }
 
     function formatApiError(data, status) {
@@ -725,82 +751,85 @@
         return file.type.startsWith("video/") || /\.(mp4|mov|avi)$/i.test(file.name);
     }
 
-    function renderMotionResult(message, data, video) {
-        message.content.innerHTML = "";
-        message.rawText = data.message || `${video ? "视频" : "图片"}动作分析完成`;
-
-        const card = document.createElement("section");
-        card.className = "motion-card";
-        const heading = document.createElement("h3");
-        heading.textContent = video ? "视频姿态分析结果" : "图片姿态分析结果";
-        const description = document.createElement("p");
-        description.textContent = data.message || "姿态提取完成。";
-        const metrics = document.createElement("div");
-        metrics.className = "motion-metrics";
-
-        const metricItems = [
-            ["帧数", data.frames],
-            ["关节点", data.joints],
-            [video ? "有效帧比例" : "平均置信度", video
-                ? `${Math.round((data.valid_frame_ratio || 0) * 100)}%`
-                : (data.confidence_summary?.mean ?? "—")],
-        ];
-        if (video) metricItems.push(["采样帧", data.sampled_frames]);
-        for (const [label, value] of metricItems) {
-            const item = document.createElement("div");
-            item.className = "motion-metric";
-            const strong = document.createElement("strong");
-            strong.textContent = value ?? "—";
-            const small = document.createElement("small");
-            small.textContent = label;
-            item.append(strong, small);
-            metrics.appendChild(item);
-        }
-
-        card.append(heading, description, metrics);
-        message.content.appendChild(card);
-        renderMessageMetadata(message.metadata, {
-            warnings: data.warnings,
-            execution: data.execution,
-            sources: data.reference ? [`标准动作：${data.reference}`] : [],
-        });
-        addCopyAction(message);
-    }
-
     async function uploadSelectedMedia() {
         const file = state.selectedFile;
         if (!file || state.isBusy) return;
         const video = isVideoFile(file);
-        createUserMessage(`上传${video ? "动作视频" : "姿态图片"}：${file.name}`);
-        if (elements.conversationTitle.textContent === "新对话") {
-            setConversationTitle(`分析 ${file.name}`);
-        }
-        const assistantMessage = createAssistantMessage({
-            intent: "motion",
-            pendingText: video ? "正在抽取视频姿态序列" : "正在识别图片中的人体姿态",
-        });
+        const prompt = elements.input.value.trim() || (
+            video
+                ? "请分析这段动作视频，指出主要动作问题并给出改进建议。"
+                : "请分析这张姿态图片，指出主要姿态问题并给出改进建议。"
+        );
         setCapability("motion");
+        state.userStopped = false;
+        let timedOut = false;
+        const controller = new AbortController();
+        state.activeController = controller;
         setBusy(true);
         setServiceStatus("online", "正在分析动作素材", video ? "视频处理可能需要一些时间" : "正在调用姿态估计");
+        elements.attachmentDetail.textContent = `${video ? "动作视频" : "姿态图片"} · 正在上传分析`;
+        const timeoutId = window.setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, MOTION_UPLOAD_TIMEOUT_MS);
 
         try {
             const formData = new FormData();
             formData.append("file", file);
+            formData.append("user_id", state.userId);
+            if (state.conversationId && !state.temporary && !state.conversationId.startsWith("tmp_")) {
+                formData.append("conversation_id", state.conversationId);
+            }
             const endpoint = video ? "/motion/analyze-video" : "/motion/analyze-image";
             const response = await fetch(`${API_ROOT}${endpoint}`, {
                 method: "POST",
                 body: formData,
+                signal: controller.signal,
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(formatApiError(data, response.status));
-            renderMotionResult(assistantMessage, data, video);
-            setServiceStatus("online", "服务运行正常", "动作素材分析完成");
-        } catch (error) {
-            setMessageError(assistantMessage, `动作分析失败：${error.message}`);
-            setServiceStatus("offline", "动作分析不可用", "请检查模型与运行依赖");
-        } finally {
-            setAttachment(null);
+            if (!data.artifact_id) throw new Error("分析完成，但未返回可用于对话的动作制品");
+
+            window.clearTimeout(timeoutId);
+            if (state.activeController === controller) state.activeController = null;
             setBusy(false);
+            elements.attachmentDetail.textContent = `${video ? "动作视频" : "姿态图片"} · 分析完成，正在生成建议`;
+            createUserMessage(`${prompt}\n\n附件：${file.name}`);
+            const chatSucceeded = await sendMessage(prompt, {
+                showUser: false,
+                motionArtifactIds: [data.artifact_id],
+            });
+            if (chatSucceeded) {
+                setAttachment(null);
+                return;
+            }
+
+            elements.input.value = prompt;
+            resizeTextarea();
+            elements.attachmentDetail.textContent = `${video ? "动作视频" : "姿态图片"} · 对话未完成，点击发送可重新上传并重试`;
+            showToast("动作分析已完成，但对话未完成；附件已保留，可直接重试。", "error");
+        } catch (error) {
+            const assistantMessage = createAssistantMessage({ intent: "motion" });
+            if (state.userStopped) {
+                const stoppedText = "已停止本次动作素材分析。";
+                setAssistantText(assistantMessage, stoppedText);
+                assistantMessage.rawText = stoppedText;
+                addCopyAction(assistantMessage);
+                setServiceStatus("online", "已停止动作分析", "附件已保留，可随时重试");
+                elements.attachmentDetail.textContent = `${video ? "动作视频" : "姿态图片"} · 已停止，点击发送重试`;
+            } else {
+                const detail = timedOut ? "上传分析超时" : error.message;
+                setMessageError(assistantMessage, `动作分析失败：${detail}`);
+                setServiceStatus("offline", "动作分析不可用", "附件已保留，可修复问题后重试");
+                elements.attachmentDetail.textContent = `${video ? "动作视频" : "姿态图片"} · 上传失败，点击发送重试`;
+            }
+        } finally {
+            window.clearTimeout(timeoutId);
+            if (state.activeController === controller) {
+                state.activeController = null;
+                state.userStopped = false;
+                setBusy(false);
+            }
             elements.input.focus();
             scrollToBottom();
         }

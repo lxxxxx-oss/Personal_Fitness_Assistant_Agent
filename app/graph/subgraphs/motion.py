@@ -1,6 +1,6 @@
 """Motion subgraph — 3D motion analysis with ReAct reasoning chain."""
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from langgraph.graph import StateGraph, END
 
@@ -10,6 +10,82 @@ from app.graph.state import RouterState, record_execution
 from app.graph.structured_state import add_tool_preview
 
 logger = logging.getLogger(__name__)
+
+
+def _format_motion_metrics(metrics: Any) -> str:
+    """Format existing structured metrics without inventing missing evidence."""
+    if not isinstance(metrics, dict):
+        return ""
+
+    metric_items = [
+        ("DTW", metrics.get("dtw_distance")),
+        ("余弦相似度", metrics.get("cosine_similarity")),
+        ("形状差异", metrics.get("shape_difference")),
+    ]
+    present_metrics = [f"{name}={value}" for name, value in metric_items if value is not None]
+    lines = [f"  · 对比指标：{'，'.join(present_metrics)}"] if present_metrics else []
+
+    labels = metrics.get("labels")
+    if isinstance(labels, dict):
+        label_items = [
+            ("DTW", labels.get("dtw")),
+            ("余弦", labels.get("cosine")),
+            ("形状", labels.get("shape")),
+        ]
+        present_labels = [f"{name}={value}" for name, value in label_items if value is not None]
+        if present_labels:
+            lines.append(f"  · 项目启发式标签：{'，'.join(present_labels)}")
+    if metrics.get("overall_verdict"):
+        lines.append(f"  · 汇总结论：{metrics['overall_verdict']}")
+
+    quality = metrics.get("quality")
+    if isinstance(quality, dict):
+        lines.append(
+            "  · 质量门控："
+            f"accepted={quality.get('accepted', '未知')}，"
+            f"有效对齐比例={quality.get('valid_alignment_ratio', '未知')}，"
+            f"最低比例={quality.get('min_valid_alignment_ratio', '未知')}"
+        )
+
+    joint_distance = metrics.get("joint_distance")
+    if isinstance(joint_distance, dict):
+        worst_joint = joint_distance.get("worst_joint")
+        if isinstance(worst_joint, dict):
+            lines.append(
+                "  · 平均偏差最大的关节："
+                f"索引 {worst_joint.get('joint_index', '未知')}，"
+                f"平均距离 {worst_joint.get('mean_distance', '未知')}"
+            )
+        worst_point = joint_distance.get("worst_aligned_point")
+        if isinstance(worst_point, dict):
+            lines.append(
+                "  · 最大单点偏差："
+                f"关节索引 {worst_point.get('joint_index', '未知')}，"
+                f"用户帧 {worst_point.get('user_frame', '未知')}，"
+                f"参考帧 {worst_point.get('reference_frame', '未知')}，"
+                f"用户时间 {worst_point.get('user_time_seconds', '未知')} 秒，"
+                f"参考时间 {worst_point.get('reference_time_seconds', '未知')} 秒，"
+                f"距离 {worst_point.get('distance', '未知')}"
+            )
+
+    angle_errors = metrics.get("joint_angle_errors")
+    if isinstance(angle_errors, dict):
+        worst_angle = angle_errors.get("worst")
+        if isinstance(worst_angle, dict):
+            frame = worst_angle.get("max_error_frame")
+            frame = frame if isinstance(frame, dict) else {}
+            lines.append(
+                "  · 最大关节角误差："
+                f"{worst_angle.get('joint', '未知')}，"
+                f"最大 {worst_angle.get('max_error_degrees', '未知')} 度，"
+                f"平均 {worst_angle.get('mean_error_degrees', '未知')} 度，"
+                f"用户帧 {frame.get('user_frame', '未知')}，"
+                f"参考帧 {frame.get('reference_frame', '未知')}，"
+                f"用户时间 {frame.get('user_time_seconds', '未知')} 秒，"
+                f"参考时间 {frame.get('reference_time_seconds', '未知')} 秒"
+            )
+
+    return ("\n".join(lines) + "\n") if lines else ""
 
 
 def think_node(state: RouterState) -> RouterState:
@@ -205,13 +281,14 @@ def check_node(state: RouterState) -> RouterState:
 你是一名运动生物力学教练，擅长分析健身动作的关节力线和姿态质量。
 
 # 情况说明
-用户想了解动作分析相关的内容，但目前没有上传 3D 姿态数据文件（.npz 格式）。
+用户想了解动作分析相关的内容，但当前请求没有可供分析的图片、视频或结构化姿态数据。
 
 # 回答要求
 1. 根据你的健身知识，对用户提到的动作给出技术要点说明。
-2. 告知用户如何获取 3D 姿态数据：可以使用 MediaPipe、OpenPose 等工具从视频中提取人体关键点，保存为 .npz 格式（形状为 T×J×3，T=帧数，J=关键点数，3=x/y/z 坐标）。
-3. 说明系统支持的分析功能：单动作姿态质量评分、与标准动作库对比、关节角度分析、动作节奏评估。
-4. 不做无根据的推测——没有数据就不瞎猜用户动作的问题。
+2. 告知用户可以直接上传图片或视频；系统内部会用 MediaPipe 提取 PoseSequence。.npz（T×J×3）主要是标准动作库、调试和评测格式，不要求普通用户手工制作。
+3. 准确说明当前能力：可提取姿态序列；选择兼容标准样本后，可计算 FastDTW、余弦相似度、对齐后的逐关节距离以及 MediaPipe 33 点下的膝/髋角度误差，并执行置信度质量门控。
+4. 说明当前边界：尚未实现完整专业动作评分、动作周期切分和专项阶段规则；没有数据或兼容参考样本时，不输出具体纠错结论。
+5. 不做无根据的推测——没有数据就不瞎猜用户动作的问题。
 
 # 用户问题
 {state['user_input']}
@@ -225,9 +302,7 @@ def check_node(state: RouterState) -> RouterState:
             elif r["type"] == "comparison":
                 m = r["metrics"]
                 results_text += f"- 与标准动作'{r['reference']}'对比:\n"
-                results_text += f"  · DTW距离(节奏差异): {m['dtw_distance']}（越小越接近）\n"
-                results_text += f"  · 余弦相似度(姿态方向): {m['cosine_similarity']}（越接近1越相似）\n"
-                results_text += f"  · 形状差异(幅度差异): {m['shape_difference']}（越小越接近）\n"
+                results_text += _format_motion_metrics(m)
             elif r["type"] == "error":
                 results_text += f"- 错误: {r['message']}\n"
             elif r["type"] == "media_artifact":
@@ -252,11 +327,7 @@ def check_node(state: RouterState) -> RouterState:
                     results_text += f"  · 标准动作：{payload['reference']}\n"
                 metrics = payload.get("metrics")
                 if isinstance(metrics, dict):
-                    results_text += (
-                        f"  · 对比指标：DTW={metrics.get('dtw_distance')}，"
-                        f"余弦相似度={metrics.get('cosine_similarity')}，"
-                        f"形状差异={metrics.get('shape_difference')}\n"
-                    )
+                    results_text += _format_motion_metrics(metrics)
                 for warning in payload.get("warnings", [])[:3]:
                     results_text += f"  · 注意：{warning}\n"
 
@@ -267,9 +338,10 @@ def check_node(state: RouterState) -> RouterState:
 {results_text}
 
 # 指标说明
-- **DTW距离**：衡量动作节奏与标准动作的差异（越小越好，<0.3为优秀）
+- **DTW距离**：衡量时序对齐后的整体姿态差异（越小越接近）
 - **余弦相似度**：衡量整体姿态方向的相似性（>0.85为优秀，需结合其他指标）
-- **形状差异**：衡量动作幅度和关节轨迹的偏差（越小越好，<0.2为优秀）
+- **形状差异**：衡量对齐后逐关节位置的平均偏差（越小越接近）
+- 0.3、0.85、0.2 是项目原型的启发式阈值，只用于相对比较，不是医学或专业教练评分标准
 
 # 用户问题
 {state['user_input']}
@@ -278,10 +350,11 @@ def check_node(state: RouterState) -> RouterState:
 {state.get('_thought', '')}
 
 # 回答要求
-1. 先用通俗语言总结三个指标的含义和用户动作的整体评价。
-2. 指出最突出的问题（如果有），给出具体改进建议。
-3. 如果三个指标都很好（DTW<0.3, 余弦>0.85, 形状差<0.2），直接表扬并鼓励继续训练。
+1. 先用通俗语言总结当前实际提供的分析结果；只有结果中存在对比指标时，才解释 DTW、余弦相似度和形状差异，不得补写缺失指标。
+2. 只有结构化结果给出了关节、帧、时间或角度证据时，才指出对应的具体问题并给出改进建议；证据不足时明确说明不能定位，不得猜测。
+3. 仅当质量门控未拒绝、三个指标均实际存在且都很好（DTW<0.3, 余弦>0.85, 形状差<0.2）时，直接表扬并鼓励继续训练。
 4. 如果指标之间矛盾（如DTW好但形状差大），分析可能的原因。
+5. 如果质量门控 accepted=false，优先提示重新拍摄，不给确定性动作结论。
 
 请给出分析报告："""
 

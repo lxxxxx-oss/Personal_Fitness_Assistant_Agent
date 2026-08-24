@@ -23,6 +23,37 @@ def _payload() -> dict:
             "dtw_distance": 0.21,
             "cosine_similarity": 0.91,
             "shape_difference": 0.13,
+            "labels": {"dtw": "优秀", "cosine": "优秀", "shape": "优秀"},
+            "overall_verdict": "动作与标准高度一致。",
+            "quality": {
+                "accepted": True,
+                "valid_alignment_ratio": 0.86,
+                "min_valid_alignment_ratio": 0.6,
+            },
+            "joint_distance": {
+                "worst_joint": {"joint_index": 25, "mean_distance": 0.18},
+                "worst_aligned_point": {
+                    "joint_index": 26,
+                    "distance": 0.31,
+                    "user_frame": 12,
+                    "reference_frame": 13,
+                    "user_time_seconds": 0.4,
+                    "reference_time_seconds": 0.4333,
+                },
+            },
+            "joint_angle_errors": {
+                "worst": {
+                    "joint": "right_knee",
+                    "mean_error_degrees": 8.5,
+                    "max_error_degrees": 16.2,
+                    "max_error_frame": {
+                        "user_frame": 12,
+                        "reference_frame": 13,
+                        "user_time_seconds": 0.4,
+                        "reference_time_seconds": 0.4333,
+                    },
+                }
+            },
         },
         "warnings": ["结果仅作训练参考。"],
     }
@@ -150,4 +181,62 @@ def test_motion_subgraph_uses_structured_artifact_without_raw_media(monkeypatch)
     assert parsed["_tool_results"][0]["type"] == "media_artifact"
     assert "有效姿态帧比例：0.92" in checked["_prompt"]
     assert "余弦相似度=0.91" in checked["_prompt"]
+    assert "平均偏差最大的关节：索引 25" in checked["_prompt"]
+    assert "最大单点偏差：关节索引 26，用户帧 12，参考帧 13" in checked["_prompt"]
+    assert "最大关节角误差：right_knee，最大 16.2 度" in checked["_prompt"]
+    assert "参考时间 0.4333 秒" in checked["_prompt"]
+    assert "质量门控：accepted=True" in checked["_prompt"]
     assert checked["result"] == ""
+
+
+def test_motion_subgraph_without_data_states_current_boundary():
+    state: RouterState = {
+        "user_input": "帮我分析深蹲动作",
+        "user_id": "u1",
+        "conversation_id": "c1",
+        "memory": [],
+        "_tool_results": [],
+        "_streaming": True,
+    }
+
+    checked = check_node(state)
+
+    assert "可以直接上传图片或视频" in checked["_prompt"]
+    assert "尚未实现完整专业动作评分、动作周期切分和专项阶段规则" in checked["_prompt"]
+    assert "单动作姿态质量评分" not in checked["_prompt"]
+    assert "动作节奏评估" not in checked["_prompt"]
+    assert checked["result"] == ""
+
+
+def test_motion_subgraph_does_not_require_missing_image_comparison_metrics():
+    state: RouterState = {
+        "user_input": "帮我看看这张深蹲图片",
+        "user_id": "u1",
+        "conversation_id": "c1",
+        "memory": [],
+        "_tool_results": [
+            {
+                "type": "media_artifact",
+                "media_type": "image",
+                "filename": "squat.jpg",
+                "payload": {
+                    "frames": 1,
+                    "joints": 33,
+                    "pose_model": "mediapipe_pose_landmarker_full",
+                    "joint_schema": "mediapipe_pose_33",
+                    "valid_frame_ratio": 1.0,
+                    "metrics": {"cosine_similarity": 0.87},
+                },
+            }
+        ],
+        "_streaming": True,
+    }
+
+    checked = check_node(state)
+
+    assert "只有结果中存在对比指标时" in checked["_prompt"]
+    assert "不得补写缺失指标" in checked["_prompt"]
+    assert "三个指标均实际存在" in checked["_prompt"]
+    assert "余弦相似度=0.87" in checked["_prompt"]
+    assert "DTW=None" not in checked["_prompt"]
+    assert "形状差异=None" not in checked["_prompt"]
