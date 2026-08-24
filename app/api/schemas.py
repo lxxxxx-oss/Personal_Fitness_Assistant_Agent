@@ -2,7 +2,7 @@
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ExecutionTraceItem(BaseModel):
@@ -18,6 +18,20 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
     model: Optional[str] = Field(default=None, min_length=1, max_length=64)
     temporary: bool = False
+    motion_artifact_ids: List[str] = Field(default_factory=list, max_length=3)
+
+    @field_validator("motion_artifact_ids")
+    @classmethod
+    def validate_motion_artifact_ids(cls, values: List[str]) -> List[str]:
+        """Normalize bounded Motion artifact references without hiding duplicates."""
+        normalized: List[str] = []
+        for value in values:
+            artifact_id = value.strip()
+            if not artifact_id or len(artifact_id) > 64:
+                raise ValueError("motion artifact ids must contain 1-64 characters")
+            if artifact_id not in normalized:
+                normalized.append(artifact_id)
+        return normalized
 
 
 class ChatResponse(BaseModel):
@@ -243,6 +257,8 @@ class MotionAnalyzeImageResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     execution: List[ExecutionTraceItem] = Field(default_factory=list)
     message: str
+    artifact_id: str | None = None
+    artifact_expires_at: str | None = None
 
 
 class MotionAnalyzeVideoResponse(BaseModel):
@@ -261,6 +277,25 @@ class MotionAnalyzeVideoResponse(BaseModel):
     warnings: List[str] = Field(default_factory=list)
     execution: List[ExecutionTraceItem] = Field(default_factory=list)
     message: str
+    artifact_id: str | None = None
+    artifact_expires_at: str | None = None
+
+
+class MotionArtifactResponse(BaseModel):
+    id: str
+    user_id: str
+    conversation_id: str | None = None
+    media_type: str
+    filename: str
+    payload: Dict
+    status: str
+    created_at: str
+    expires_at: str
+
+
+class MotionArtifactDeleteResponse(BaseModel):
+    artifact_id: str
+    status: str
 
 
 class MotionReferenceItem(BaseModel):

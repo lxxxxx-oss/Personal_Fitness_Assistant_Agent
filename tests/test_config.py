@@ -134,6 +134,17 @@ def test_invalid_float_environment_value_uses_default(monkeypatch):
     assert Config().model_top_p == 0.95
 
 
+def test_motion_artifact_ttl_defaults_and_is_bounded(monkeypatch):
+    monkeypatch.delenv("MOTION_ARTIFACT_TTL_MINUTES", raising=False)
+    assert Config().motion_artifact_ttl_minutes == 60
+
+    monkeypatch.setenv("MOTION_ARTIFACT_TTL_MINUTES", "120")
+    assert Config().motion_artifact_ttl_minutes == 120
+
+    with pytest.raises(ValueError, match="MOTION_ARTIFACT_TTL_MINUTES"):
+        Config(motion_artifact_ttl_minutes=1441)
+
+
 def test_boolean_environment_values_are_real_booleans(monkeypatch):
     monkeypatch.setenv("RETRIEVER_FALLBACK_TO_MEMORY", "false")
     assert Config().retriever_fallback_to_memory is False

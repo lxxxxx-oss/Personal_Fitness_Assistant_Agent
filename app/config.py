@@ -291,6 +291,9 @@ class Config:
     motion_library_dir: str = field(
         default_factory=lambda: os.getenv("MOTION_LIBRARY_DIR", "data/motions")
     )
+    motion_artifact_ttl_minutes: int = field(
+        default_factory=lambda: _get_int_env("MOTION_ARTIFACT_TTL_MINUTES", 60)
+    )
     react_max_iterations: int = field(
         default_factory=lambda: _get_int_env("REACT_MAX_ITERATIONS", 5)
     )
@@ -354,6 +357,7 @@ class Config:
             "memory_auto_promotion_evidence": self.memory_auto_promotion_evidence,
             "memory_auto_promotion_conversations": self.memory_auto_promotion_conversations,
             "memory_observation_ttl_days": self.memory_observation_ttl_days,
+            "motion_artifact_ttl_minutes": self.motion_artifact_ttl_minutes,
             "context_compact_trigger_chars": self.context_compact_trigger_chars,
             "context_max_prompt_chars": self.context_max_prompt_chars,
             "context_compact_trigger_tokens": self.context_compact_trigger_tokens,
@@ -377,6 +381,8 @@ class Config:
         invalid = [name for name, value in positive_values.items() if value <= 0]
         if invalid:
             raise ValueError(f"configuration values must be positive: {', '.join(invalid)}")
+        if self.motion_artifact_ttl_minutes > 1440:
+            raise ValueError("MOTION_ARTIFACT_TTL_MINUTES must be at most 1440")
         if self.context_max_prompt_chars < 1200:
             raise ValueError("MAX_PROMPT_CHARS must be at least 1200")
         if self.context_max_prompt_tokens < 1200:

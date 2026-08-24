@@ -3,46 +3,65 @@
 ## Current Task
 
 - Status: idle
-- Goal: 本轮 RAG 跨节点状态修复、上下文处理与隐式记忆防污染已经完成，准备提交到 GitHub。
-- Updated: 2026-08-17
+- Goal: 动作媒体与 Router 串联已形成阶段检查点；前三步后端链路完成，第四步 Web UI 自动引用待续。
+- Updated: 2026-08-24
 
 ## Progress
 
-- 隐式抽取已改为分句处理，排除问句、记忆查询、通用知识问题和瞬时表达，只允许偏好、目标、约束和稳定个人事实。
-- 候选内容会去除连接词、第一人称等噪声；抽取置信度改为按个人指向、稳定性和事实信号计分。
-- 单条低风险 observation 只在记忆管理页展示；至少 2 条证据且来自 2 个会话后才可能软注入或晋升。
-- UI 已使用中文类型名并解释候选生效条件；事实文档、学习口径和项目证据已同步。
-- 后端已在允许外网访问的环境中重启于 `127.0.0.1:8000`（PID `29956`），健康检查正常；真实 `deepseek-api` 请求返回“连接正常”且 `degraded=false`。此前页面中的 unavailable 是旧进程外网连接被 `WinError 10013` 拒绝，并非密钥或模型配置错误。
+- 第一步已完成：新增公共 Motion 分析服务，图片/视频端点已复用。
+- 原有 HTTP 请求、响应和状态码映射保持不变。
+- 第二步已完成：新增只保存结构化分析结果的 SQLite 临时制品层，支持 TTL、用户/会话归属检查和软删除。
+- 图片/视频接口只有显式传入 `user_id` 才创建制品；不传时保持原响应行为。
+- 已提供受归属保护的 GET/DELETE 制品接口。
+- 第三步已完成：HTTP、SSE、WebSocket 的 `ChatRequest` 可引用最多 3 个动作制品，统一校验后注入 RouterState，并确定性进入 motion 子图消费结构化摘要。
+- 第四步已开始并完成前端现状检查：当前网页仍直接调用 `/motion/analyze-image` 或 `/motion/analyze-video` 并独立渲染分析卡片，尚未将 `artifact_id` 写入聊天请求。
+- 第四步尚未产生业务代码或文档改动；本次已统一记录当前停点，后续从 Web UI 自动引用继续。
 
 ## Touched Files
 
-- `app/memory/memory_store.py`
-- `app/static/app.js`
-- `app/static/index.html`
-- `tests/test_memory_store.py`
-- `tests/test_memory_v2.py`
-- `docs/project/optimization/记忆系统设计.md`
-- `docs/learning/03_简历技术点总表.md`
+- `.codex/SESSION_STATE.md`
+- `app/main.py`
+- `app/api/schemas.py`
+- `app/graph/router.py`
+- `app/graph/state.py`
+- `app/graph/subgraphs/motion.py`
+- `app/config.py`
+- `app/memory/media_artifact_store.py`
+- `app/services/__init__.py`
+- `app/services/motion_analysis.py`
+- `tests/test_config.py`
+- `tests/test_media_artifact_store.py`
+- `tests/test_motion_artifact_api.py`
+- `tests/test_motion_analysis_service.py`
+- `tests/test_motion_chat_artifact.py`
+- `docs/project/接口说明.md`
+- `docs/project/运行与排错.md`
+- `docs/project/项目总览.md`
+- `docs/project/technical/motion/动作媒体链路设计.md`
+- `docs/project/technical/motion/动作分析优化路线.md`
 - `docs/project/项目证据.md`
-- 先前未提交的 RAG 修复仍在 `app/graph/state.py`、`tests/test_api.py`、`tests/test_rag_context.py`。
 
 ## Key Decisions
 
-- 隐式路径不再使用 `note` 兜底；无法归类的文本宁可不记。
-- 历史错误候选不静默删除，避免误删真实用户数据；由用户在管理页忽略，后续如需可显式清理。
-- 当前仍是可解释规则原型，不包装成通用语义记忆抽取。
+- 公共服务保持单一职责，使用结构化输入输出与可处理错误；API 层继续负责 HTTP 校验与响应映射。
+- 第一阶段必须保持 `/motion/analyze-image`、`/motion/analyze-video`、`/motion/analyze` 的请求响应兼容。
+- 服务层不负责上传限制、临时文件、鉴权、持久化或 LLM 解释；后续 Router 可直接复用服务而不反向调用 HTTP。
+- 制品只保存分析摘要，不保存原图、视频或关键点；默认 TTL 60 分钟，可配置为 1–1440 分钟。
+- 当前 `user_id` 是逻辑归属标识，不冒充账号认证；生产化需由可信登录态注入。
+- 聊天请求只引用已有制品，统一准备阶段校验归属、会话绑定和有效期；失败统一表现为未找到，避免泄露其他用户制品是否存在。
+- motion 子图只消费结构化分析摘要，不重读原始媒体、不重复运行 MediaPipe。
 
 ## Verification
 
-- 记忆专项：`24 passed, 1 warning`。
-- 全量：`373 passed, 1 skipped, 3 warnings`，用时 `49.26s`。
-- `ruff` 与 `compileall` 通过；`/health` 返回 `ok`。
+- 第三步专项：54 passed；聊天接口联合回归：93 passed。
+- 全量：389 passed, 1 skipped, 3 warnings。
+- Ruff、compileall 和 `git diff --check` 通过（仅换行提示）。
 
 ## Next Steps
 
-- 浏览器按 `Ctrl+F5` 强制刷新后，用记忆查询、通用知识问题和真实偏好分别复测。
-- 如用户确认，可单独清理数据库中这次测试遗留的错误 observation。
+- 恢复动作媒体串联任务时继续第四步：Web UI 上传图片/视频时携带逻辑用户/会话信息，读取返回的 `artifact_id`，再通过同一次聊天请求的 `motion_artifact_ids` 交给 Router；上传失败保留附件供重试。
+- 第四步实现后补充 Web UI 静态契约测试、后端联合回归和动作媒体链路事实文档，并按约定停止等待确认。
 
 ## Resume Prompt
 
-读取 `AGENTS.md`、本文件和 `docs/project/optimization/记忆系统设计.md`；隐式记忆防污染已完成且全量回归通过。不要提交 `docs/learning/agent.json`、密钥与运行数据。
+读取 `AGENTS.md` 与本文件；若恢复动作媒体串联任务，从第四步继续：前端上传获得 `artifact_id` 后随聊天请求发送 `motion_artifact_ids`，不再把独立分析卡作为最终回答；完成后更新测试、文档并停下等待确认。

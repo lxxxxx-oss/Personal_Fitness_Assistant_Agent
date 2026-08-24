@@ -40,6 +40,8 @@ from app.api.schemas import (
     MotionAnalyzeImageResponse,
     MotionAnalyzeResponse,
     MotionAnalyzeVideoResponse,
+    MotionArtifactDeleteResponse,
+    MotionArtifactResponse,
     ModelListResponse,
     MotionReferenceItem,
     MotionReferencesResponse,
@@ -74,6 +76,7 @@ _sessions: Dict[str, "SlidingWindowMemory"] = {}
 _temporary_task_states: Dict[str, Dict[str, Any]] = {}
 _conversation_store = None
 _memory_store = None
+_media_artifact_store = None
 _DEPENDENCY_LOCK = threading.Lock()
 _SESSION_LOCK = threading.RLock()
 
@@ -303,6 +306,17 @@ def _get_memory_store():
     return _memory_store
 
 
+def _get_media_artifact_store():
+    global _media_artifact_store
+    if _media_artifact_store is None:
+        with _DEPENDENCY_LOCK:
+            if _media_artifact_store is None:
+                from app.memory.media_artifact_store import MediaArtifactStore
+
+                _media_artifact_store = MediaArtifactStore(config.memory_db_path)
+    return _media_artifact_store
+
+
 def _remember_explicit_user_memory(
     user_id: str,
     message: str,
@@ -477,6 +491,7 @@ def _prepare_chat_sync(
     message: str,
     conversation_id: Optional[str],
     model_id: Optional[str],
+    motion_artifact_ids: Optional[List[str]] = None,
     *,
     streaming: bool,
     temporary: bool = False,
@@ -504,6 +519,16 @@ def _prepare_chat_sync(
         resolved_id = _resolve_conversation_id(user_id, conversation_id)
         memory = _get_or_restore_memory(user_id, resolved_id)
         task_state = _get_conversation_store().get_task_state(resolved_id, user_id)
+    motion_artifacts: List[Dict[str, Any]] = []
+    for artifact_id in motion_artifact_ids or []:
+        artifact = _get_media_artifact_store().get_artifact(
+            artifact_id,
+            user_id,
+            conversation_id=resolved_id,
+        )
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Motion artifact not found")
+        motion_artifacts.append(artifact)
     state: RouterState = {
         "user_input": message,
         "user_id": user_id,
@@ -519,6 +544,7 @@ def _prepare_chat_sync(
         "result": "",
         "error": None,
         "_model_id": resolved_model_id,
+        "_motion_artifacts": motion_artifacts,
     }
     if streaming:
         state["_streaming"] = True
@@ -542,6 +568,7 @@ async def _prepare_chat(
     message: str,
     conversation_id: Optional[str],
     model_id: Optional[str],
+    motion_artifact_ids: Optional[List[str]] = None,
     *,
     streaming: bool,
     temporary: bool = False,
@@ -553,6 +580,7 @@ async def _prepare_chat(
         message,
         conversation_id,
         model_id,
+        motion_artifact_ids,
         streaming=streaming,
         temporary=temporary,
     )
@@ -908,6 +936,7 @@ async def chat(request: ChatRequest):
             request.message,
             request.conversation_id,
             request.model,
+            request.motion_artifact_ids,
             streaming=False,
             temporary=request.temporary,
         )
@@ -1217,21 +1246,87 @@ async def analyze_motion(
             os.remove(tmp_path)
 
 
+def _normalize_motion_artifact_scope(
+    user_id: str | None,
+    conversation_id: str | None,
+) -> tuple[str | None, str | None]:
+    """Validate the optional owner scope used for short-lived artifacts."""
+    owner = str(user_id or "").strip() or None
+    conversation = str(conversation_id or "").strip() or None
+    if owner is None and conversation is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="conversation_id requires user_id",
+        )
+    if owner is None:
+        return None, None
+    if len(owner) > 64:
+        raise HTTPException(status_code=422, detail="user_id is too long")
+    if conversation is not None:
+        if len(conversation) > 128:
+            raise HTTPException(status_code=422, detail="conversation_id is too long")
+        if _get_conversation_store().get_conversation(conversation, owner) is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Conversation not found for this user",
+            )
+    return owner, conversation
+
+
+def _persist_motion_artifact(
+    response: MotionAnalyzeImageResponse | MotionAnalyzeVideoResponse,
+    *,
+    user_id: str | None,
+    conversation_id: str | None,
+    media_type: str,
+) -> dict | None:
+    """Persist only the public structured result when artifact mode is requested."""
+    if user_id is None:
+        return None
+    excluded = {"artifact_id", "artifact_expires_at"}
+    if hasattr(response, "model_dump_json"):
+        payload = json.loads(response.model_dump_json(exclude=excluded))
+    else:
+        payload = json.loads(response.json(exclude=excluded))
+    try:
+        return _get_media_artifact_store().create_artifact(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            media_type=media_type,
+            filename=response.filename,
+            payload=payload,
+            ttl_seconds=config.motion_artifact_ttl_minutes * 60,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Motion artifact persistence failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Motion analysis succeeded but its temporary artifact could not be stored",
+        ) from exc
+
+
 @app.post("/motion/analyze-image", response_model=MotionAnalyzeImageResponse)
-async def analyze_motion_image(file: UploadFile = File(...)):
+async def analyze_motion_image(
+    file: UploadFile = File(...),
+    user_id: str | None = Form(None),
+    conversation_id: str | None = Form(None),
+):
     """Analyze an uploaded image as a single-frame static posture.
 
     This endpoint extracts pose landmarks and returns a posture summary. A
     single image cannot assess full motion timing, trajectory, or repetition
     stability.
     """
-    from app.tools.pose_estimator import (
-        MAX_IMAGE_BYTES,
-        decode_image_bytes_to_rgb,
-        estimate_pose_from_image,
-    )
+    from app.services.motion_analysis import analyze_motion_image_bytes
+    from app.tools.pose_estimator import MAX_IMAGE_BYTES
     from app.tools.types import ErrorCode
 
+    owner, bound_conversation = _normalize_motion_artifact_scope(
+        user_id,
+        conversation_id,
+    )
     if not file.filename:
         raise HTTPException(status_code=422, detail="Image filename is required")
 
@@ -1241,67 +1336,53 @@ async def analyze_motion_image(file: UploadFile = File(...)):
             max_bytes=MAX_IMAGE_BYTES,
             media_label="Image",
         )
-        image_result = await asyncio.to_thread(
-            decode_image_bytes_to_rgb,
+        analysis_result = await asyncio.to_thread(
+            analyze_motion_image_bytes,
             content,
             filename=file.filename,
         )
-        if not image_result.ok:
-            status_code = 503 if image_result.error_code == ErrorCode.CONFIG_MISSING else 422
+        if not analysis_result.ok:
+            status_code = (
+                503 if analysis_result.error_code == ErrorCode.CONFIG_MISSING else 422
+            )
             raise HTTPException(
                 status_code=status_code,
-                detail=image_result.error_message or "Invalid image file",
+                detail=analysis_result.error_message or "Image motion analysis failed",
             )
 
-        pose_result = await asyncio.to_thread(
-            estimate_pose_from_image,
-            image_result.data,
-            source_name=file.filename,
-        )
-        if not pose_result.ok:
-            status_code = 503 if pose_result.error_code == ErrorCode.CONFIG_MISSING else 422
-            raise HTTPException(
-                status_code=status_code,
-                detail=pose_result.error_message or "Pose estimation failed",
-            )
+        analysis = analysis_result.data
+        sequence = analysis.sequence
 
-        sequence = pose_result.data
-        confidence_summary = None
-        warnings = [
-            "单张图片只能分析静态姿态，不能判断动作节奏、轨迹或发力顺序。"
-        ]
-        if sequence.confidence is not None:
-            confidence = sequence.confidence.astype(float)
-            confidence_summary = {
-                "mean": round(float(confidence.mean()), 4),
-                "min": round(float(confidence.min()), 4),
-                "max": round(float(confidence.max()), 4),
-            }
-            if confidence_summary["mean"] < 0.5:
-                warnings.append("关键点整体置信度较低，建议更换清晰、无遮挡的图片。")
-
-        return MotionAnalyzeImageResponse(
+        response = MotionAnalyzeImageResponse(
             filename=file.filename,
             source_type=sequence.source_type,
             frames=sequence.frames,
             joints=sequence.joints,
             pose_model=sequence.pose_model,
             joint_schema=sequence.joint_schema,
-            confidence_summary=confidence_summary,
-            warnings=warnings,
+            confidence_summary=analysis.confidence_summary,
+            warnings=analysis.warnings,
             execution=[
                 ExecutionTraceItem(
                     component="motion",
-                    mode="mediapipe_image",
+                    mode=analysis.execution_mode,
                     degraded=False,
                     detail="",
                 )
             ],
-            message=(
-                "图片姿态已提取为 PoseSequence。当前返回静态姿态摘要；"
-                "完整动作标准性判断需要视频序列或标准动作库对比。"
-            ),
+            message=analysis.message,
         )
+        artifact = await asyncio.to_thread(
+            _persist_motion_artifact,
+            response,
+            user_id=owner,
+            conversation_id=bound_conversation,
+            media_type="image",
+        )
+        if artifact is not None:
+            response.artifact_id = str(artifact["id"])
+            response.artifact_expires_at = str(artifact["expires_at"])
+        return response
     finally:
         await file.close()
 
@@ -1352,20 +1433,18 @@ def list_motion_references():
 async def analyze_motion_video(
     file: UploadFile = File(...),
     reference_name: str | None = Form(None),
+    user_id: str | None = Form(None),
+    conversation_id: str | None = Form(None),
 ):
     """Extract a bounded multi-frame pose sequence from an uploaded video."""
-    from app.tools.pose_estimator import (
-        MAX_VIDEO_BYTES,
-        SUPPORTED_VIDEO_SUFFIXES,
-        estimate_pose_from_video_path,
-    )
-    from app.tools.motion_tool import (
-        compute_pose_sequence_similarity,
-        list_motion_library,
-        load_npz_pose_sequence,
-    )
+    from app.services.motion_analysis import analyze_motion_video_path
+    from app.tools.pose_estimator import MAX_VIDEO_BYTES, SUPPORTED_VIDEO_SUFFIXES
     from app.tools.types import ErrorCode
 
+    owner, bound_conversation = _normalize_motion_artifact_scope(
+        user_id,
+        conversation_id,
+    )
     if not file.filename:
         raise HTTPException(status_code=422, detail="Video filename is required")
     suffix = os.path.splitext(file.filename)[1].lower()
@@ -1392,88 +1471,28 @@ async def analyze_motion_video(
                     )
                 tmp.write(chunk)
 
-        pose_result = await asyncio.to_thread(
-            estimate_pose_from_video_path,
+        analysis_result = await asyncio.to_thread(
+            analyze_motion_video_path,
             tmp_path,
-            source_name=file.filename,
+            filename=file.filename,
+            motion_library_dir=config.motion_library_dir,
+            reference_name=reference_name,
         )
-        if not pose_result.ok:
-            status_code = 503 if pose_result.error_code == ErrorCode.CONFIG_MISSING else 422
+        if not analysis_result.ok:
+            status_code = 422
+            if analysis_result.error_code == ErrorCode.CONFIG_MISSING:
+                status_code = 503
+            elif analysis_result.meta.get("stage") == "reference_lookup":
+                status_code = 404
             raise HTTPException(
                 status_code=status_code,
-                detail=pose_result.error_message or "Video pose estimation failed",
+                detail=analysis_result.error_message or "Video motion analysis failed",
             )
 
-        sequence = pose_result.data
-        metadata = sequence.metadata
-        confidence_summary = None
-        if sequence.confidence is not None:
-            confidence = sequence.confidence.astype(float)
-            confidence_summary = {
-                "mean": round(float(confidence.mean()), 4),
-                "min": round(float(confidence.min()), 4),
-                "max": round(float(confidence.max()), 4),
-            }
-        valid_frame_ratio = float(metadata.get("valid_frame_ratio", 0.0))
-        warnings = []
-        if valid_frame_ratio < 0.8:
-            warnings.append("有效姿态帧比例较低，建议使用单人、无遮挡、固定机位视频。")
+        analysis = analysis_result.data
+        sequence = analysis.sequence
 
-        reference = None
-        metrics = None
-        execution_mode = "mediapipe_video"
-        if reference_name and reference_name.strip():
-            normalized_reference = reference_name.strip()
-            if len(normalized_reference) > 64:
-                raise HTTPException(status_code=422, detail="reference_name is too long")
-            library_result = await asyncio.to_thread(
-                list_motion_library,
-                config.motion_library_dir,
-            )
-            library = library_result.data if library_result.ok else {}
-            reference_path = library.get(normalized_reference)
-            if reference_path is None:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Reference motion not found: {normalized_reference}",
-                )
-            reference_result = await asyncio.to_thread(
-                load_npz_pose_sequence,
-                reference_path,
-            )
-            if not reference_result.ok:
-                raise HTTPException(
-                    status_code=422,
-                    detail=reference_result.error_message or "Invalid reference motion",
-                )
-            similarity_result = await asyncio.to_thread(
-                compute_pose_sequence_similarity,
-                sequence,
-                reference_result.data,
-            )
-            if not similarity_result.ok:
-                raise HTTPException(
-                    status_code=422,
-                    detail=similarity_result.error_message
-                    or "Motion similarity comparison failed",
-                )
-            reference = normalized_reference
-            metrics = similarity_result.data
-            execution_mode = "mediapipe_video_similarity"
-            warnings.append(
-                "相似度仅表示与所选标准样本的统计接近程度，不等同于专业教练的动作质量诊断。"
-            )
-            quality = metrics.get("quality") if isinstance(metrics, dict) else None
-            if isinstance(quality, dict) and quality.get("accepted") is False:
-                warnings.append(
-                    "关键点有效对齐比例低于质量门控阈值，本次相似度仅作低置信参考，建议重新拍摄后再判断。"
-                )
-        else:
-            warnings.append(
-                "未选择标准动作，本次仅提取多帧 PoseSequence，不执行相似度评分。"
-            )
-
-        return MotionAnalyzeVideoResponse(
+        response = MotionAnalyzeVideoResponse(
             filename=file.filename,
             source_type=sequence.source_type,
             frames=sequence.frames,
@@ -1481,30 +1500,86 @@ async def analyze_motion_video(
             fps=round(float(sequence.fps or 0.0), 4),
             pose_model=sequence.pose_model,
             joint_schema=sequence.joint_schema,
-            sampled_frames=int(metadata.get("sampled_frames", sequence.frames)),
-            valid_frame_ratio=round(valid_frame_ratio, 4),
-            confidence_summary=confidence_summary,
-            reference=reference,
-            metrics=metrics,
-            warnings=warnings,
+            sampled_frames=analysis.sampled_frames,
+            valid_frame_ratio=analysis.valid_frame_ratio,
+            confidence_summary=analysis.confidence_summary,
+            reference=analysis.reference,
+            metrics=analysis.metrics,
+            warnings=analysis.warnings,
             execution=[
                 ExecutionTraceItem(
                     component="motion",
-                    mode=execution_mode,
+                    mode=analysis.execution_mode,
                     degraded=False,
                     detail="",
                 )
             ],
-            message=(
-                "视频已转换为 PoseSequence，并完成与标准动作的相似度分析。"
-                if metrics is not None
-                else "视频已转换为多帧 PoseSequence。"
-            ),
+            message=analysis.message,
         )
+        artifact = await asyncio.to_thread(
+            _persist_motion_artifact,
+            response,
+            user_id=owner,
+            conversation_id=bound_conversation,
+            media_type="video",
+        )
+        if artifact is not None:
+            response.artifact_id = str(artifact["id"])
+            response.artifact_expires_at = str(artifact["expires_at"])
+        return response
     finally:
         await file.close()
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+
+@app.get(
+    "/motion/artifacts/{artifact_id}",
+    response_model=MotionArtifactResponse,
+)
+def get_motion_artifact(
+    artifact_id: str,
+    user_id: str,
+    conversation_id: str | None = None,
+):
+    """Read an unexpired analysis artifact within its owner scope."""
+    owner, bound_conversation = _normalize_motion_artifact_scope(
+        user_id,
+        conversation_id,
+    )
+    try:
+        artifact = _get_media_artifact_store().get_artifact(
+            artifact_id,
+            owner or "",
+            conversation_id=bound_conversation,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Motion artifact not found")
+    return MotionArtifactResponse(**artifact)
+
+
+@app.delete(
+    "/motion/artifacts/{artifact_id}",
+    response_model=MotionArtifactDeleteResponse,
+)
+def delete_motion_artifact(artifact_id: str, user_id: str):
+    """Soft-delete an analysis artifact; cross-owner IDs remain undisclosed."""
+    owner, _ = _normalize_motion_artifact_scope(user_id, None)
+    try:
+        deleted = _get_media_artifact_store().delete_artifact(
+            artifact_id,
+            owner or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Motion artifact not found")
+    return MotionArtifactDeleteResponse(
+        artifact_id=artifact_id,
+        status="deleted",
+    )
 
 
 @app.post("/chat/stream")
@@ -1515,6 +1590,7 @@ async def chat_stream(request: ChatRequest):
         request.message,
         request.conversation_id,
         request.model,
+        request.motion_artifact_ids,
         streaming=True,
         temporary=request.temporary,
     )
@@ -1618,10 +1694,7 @@ async def chat_websocket(websocket: WebSocket):
             await websocket.send_json({
                 "type": "error",
                 "code": "INVALID_REQUEST",
-                "message": (
-                    "user_id must be a 1-64 character string and message must "
-                    "be a 1-4096 character string"
-                ),
+                "message": "Chat request payload is invalid",
             })
             await websocket.close()
             return
@@ -1631,13 +1704,19 @@ async def chat_websocket(websocket: WebSocket):
                 request.message,
                 request.conversation_id,
                 request.model,
+                request.motion_artifact_ids,
                 streaming=True,
                 temporary=request.temporary,
             )
         except HTTPException as exc:
+            error_code = (
+                "MOTION_ARTIFACT_NOT_FOUND"
+                if exc.detail == "Motion artifact not found"
+                else "CONVERSATION_NOT_FOUND"
+            )
             await websocket.send_json({
                 "type": "error",
-                "code": "CONVERSATION_NOT_FOUND",
+                "code": error_code,
                 "message": str(exc.detail),
             })
             await websocket.close()

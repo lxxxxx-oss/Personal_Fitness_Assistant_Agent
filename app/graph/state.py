@@ -85,6 +85,7 @@ class RouterState(TypedDict, total=False):
     _search_results: List[Dict[str, Any]]
     _search_meta: Dict[str, Any]
     # Motion transient state shared across plan -> tool -> review nodes.
+    _motion_artifacts: List[Dict[str, Any]]
     _thought: str
     _iteration: int
     _tools_to_call: List[Dict[str, Any]]

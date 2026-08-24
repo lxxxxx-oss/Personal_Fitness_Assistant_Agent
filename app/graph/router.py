@@ -1372,7 +1372,25 @@ def intent_classify_node(state: RouterState) -> RouterState:
     state["_clarification_resolved"] = False
     state["_clarification_cancelled"] = False
     decision: RouteDecision
-    if isinstance(pending, dict) and len(_valid_pending_candidates(pending)) >= 2:
+    if state.get("_motion_artifacts"):
+        artifact_count = len(state["_motion_artifacts"])
+        decision = {
+            "intent": "motion",
+            "confidence": 1.0,
+            "reason": "The request explicitly references a validated Motion artifact.",
+            "source": "motion_artifact",
+            "scores": {"motion": 100.0},
+            "matches": [f"motion:artifact_reference({artifact_count})"],
+            "ambiguity_signals": [],
+            "primary_intent": "motion",
+            "secondary_intents": [],
+            "route_plan": ["motion"],
+            "multi_intent_reason": "",
+            "needs_clarification": False,
+            "clarification_candidates": [],
+            "clarification_question": "",
+        }
+    elif isinstance(pending, dict) and len(_valid_pending_candidates(pending)) >= 2:
         candidates = _valid_pending_candidates(pending)
         selected = _clarification_selection(current_input, candidates)
         if selected:

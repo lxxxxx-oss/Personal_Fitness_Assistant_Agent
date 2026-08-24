@@ -63,6 +63,16 @@ def parse_node(state: RouterState) -> RouterState:
     lib_data = library_result.data if library_result.ok else {}
     user_input = state["user_input"]
     tools_to_call = []
+    artifact_results = [
+        {
+            "type": "media_artifact",
+            "artifact_id": artifact.get("id", ""),
+            "media_type": artifact.get("media_type", ""),
+            "filename": artifact.get("filename", ""),
+            "payload": artifact.get("payload", {}),
+        }
+        for artifact in state.get("_motion_artifacts", [])
+    ]
 
     for name, path in lib_data.items():
         if name in user_input:
@@ -82,13 +92,20 @@ def parse_node(state: RouterState) -> RouterState:
                 break
 
     state["_tools_to_call"] = tools_to_call  # type: ignore
+    state["_tool_results"] = artifact_results
     state["_parse_done"] = True  # type: ignore
     record_execution(
         state,
         "motion",
-        "npz_analysis" if tools_to_call else "guidance_only",
-        degraded=not bool(tools_to_call),
-        detail="No uploaded pose data was available" if not tools_to_call else "",
+        "media_artifact_analysis" if artifact_results else (
+            "npz_analysis" if tools_to_call else "guidance_only"
+        ),
+        degraded=not bool(tools_to_call or artifact_results),
+        detail=(
+            "No uploaded pose data was available"
+            if not tools_to_call and not artifact_results
+            else ""
+        ),
     )
     return state
 
@@ -98,7 +115,7 @@ def tool_node(state: RouterState) -> RouterState:
     from app.tools.motion_tool import load_npz_pose, compute_similarity
 
     tools_to_call = state.get("_tools_to_call", [])  # type: ignore
-    results = []
+    results = list(state.get("_tool_results", []))
 
     for tool_call in tools_to_call:
         if tool_call["tool"] == "load_user_pose":
@@ -159,6 +176,12 @@ def tool_node(state: RouterState) -> RouterState:
                 )
             elif item.get("type") == "error":
                 summary_lines.append(f"error:{item.get('message')}")
+            elif item.get("type") == "media_artifact":
+                payload = item.get("payload", {})
+                summary_lines.append(
+                    f"media_artifact:{item.get('media_type')} "
+                    f"frames={payload.get('frames')} joints={payload.get('joints')}"
+                )
         add_tool_preview(
             state,
             intent="motion",
@@ -207,6 +230,35 @@ def check_node(state: RouterState) -> RouterState:
                 results_text += f"  · 形状差异(幅度差异): {m['shape_difference']}（越小越接近）\n"
             elif r["type"] == "error":
                 results_text += f"- 错误: {r['message']}\n"
+            elif r["type"] == "media_artifact":
+                payload = r.get("payload", {})
+                results_text += (
+                    f"- 已上传{r.get('media_type', '媒体')}：{r.get('filename', '')}\n"
+                    f"  · 姿态序列：{payload.get('frames', '未知')}帧，"
+                    f"{payload.get('joints', '未知')}个关键点\n"
+                    f"  · 姿态模型：{payload.get('pose_model', '未知')}，"
+                    f"关节定义：{payload.get('joint_schema', '未知')}\n"
+                )
+                if payload.get("valid_frame_ratio") is not None:
+                    results_text += (
+                        f"  · 有效姿态帧比例：{payload['valid_frame_ratio']}\n"
+                    )
+                confidence = payload.get("confidence_summary")
+                if isinstance(confidence, dict):
+                    results_text += (
+                        f"  · 关键点平均置信度：{confidence.get('mean', '未知')}\n"
+                    )
+                if payload.get("reference"):
+                    results_text += f"  · 标准动作：{payload['reference']}\n"
+                metrics = payload.get("metrics")
+                if isinstance(metrics, dict):
+                    results_text += (
+                        f"  · 对比指标：DTW={metrics.get('dtw_distance')}，"
+                        f"余弦相似度={metrics.get('cosine_similarity')}，"
+                        f"形状差异={metrics.get('shape_difference')}\n"
+                    )
+                for warning in payload.get("warnings", [])[:3]:
+                    results_text += f"  · 注意：{warning}\n"
 
         prompt = f"""# 角色
 你是一名运动生物力学教练，正在解读 3D 动作分析结果。
